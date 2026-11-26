@@ -42,7 +42,7 @@ import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } 
 import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 export interface AgentSessionSpec {
-  cursorCloud?: { repoUrl: string; startingRef?: string }
+  cursorCloud?: { repoUrl: string; startingRef?: string; environment?: string }
   /** The model provider when reusing Claude Code as the runtime. */
   claudeProvider?: 'deepseek'
   paneId: string

@@ -37,8 +37,9 @@ describe('CursorCloudAgentsSection', () => {
     expect(api.list).toHaveBeenCalledOnce()
   })
   it('renders rows, status, timestamps, provenance, branch and provider links', async () => {
-    fixture({ more: true })
+    fixture({ more: true, agents: [{ ...agent, environment: 'App Dev' }] })
     expect(await screen.findByText('Fix layout')).toBeInTheDocument()
+    expect(screen.getByText('App Dev')).toBeInTheDocument()
     expect(screen.getByText('Working')).toBeInTheDocument()
     expect(screen.getByText('2m ago')).toBeInTheDocument()
     expect(screen.getByText('Started elsewhere')).toBeInTheDocument()

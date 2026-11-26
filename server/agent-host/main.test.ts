@@ -62,18 +62,19 @@ const emit = (event: string) => state.listeners.get(event)?.forEach((listener) =
 
 describe('provider restart requests', () => {
   it('passes cloud flags to the session spec and preserves them in the respawn command', async () => {
-    process.argv = ['node', fileURLToPath(new URL('./main.ts', import.meta.url)), 'cursor', '--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app', '--cloud-ref', 'feature/cloud', '--resume', 'bc-cloud123']
+    process.argv = ['node', fileURLToPath(new URL('./main.ts', import.meta.url)), 'cursor', '--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app', '--cloud-ref', 'feature/cloud', '--cloud-env', 'App Dev', '--resume', 'bc-cloud123']
     state.info = { ...state.info, sessionId: 'bc-cloud123', permissionMode: 'bypassPermissions' }
     await import('./main.js')
     await vi.waitFor(() => expect(state.listeners.has('restart')).toBe(true))
     const { createChatProviderSession } = await import('./factory.js')
-    expect(createChatProviderSession).toHaveBeenCalledWith('cursor', expect.objectContaining({ cursorCloud: { repoUrl: 'https://github.com/acme/app', startingRef: 'feature/cloud' }, resume: 'bc-cloud123' }))
+    expect(createChatProviderSession).toHaveBeenCalledWith('cursor', expect.objectContaining({ cursorCloud: { repoUrl: 'https://github.com/acme/app', startingRef: 'feature/cloud', environment: 'App Dev' }, resume: 'bc-cloud123' }))
     state.info = { ...state.info, permissionMode: 'plan', prePlanPermissionMode: 'bypassPermissions' }
     emit('session')
     emit('restart')
     const command = state.execFile.mock.calls[0][1].at(-1)
     expect(command).toContain('--runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud')
     expect(command).toContain('--permission-mode plan')
+    expect(command).toContain("--cloud-env 'App Dev'")
     expect(command).toContain('--resume bc-cloud123')
   })
   it('respawns an idle Cursor chat with its current permissions and resume id', async () => {

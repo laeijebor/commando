@@ -37,3 +37,25 @@ it('remembers Cursor runtime per repo and host without affecting other providers
   saveChatLaunch('/repo', { permissionMode: 'plan', cursorRuntime: 'cloud' }, 'codex-chat')
   expect(loadChatLaunch('/repo', 'codex-chat')).toEqual({ permissionMode: 'plan' })
 })
+
+it('remembers valid Cursor environments per repo and host, and clears the default choice', () => {
+  saveChatLaunch('/repo', { permissionMode: 'plan', cursorEnvironment: 'App Dev' }, 'cursor-chat')
+  saveChatLaunch('/other', { permissionMode: 'plan', cursorEnvironment: 'Other Dev' }, 'cursor-chat')
+  expect(loadChatLaunch('/repo', 'cursor-chat').cursorEnvironment).toBe('App Dev')
+  expect(loadChatLaunch('/other', 'cursor-chat').cursorEnvironment).toBe('Other Dev')
+  expect(loadChatLaunch('/repo', 'cursor-chat', 'remote').cursorEnvironment).toBeUndefined()
+  expect(loadChatLaunch('/repo', 'codex-chat').cursorEnvironment).toBeUndefined()
+  saveChatLaunch('/repo', { permissionMode: 'plan' }, 'cursor-chat')
+  expect(loadChatLaunch('/repo', 'cursor-chat').cursorEnvironment).toBeUndefined()
+  saveChatLaunch('/repo', { permissionMode: 'plan', cursorEnvironment: 'bad\nname' }, 'cursor-chat')
+  expect(loadChatLaunch('/repo', 'cursor-chat').cursorEnvironment).toBeUndefined()
+})
+
+
+it('restores Cursor environments only from a per-repo key, while retaining other last-used settings', () => {
+  saveChatLaunch('/repo', { permissionMode: 'plan', cursorRuntime: 'cloud', cursorEnvironment: 'Repo Dev' }, 'cursor-chat')
+  expect(loadChatLaunch('/repo', 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud', cursorEnvironment: 'Repo Dev' })
+  expect(loadChatLaunch('/new-repo', 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud' })
+  expect(loadChatLaunch(undefined, 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud' })
+  expect(loadChatLaunch('*', 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud' })
+})

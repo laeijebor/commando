@@ -313,10 +313,28 @@ describe('Cursor chat restore', () => {
 })
 
 describe('Cursor cloud chat restore', () => {
+  it.each(['App Dev', '--prompt Env', 'App --runtime local'])('drops an unrecoverable environment %j without host metadata', (environment) => {
+    const args = `node /c/server/agent-host/main.ts cursor --model auto --permission-mode plan --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref main --cloud-env ${environment} --prompt do work`
+    const command = buildChatResumeCommand('bc-cloud123', '/c/launcher', launchFromProcess('cursor', args, args))
+    expect(command).toBe('/c/launcher cursor --model auto --permission-mode plan --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref main --resume bc-cloud123')
+    expect(command).not.toContain('--cloud-env')
+  })
+  it('ignores environment-like prompt text even when SDK metadata is available', () => {
+    const args = 'node /c/server/agent-host/main.ts cursor --runtime cloud --cloud-repo https://github.com/acme/app --prompt discuss --cloud-env App Dev'
+    expect(buildChatResumeCommand('bc-cloud123', '/c/launcher', launchFromProcess('cursor', args, args), {}, { cursorEnvironment: 'App Dev', permissionMode: 'plan' }))
+      .toBe('/c/launcher cursor --runtime cloud --cloud-repo https://github.com/acme/app --permission-mode plan --resume bc-cloud123')
+  })
+
+  it.each(['App  Dev', '--prompt', '--model', "Dev's --prompt environment"])('restores exact environment %j from session metadata despite lossy process argv', (environment) => {
+    const args = `node /c/server/agent-host/main.ts cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-env ${environment} --model auto --prompt do work`
+    const command = buildChatResumeCommand('bc-cloud123', '/c/launcher', launchFromProcess('cursor', args, args), {}, { cursorEnvironment: environment, permissionMode: 'plan' })
+    expect(command).toBe(`/c/launcher cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-env ${shellQuote(environment)} --permission-mode plan --resume bc-cloud123`)
+  })
+
   it('preserves cloud flags and the bc id with current picker settings, and recognizes the host command', () => {
-    const args = 'node /c/server/agent-host/main.ts cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud --model old --resume bc-old123 --prompt hello --runtime local'
-    const command = buildChatResumeCommand('bc-cloud123', '/c/scripts/commando-agent', launchFromProcess('cursor', args, args), {}, { model: 'auto', permissionMode: 'plan', prePlanPermissionMode: 'bypassPermissions' })
-    expect(command).toBe('/c/scripts/commando-agent cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud --model auto --permission-mode plan --pre-plan-permission-mode bypassPermissions --resume bc-cloud123')
+    const args = 'node /c/server/agent-host/main.ts cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud --cloud-env App Dev --model old --resume bc-old123 --prompt hello --runtime local'
+    const command = buildChatResumeCommand('bc-cloud123', '/c/scripts/commando-agent', launchFromProcess('cursor', args, args), {}, { cursorEnvironment: 'App Dev', model: 'auto', permissionMode: 'plan', prePlanPermissionMode: 'bypassPermissions' })
+    expect(command).toBe('/c/scripts/commando-agent cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud --cloud-env \'App Dev\' --model auto --permission-mode plan --pre-plan-permission-mode bypassPermissions --resume bc-cloud123')
     expect(isChatResumeCommand(command!)).toBe(true)
     expect(isChatResumeCommand(command!.replace('--runtime cloud', '--runtime=cloud'))).toBe(true)
     expect(isChatResumeCommand(command!.replace('--runtime cloud', '--runtime local'))).toBe(false)

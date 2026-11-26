@@ -1,3 +1,4 @@
+import { CURSOR_CLOUD_ENVIRONMENTS_ROUTE, type CursorCloudEnvironmentsResponse } from '../shared/cursor-cloud-agents'
 import { useHost } from './HostContext'
 import { type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { ChevronRight, GitBranch, Paperclip } from 'lucide-react'
@@ -41,7 +42,7 @@ import {
   type AgentOption,
   type StartWith,
 } from './newSessionAgents'
-import { AgentPicker, NewSessionFastToggle, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
+import { AgentPicker, NewSessionEnvironmentPicker, NewSessionFastToggle, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
 import { isAttachableFile, useOpeningAttachments, type AttachmentUploads } from './useOpeningAttachments'
 import type { SessionNamingApi } from './sessionNamingApi'
 import { cachedClaudeProfiles, rememberClaudeProfiles } from './claudeProfileCache'
@@ -328,6 +329,7 @@ export function TmuxCreateControls({
   const repo = repoProbe && repoProbe.directory === workingDirectory && repoProbe.info.isRepo && repoProbe.info.mainRoot
     ? repoProbe.info
     : null
+  const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
   const unavailable = disabled || pending || namingWith !== null || (probing && (!repo || (agentProvider === 'cursor-chat' && chatLaunch.cursorRuntime === 'cloud')))
   const notRepo = Boolean(probeRepo && workingDirectory && repoProbe && repoProbe.directory === workingDirectory && !repoProbe.info.isRepo)
   const promptAccepted = takesPrompt(agentProvider)
@@ -338,6 +340,36 @@ export function TmuxCreateControls({
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>', repo.worktreesParent) : '')
   const cursorCloud = agentProvider === 'cursor-chat' && chatLaunch.cursorRuntime === 'cloud' && Boolean(repo?.github)
+  const [cloudEnvironments, setCloudEnvironments] = useState<CursorCloudEnvironmentsResponse | null>(null)
+  const [environmentRefresh, setEnvironmentRefresh] = useState(0)
+  const [environmentPick, setEnvironmentPick] = useState<{ repoKey: string | undefined; name: string | undefined } | null>(null)
+  useEffect(() => {
+    if (!cursorCloud) { setCloudEnvironments(null); setEnvironmentRefresh(0); return }
+    let cancelled = false
+    setCloudEnvironments(null)
+    void daemonFetch(`${CURSOR_CLOUD_ENVIRONMENTS_ROUTE}${environmentRefresh ? '?refresh=1' : ''}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Environment request failed')
+        const value = await response.json() as CursorCloudEnvironmentsResponse
+        if (!Array.isArray(value.environments)) throw new Error('Invalid environment response')
+        if (!cancelled) setCloudEnvironments(value)
+      }).catch(() => {
+        if (!cancelled) setCloudEnvironments({ login: 'ok', environments: [], error: 'Unable to load environments.' })
+      })
+    return () => { cancelled = true }
+  }, [cursorCloud, daemonFetch, token, environmentRefresh])
+  const environmentsResolved = cloudEnvironments?.login === 'ok' && !cloudEnvironments.error
+  const explicitEnvironment = environmentPick?.repoKey === repoKey ? environmentPick : null
+  const requestedEnvironment = explicitEnvironment ? explicitEnvironment.name : chatLaunch.cursorEnvironment
+  const cursorEnvironment = environmentsResolved
+    ? cloudEnvironments.environments.find((environment) => environment.name === requestedEnvironment
+      && (explicitEnvironment || environment.repoUrls.some((url) => url.toLowerCase() === repo?.github?.repoUrl.toLowerCase())))?.name
+    : requestedEnvironment
+  const cursorEnvironmentPending = Boolean(cursorCloud && cursorEnvironment && !environmentsResolved)
+  const rememberedCursorEnvironment = cursorCloud ? cursorEnvironment : chatLaunch.cursorEnvironment
+  const environmentMessage = !cloudEnvironments ? 'Loading environments…'
+    : cloudEnvironments.login === 'required' ? 'Log in to Cursor from a Cursor chat to see environments.'
+    : cloudEnvironments.error ?? (!cloudEnvironments.environments.length ? 'No named environments.' : undefined)
   const cloudPermissionMode = chatLaunch.permissionMode === 'plan' ? 'plan' : 'bypassPermissions'
   const permissionMode = cursorCloud ? cloudPermissionMode : chatLaunch.permissionMode
   const worktreeRequested = Boolean(repo && worktreeEnabled && !cursorCloud)
@@ -361,7 +393,6 @@ export function TmuxCreateControls({
   }, [repo?.mainRoot, sessionCreateRequest?.id, openVersion, token])
 
   // The starting agent is remembered per repository; each chat provider keeps its own settings.
-  const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
   const preferenceProvider = isChatLaunchProvider(agentProvider) ? agentProvider : 'claude-chat'
   useEffect(() => {
     setAgentProvider(loadStartWith(repoKey))
@@ -371,6 +402,7 @@ export function TmuxCreateControls({
   }, [repoKey])
   useEffect(() => {
     setChatLaunch(loadChatLaunch(repoKey, preferenceProvider, host))
+    setEnvironmentPick(null)
   }, [repoKey, preferenceProvider])
 
   // Profiles name the Claude rows of the Agent menu. The last list shows straight away and
@@ -608,7 +640,7 @@ export function TmuxCreateControls({
       return
     }
     // ⌘↵ submits without the button, so its disabled state is checked here too.
-    if (partialCreationRef.current || attachments.uploading || unavailable || chatProfilesLoading) return
+    if (partialCreationRef.current || attachments.uploading || unavailable || chatProfilesLoading || cursorEnvironmentPending) return
     const formElement = event.currentTarget
     setError('')
     setStatus('')
@@ -644,7 +676,7 @@ export function TmuxCreateControls({
         const model = chatProvider && selectedModel !== 'default' ? selectedModel : undefined
         request.agent = {
           provider: agentProvider,
-          ...(cursorCloud && repo?.github ? { cursorCloud: { repoUrl: repo.github.repoUrl, ref: repo.github.ref } } : {}),
+          ...(cursorCloud && repo?.github ? { cursorCloud: { repoUrl: repo.github.repoUrl, ref: repo.github.ref, ...(cursorEnvironment ? { environment: cursorEnvironment } : {}) } } : {}),
           ...(promptAccepted && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
           ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
           ...(model ? { model } : {}),
@@ -653,7 +685,7 @@ export function TmuxCreateControls({
           ...(agentProvider === 'claude-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
           ...(usesClaudeProfile(agentProvider) && claudeConfigDir ? { configDir: claudeConfigDir } : {}),
         }
-        if (isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat') saveChatLaunch(repoKey, { permissionMode, ...(agentProvider === 'cursor-chat' ? { cursorRuntime: cursorCloud ? 'cloud' as const : 'local' as const } : {}) }, agentProvider, host)
+        if (isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat') saveChatLaunch(repoKey, { permissionMode, ...(agentProvider === 'cursor-chat' ? { cursorRuntime: cursorCloud ? 'cloud' as const : 'local' as const, ...(rememberedCursorEnvironment ? { cursorEnvironment: rememberedCursorEnvironment } : {}) } : {}) }, agentProvider, host)
         if (usesClaudeProfile(agentProvider)) {
           // Keep a remembered profile even when the list could not be loaded this time.
           const remembered = agentProvider === 'claude-chat' ? chatLaunch : loadChatLaunch(repoKey, 'claude-chat', host)
@@ -795,8 +827,10 @@ export function TmuxCreateControls({
           </div>
           {cursorCloud && repo?.github ? (
             <>
-              <p className="tmux-create__cloud-repo">{repo.github.repoUrl.replace('https://github.com/', '')} · from {repo.github.ref}</p>
-              {!repo.github.pushed || repo.github.ahead > 0 || repo.github.behind > 0 ? <p className="tmux-create__message is-warning">Cursor's cloud starts from {repo.github.remote}/{repo.github.ref}; local commits that aren't pushed won't be there.</p> : null}
+              {cursorEnvironment ? <p className="tmux-create__cloud-repo">Repos and starting branches come from {cursorEnvironment}.</p> : <>
+                <p className="tmux-create__cloud-repo">{repo.github.repoUrl.replace('https://github.com/', '')} · from {repo.github.ref}</p>
+                {!repo.github.pushed || repo.github.ahead > 0 || repo.github.behind > 0 ? <p className="tmux-create__message is-warning">Cursor's cloud starts from {repo.github.remote}/{repo.github.ref}; local commits that aren't pushed won't be there.</p> : null}
+              </>}
             </>
           ) : null}
         </div>
@@ -831,6 +865,19 @@ export function TmuxCreateControls({
             onPick={(value) => { if (catalogKey) setModelPick({ key: catalogKey, value }) }}
           />
         ) : null}
+        {cursorCloud && repo?.github ? <NewSessionEnvironmentPicker
+          environments={cloudEnvironments?.environments ?? []}
+          selected={cursorEnvironment}
+          pending={cursorEnvironmentPending}
+          onRefresh={cloudEnvironments && (cloudEnvironments.error || cloudEnvironments.login === 'required') ? () => setEnvironmentRefresh((version) => version + 1) : undefined}
+          repoUrl={repo.github.repoUrl}
+          message={environmentMessage}
+          disabled={unavailable}
+          onPick={(cursorEnvironment) => {
+            setEnvironmentPick({ repoKey, name: cursorEnvironment })
+            setChatLaunch((current) => ({ ...current, cursorEnvironment }))
+          }}
+        /> : null}
         {fastAvailable ? (
           <NewSessionFastToggle on={fast} disabled={unavailable} onToggle={() => setFastPick(!fast)} />
         ) : null}
@@ -1108,7 +1155,7 @@ export function TmuxCreateControls({
             Open created session {partialCreation.response.created.paneId}
           </button>
         ) : null}
-        <button ref={submitRef} className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading}>
+        <button ref={submitRef} className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading || cursorEnvironmentPending}>
           {submitLabel}
           {namingWith ? <kbd aria-hidden="true">⌘↵ to skip</kbd> : pending || attachments.uploading ? null : <kbd aria-hidden="true">⌘↵</kbd>}
         </button>

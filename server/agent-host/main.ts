@@ -1,3 +1,4 @@
+import { isCursorEnvironmentName } from '../../shared/cursor-cloud-agents.js'
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
@@ -29,6 +30,7 @@ Options:
   --resume ID                      Resume an existing provider session
   --runtime local|cloud            Cursor runtime (default: local)
   --cloud-repo URL                 Cloud repository: https://github.com/owner/repo
+  --cloud-env NAME                 Cloud environment (optional)
   --cloud-ref REF                  Cloud starting branch or ref (optional)
   --model MODEL                    Model to use
   --effort LEVEL                   low | medium | high | xhigh | max
@@ -59,6 +61,7 @@ export interface HostArgs {
   runtime?: 'local' | 'cloud'
   cloudRepo?: string
   cloudRef?: string
+  cloudEnv?: string
   configDir?: string
   resume?: string
   model?: string
@@ -105,12 +108,16 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
           break
         }
         case '--cloud-repo':
+        case '--cloud-env':
         case '--cloud-ref': {
           if (provider !== 'cursor') return `${flag} is only for cursor\n\n${USAGE}`
-          const input = needValue()
+          const input = flag === '--cloud-env' ? needValue(true) : needValue()
           if (flag === '--cloud-repo') {
             if (!/^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/.test(input) || input !== input.trim() || input.endsWith('.git') || /\/(?:\.|\.\.)$/.test(input)) return `Invalid cloud repository: ${input}\n\n${USAGE}`
             args.cloudRepo = input
+          } else if (flag === '--cloud-env') {
+            if (!isCursorEnvironmentName(input)) return `Invalid cloud environment\n\n${USAGE}`
+            args.cloudEnv = input
           } else {
             if (!/^[A-Za-z0-9._/-]{1,200}$/.test(input) || input !== input.trim() || input.startsWith('-') || input.includes('..')) return `Invalid cloud ref: ${input}\n\n${USAGE}`
             args.cloudRef = input
@@ -180,7 +187,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
   }
   if (args.resume && !/^[A-Za-z0-9-]{8,80}$/.test(args.resume)) return `Invalid session id: ${args.resume}`
   if (args.runtime === 'cloud' && !args.cloudRepo) return '--cloud-repo is required with --runtime cloud'
-  if (args.runtime !== 'cloud' && (args.cloudRepo !== undefined || args.cloudRef !== undefined)) return '--cloud-repo and --cloud-ref require --runtime cloud'
+  if (args.runtime !== 'cloud' && (args.cloudRepo !== undefined || args.cloudRef !== undefined || args.cloudEnv !== undefined)) return '--cloud-repo, --cloud-ref and --cloud-env require --runtime cloud'
   return args
 }
 
@@ -205,6 +212,7 @@ export function sessionFlags(args: HostArgs): string[] {
     ...(args.runtime ? ['--runtime', args.runtime] : []),
     ...(args.cloudRepo ? ['--cloud-repo', args.cloudRepo] : []),
     ...(args.cloudRef ? ['--cloud-ref', args.cloudRef] : []),
+    ...(args.cloudEnv ? ['--cloud-env', args.cloudEnv] : []),
     ...(args.configDir ? ['--config-dir', args.configDir] : []),
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
@@ -323,7 +331,7 @@ async function main(): Promise<void> {
       paneId,
       cwd: process.cwd(),
       permissionMode: parsed.permissionMode,
-      ...(parsed.runtime === 'cloud' ? { cursorCloud: { repoUrl: parsed.cloudRepo!, ...(parsed.cloudRef ? { startingRef: parsed.cloudRef } : {}) } } : {}),
+      ...(parsed.runtime === 'cloud' ? { cursorCloud: { repoUrl: parsed.cloudRepo!, ...(parsed.cloudRef ? { startingRef: parsed.cloudRef } : {}), ...(parsed.cloudEnv ? { environment: parsed.cloudEnv } : {}) } } : {}),
       ...(parsed.prePlanPermissionMode ? { prePlanPermissionMode: parsed.prePlanPermissionMode } : {}),
       env: process.env,
       ...(parsed.configDir ? { configDir: parsed.configDir } : {}),

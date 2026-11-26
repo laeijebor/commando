@@ -38,7 +38,7 @@ export type SessionAgentLaunch = {
   provider: SessionAgentProvider
   prompt?: string
   /** Cursor chat only: start from a pushed GitHub branch in Cursor's VM; ref may be omitted when resuming. */
-  cursorCloud?: { repoUrl: string; ref?: string }
+  cursorCloud?: { repoUrl: string; ref?: string; environment?: string }
   /** claude-chat and claude: the Claude config dir (`~/.claudep`, `~/.claudew`) that picks the login. */
   configDir?: string
   /** Chat providers, claude and codex: the model to start on (a picker value such as `sonnet` or `gpt-6.1-sol`). */
@@ -159,7 +159,7 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' && launch.fullAccess === true ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),
       ...(launch.images ?? []).flatMap((image) => ['--image', chatImageArg(image)]),
-      ...(launch.provider === 'cursor-chat' && launch.cursorCloud ? ['--runtime', 'cloud', '--cloud-repo', launch.cursorCloud.repoUrl, ...(launch.cursorCloud.ref ? ['--cloud-ref', launch.cursorCloud.ref] : [])] : []),
+      ...(launch.provider === 'cursor-chat' && launch.cursorCloud ? ['--runtime', 'cloud', '--cloud-repo', launch.cursorCloud.repoUrl, ...(launch.cursorCloud.ref ? ['--cloud-ref', launch.cursorCloud.ref] : []), ...(launch.cursorCloud.environment ? ['--cloud-env', launch.cursorCloud.environment] : [])] : []),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]

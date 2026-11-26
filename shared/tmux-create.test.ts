@@ -151,8 +151,8 @@ it('launches DeepSeek without inheriting Claude profile or readable-directory fl
 })
 
 it('puts Cursor cloud flags before the final literal prompt', () => {
-  expect(sessionAgentArgv({ provider: 'cursor-chat', cursorCloud: { repoUrl: 'https://github.com/acme/app', ref: 'feature/cloud' }, permissionMode: 'plan', prompt: '--runtime local\nFix it' })).toEqual([
-    'commando-agent', 'cursor', '--permission-mode', 'plan', '--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app', '--cloud-ref', 'feature/cloud', '--prompt', '--runtime local\nFix it',
+  expect(sessionAgentArgv({ provider: 'cursor-chat', cursorCloud: { repoUrl: 'https://github.com/acme/app', ref: 'feature/cloud', environment: 'App Dev' }, permissionMode: 'plan', prompt: '--runtime local\nFix it' })).toEqual([
+    'commando-agent', 'cursor', '--permission-mode', 'plan', '--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app', '--cloud-ref', 'feature/cloud', '--cloud-env', 'App Dev', '--prompt', '--runtime local\nFix it',
   ])
   expect(sessionAgentArgv({ provider: 'cursor-chat' })).not.toContain('--runtime')
 })

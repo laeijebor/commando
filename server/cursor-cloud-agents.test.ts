@@ -1,3 +1,4 @@
+import { CursorCloudEnvironmentsApi } from './cursor-cloud-environments.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
@@ -11,7 +12,7 @@ function setup() {
   let now = 0
   const chats: ChatSessionInfo[] = []
   const panes = [{ id: '%1', path: '/repo/sub', dead: false }] as TmuxPane[]
-  const agent = { agentId: id, name: 'Fix cloud', summary: 'A summary', repos: ['https://github.com/acme/app'], lastModified: 123, createdAt: 100, metadata: { commando: '' } }
+  const agent = { agentId: id, name: 'Fix cloud', summary: 'A summary', env: { type: 'cloud', name: 'App Dev' }, repos: ['https://github.com/acme/app'], lastModified: 123, createdAt: 100, metadata: { commando: '' } }
   const sdk = {
     list: vi.fn<CursorCloudAgentsSdk['list']>().mockResolvedValue({ items: [agent], nextCursor: 'next' }),
     get: vi.fn<CursorCloudAgentsSdk['get']>().mockResolvedValue(agent),
@@ -50,7 +51,7 @@ describe('Cursor cloud agent list', () => {
     expect(f.loadSdk).not.toHaveBeenCalled()
     f.chats.push({ sessionId: id, paneId: '%4' } as ChatSessionInfo)
     expect(await f.call()).toEqual({ status: 200, body: { login: 'ok', more: true, agents: [{
-      agentId: id, name: 'Fix cloud', summary: 'A summary', repoUrl: 'https://github.com/acme/app', lastModified: 123, createdAt: 100,
+      agentId: id, name: 'Fix cloud', summary: 'A summary', environment: 'App Dev', repoUrl: 'https://github.com/acme/app', lastModified: 123, createdAt: 100,
       startedInCommando: true, openPaneId: '%4', status: 'running', branch: 'fix/cloud', prUrl: 'https://github.com/acme/app/pull/1', webUrl: `https://cursor.com/agents/${id}`,
     }] } })
     expect(f.sdk.list).toHaveBeenCalledWith({ runtime: 'cloud', limit: 50 })
@@ -156,5 +157,88 @@ describe('open Cursor cloud agent', () => {
     const f = setup()
     expect((await f.call(`/${badId}/open`, 'POST')).status).toBe(400)
     expect(f.loadSdk).not.toHaveBeenCalled()
+  })
+})
+
+describe('Cursor cloud environments endpoint', () => {
+  function environmentsFixture() {
+    let now = 0
+    const loadKey = vi.fn<() => Promise<string | undefined>>().mockResolvedValue('secret-api-key')
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ items: [] })))
+    const api = new CursorCloudEnvironmentsApi({ fetch: fetcher, loadKey, now: () => now })
+    const call = async (query = '', method = 'GET') => {
+      const result = { status: 0, body: {} as Record<string, unknown> }
+      const response = { writeHead: (status: number) => { result.status = status }, end: (body: string) => { result.body = JSON.parse(body) } } as ServerResponse
+      expect(await api.handle({ method } as IncomingMessage, response, new URL(`http://x/api/cursor-cloud-environments${query}`))).toBe(true)
+      return result
+    }
+    return { api, fetcher, loadKey, call, time: (value: number) => { now = value } }
+  }
+  it('lists only named environments, normalises repos and follows pagination with bearer auth', async () => {
+    const f = environmentsFixture()
+    f.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ items: [
+      { id: 'named', name: 'App Dev', repos: [{ url: 'git@github.com:Acme/App.git' }, { url: 'https://gitlab.com/no/repo' }] },
+      { id: 'unnamed', repos: [] }, { id: 'empty', name: '', repos: [] },
+    ], nextCursor: 'page +2' }))).mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ id: 'second', name: 'Shared', repos: [{ url: 'https://github.com/acme/other.git' }] }] })))
+    expect(await f.call()).toEqual({ status: 200, body: { login: 'ok', environments: [
+      { id: 'named', name: 'App Dev', repoUrls: ['https://github.com/Acme/App'] },
+      { id: 'second', name: 'Shared', repoUrls: ['https://github.com/acme/other'] },
+    ] } })
+    expect(String(f.fetcher.mock.calls[0][0])).toBe('https://api.cursor.com/v1/environments')
+    expect(new URL(String(f.fetcher.mock.calls[1][0])).searchParams.get('cursor')).toBe('page +2')
+    expect(f.fetcher.mock.calls[0][1]).toMatchObject({ headers: { Authorization: 'Bearer secret-api-key' }, redirect: 'error' })
+  })
+  it('caches five minutes, coalesces requests, bypasses with refresh and rate limits it', async () => {
+    const f = environmentsFixture()
+    await Promise.all([f.api.list(), f.api.list()])
+    f.time(4999); await f.call('?refresh=1')
+    expect(f.fetcher).toHaveBeenCalledTimes(1)
+    f.time(5000); await f.call('?refresh=1')
+    expect(f.fetcher).toHaveBeenCalledTimes(2)
+    f.time(304999); await f.api.list()
+    expect(f.fetcher).toHaveBeenCalledTimes(2)
+    f.time(305000); await f.api.list()
+    expect(f.fetcher).toHaveBeenCalledTimes(3)
+  })
+  it.each(['error', 'login'] as const)('caches %s responses for at most five seconds and recovers without forced refresh', async (outcome) => {
+    const f = environmentsFixture()
+    f.fetcher.mockResolvedValueOnce(new Response('unavailable', { status: outcome === 'login' ? 401 : 500 }))
+    const first = await f.api.list()
+    if (outcome === 'login') expect(first.login).toBe('required')
+    else expect(first.error).toMatch(/Unable to load/)
+    f.time(4999)
+    expect(await f.api.list()).toEqual(first)
+    expect(f.fetcher).toHaveBeenCalledTimes(1)
+    f.time(5000)
+    expect(await f.api.list()).toEqual({ login: 'ok', environments: [] })
+    expect(f.fetcher).toHaveBeenCalledTimes(2)
+  })
+  it.each([401, 403])('returns login required for HTTP %s without leaking response diagnostics', async (status) => {
+    const f = environmentsFixture()
+    f.fetcher.mockResolvedValue(new Response('secret-api-key', { status }))
+    expect(await f.call()).toEqual({ status: 200, body: { login: 'required', environments: [] } })
+  })
+  it.each(['fetch', 'loadKey', 'http', 'pagination'])('never returns or logs credentials on %s failures', async (failure) => {
+    const f = environmentsFixture()
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      if (failure === 'fetch') f.fetcher.mockRejectedValue(new Error('secret-api-key'))
+      if (failure === 'loadKey') f.loadKey.mockRejectedValue(new Error('secret-api-key'))
+      if (failure === 'http') f.fetcher.mockResolvedValue(new Response('secret-api-key', { status: 500 }))
+      if (failure === 'pagination') f.fetcher.mockImplementation(async () => new Response(JSON.stringify({ items: [], nextCursor: 'repeat' })))
+      const result = await f.call()
+      expect(result.body.error).toMatch(/Unable to load/)
+      expect(JSON.stringify(result)).not.toContain('secret-api-key')
+      expect(log).not.toHaveBeenCalled()
+      expect(warn).not.toHaveBeenCalled()
+    } finally { log.mockRestore(); warn.mockRestore() }
+  })
+  it('requires login without a key and rejects non-GET methods without fetching', async () => {
+    const f = environmentsFixture()
+    f.loadKey.mockResolvedValue(undefined)
+    expect(await f.api.list()).toEqual({ login: 'required', environments: [] })
+    expect((await f.call('', 'POST')).status).toBe(405)
+    expect(f.fetcher).not.toHaveBeenCalled()
   })
 })

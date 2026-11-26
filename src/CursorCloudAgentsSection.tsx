@@ -37,6 +37,7 @@ export function CursorCloudAgentsSection({ store, onFocusPane }: {
         return <article key={agent.agentId} className="cursor-cloud-agent">
           <div className="cloud-task-copy"><strong>{agent.name}</strong>
             <small>{repoUrl ? <a href={repoUrl} target="_blank" rel="noopener noreferrer">{repo}</a> : repo ?? 'Repository unknown'}</small>
+            {agent.environment && <small>{agent.environment}</small>}
             <div className="cursor-cloud-agent-meta"><span className="cursor-cloud-status" data-status={agent.status}>{agent.status ? statusLabels[agent.status] : 'Unknown'}</span>
               <time dateTime={new Date(agent.lastModified).toISOString()}>{relativeTime(agent.lastModified)}</time>
               {!agent.startedInCommando && <span>Started elsewhere</span>}

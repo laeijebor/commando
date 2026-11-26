@@ -1,3 +1,4 @@
+import { isCursorEnvironmentName } from '../shared/cursor-cloud-agents.js'
 import { basename, dirname, join } from 'node:path'
 import { isChatProvider, type ChatProvider } from '../shared/agent-chat.js'
 import type { AgentProvider } from '../shared/protocol.js'
@@ -302,6 +303,7 @@ const CHAT_BYPASS_FLAGS = new Set(['--dangerously-skip-permissions', '--allow-da
 
 /** A running chat's model, effort, speed and modes, which its resume carries instead of the launch flags. */
 export type ChatResumeSettings = {
+  cursorEnvironment?: string
   model?: string
   effort?: string
   fast?: boolean
@@ -364,10 +366,35 @@ export function buildChatResumeCommand(
   if (entry < 0 || !isChatProvider(provider)) return null
   // Commando puts --prompt last; everything after it is prompt text, never flags.
   const rest = launch.args.slice(entry + 2)
+  // Process inspection loses argument boundaries. The host's metadata retains the
+  // exact environment name. Keep it opaque while parsing flags and prompt text.
+  let environment: string | undefined
+  if (provider === 'cursor' && isCursorEnvironmentName(settings?.cursorEnvironment)) {
+    const name = settings.cursorEnvironment
+    const at = rest.indexOf('--cloud-env')
+    const words = name.split(/\s+/u)
+    const count = rest[at + 1] === name ? 1 : words.length
+    const promptAt = rest.indexOf('--prompt')
+    if (at >= 0 && (promptAt < 0 || at < promptAt) && (rest[at + 1] === name || rest.slice(at + 1, at + 1 + count).join(' ') === words.join(' '))) {
+      environment = name
+      rest.splice(at + 1, count, 'commando-cursor-environment')
+    }
+  }
+  if (provider === 'cursor' && !environment) {
+    const at = rest.indexOf('--cloud-env')
+    const promptAt = rest.indexOf('--prompt')
+    if (at >= 0 && (promptAt < 0 || at < promptAt)) {
+      // Process argv cannot identify the end of a free-text environment name.
+      // The launcher puts this flag last, before the prompt: omit that uncertain
+      // tail rather than save a truncated name or treat its words as flags.
+      rest.splice(at)
+    }
+  }
   const promptAt = rest.indexOf('--prompt')
-  const chatFlags = provider === 'cursor' ? { bare: ['--fast'], single: ['--model', '--effort', '--permission-mode', '--pre-plan-permission-mode', '--runtime', '--cloud-repo', '--cloud-ref'], dropped: ['--resume'] } : CHAT_FLAGS
+  const chatFlags = provider === 'cursor' ? { bare: ['--fast'], single: ['--model', '--effort', '--permission-mode', '--pre-plan-permission-mode', '--runtime', '--cloud-repo', '--cloud-ref', '--cloud-env'], dropped: ['--resume'] } : CHAT_FLAGS
   const launched = carriedFlags(chatFlags, promptAt < 0 ? rest : rest.slice(0, promptAt))
   const flags = settings ? withChatSettings(launched, provider === 'cursor' ? { ...settings, bypassAllowed: false } : settings) : launched
+  if (environment) flags[flags.indexOf('--cloud-env') + 1] = environment
   if (provider === 'claude' && !flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
   // A shell restored by tmux may not know which daemon to report to.
   const env = Object.entries(daemonEnv)
