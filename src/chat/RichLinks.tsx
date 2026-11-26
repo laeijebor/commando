@@ -255,8 +255,9 @@ function Card({ link, icon, title, detail, meta, description, viewRef }: {
     <div className="chat-resource-card-content min-w-0 flex-1">
       <div className="chat-resource-title truncate" title={title}>
         <span className="font-medium text-foreground">{title}</span>
-        {rest.hasContent ? <><span className="text-muted-foreground"> · </span><span className="chat-resource-description text-muted-foreground">{rest.content}</span></> : null}
       </div>
+      {/* The agent's note wraps in full, as on file cards. */}
+      {rest.hasContent ? <div className="chat-resource-description text-muted-foreground">{rest.content}</div> : null}
       <div className="chat-resource-directory truncate font-mono text-muted-foreground" title={link.url}>{detail}</div>
       {notice ? <div role="status" className="text-xs text-muted-foreground">{notice}</div> : null}
     </div>
