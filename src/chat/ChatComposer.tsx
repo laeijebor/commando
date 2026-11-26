@@ -57,7 +57,7 @@ import { useNow } from './Subagents'
 import { shortPath, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
-import { loadDraft, saveDraft } from './draftStore'
+import { CHAT_SEND_REFUSAL_MS, loadDraft, saveDraft } from './draftStore'
 import type { AsideReportDraft } from './AsideReport'
 
 /** What the composer asks of the app for `@`, `#` and images. */
@@ -79,7 +79,7 @@ export interface ChatSendError {
 }
 
 /** How long the app matches a refusal to its send; the composer keeps a sent draft as long. */
-export const CHAT_SEND_REFUSAL_MS = 30_000
+export { CHAT_SEND_REFUSAL_MS } from './draftStore'
 
 type RequestItem = Extract<ChatItem, { kind: 'request' }>
 type TodoItem = Extract<ChatItem, { kind: 'todo_list' }>
