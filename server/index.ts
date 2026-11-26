@@ -152,6 +152,7 @@ import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideo
 import { ChatReplyResources } from './chat-reply-resources.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatReplyDiagrams } from './chat-reply-diagrams.js'
+import { ChatReplyEmbeds } from './chat-reply-embeds.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
 import { asideSessionIds, isMainChatKey, PersistedAsideSessions } from './chat-main-key.js'
 import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
@@ -1055,6 +1056,7 @@ async function main(): Promise<void> {
   const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
   const replyResources = new ChatReplyResources(undefined, (message) => console.warn(`[chat-resources] ${message}`))
   const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
+  const replyEmbeds = new ChatReplyEmbeds({ artifacts: redlineArtifacts, log: (message) => console.warn(`[chat-embeds] ${message}`) })
   const replyDiagrams = new ChatReplyDiagrams(chatImages, { log: (message) => console.warn(`[chat-diagrams] ${message}`) })
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
@@ -1094,7 +1096,8 @@ async function main(): Promise<void> {
     log: (message) => console.log(message),
     handoffs: chatHandoffs,
     replyResources: (items, cwd) => replyResources.attach(items, cwd),
-    replyImages: (items, cwd) => replyImages.attach(items, cwd),
+    // HTML mock-ups and canvas boards use image syntax too, so they resolve with the images.
+    replyImages: async (items, cwd) => replyEmbeds.attach(await replyImages.attach(items, cwd), cwd),
     replyDiagrams: (items) => replyDiagrams.attach(items),
     onHandoffsChange: () => publishChatHandoffs(),
   })

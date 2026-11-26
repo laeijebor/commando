@@ -93,6 +93,15 @@ describe('ChatReplyImages', () => {
     expect(logs).toEqual([expect.stringContaining('disk full')])
   })
 
+  it('leaves HTML mock-ups and canvas manifests to the embed resolver', async () => {
+    await writeFile(join(dir, 'mock.html'), '<h1>Mock</h1>')
+    await writeFile(join(dir, 'canvas.json'), '{}')
+    const save = vi.spyOn(store, 'saveReplyImage')
+    const [item] = await images.attach([reply('![m](mock.html) ![c](canvas.json)')], dir)
+    expect(item).not.toHaveProperty('images')
+    expect(save).not.toHaveBeenCalled()
+  })
+
   it('finds a percent-encoded path', async () => {
     await writeFile(join(dir, 'my shot.png'), PNG)
     const [item] = await images.attach([reply(`![a](${join(dir, 'my%20shot.png')}) ![b](${pathToFileURL(join(dir, 'my shot.png')).href})`)], dir)

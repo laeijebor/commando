@@ -85,7 +85,8 @@ export class ChatReplyImages {
     const images: ChatReplyImage[] = []
     for (const src of markdownImageSources(item.text).slice(0, MAX_IMAGES_PER_REPLY)) {
       const path = localImagePath(src, cwd, this.home)
-      if (!path) continue
+      // HTML mock-ups and canvas manifests are embeds (chat-reply-embeds.ts), never read as images.
+      if (!path || /\.(?:html?|json)$/i.test(path)) continue
       const resolved = await this.resolve(path)
       // A relative or ~/ address: the notice says where the daemon looked. A stored
       // image names its file, so the renderer can reveal it or open it as a tile.
