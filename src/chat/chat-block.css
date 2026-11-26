@@ -166,7 +166,7 @@ svg.chat-block-icon { flex-shrink: 0; width: 14px; height: 14px; color: var(--ac
 .chat-embed[data-maximised] > .chat-block-bar .chat-block-title b { color: var(--text); font-size: 13px; font-weight: 600; }
 .chat-embed[data-maximised] > .chat-block-body { display: flex; flex-direction: column; overflow: hidden; }
 .chat-embed[data-maximised] .chat-embed-stage { flex: 1; height: auto; }
-/* The timeline is size-contained, which would make it the overlay's (scrolling) containing block. */
+/* The timeline is size-contained, which would make it the overlay's (scrolling, clipping) containing block. */
 .chat-timeline:has(.chat-embed[data-maximised]) { container-type: normal; }
 
 /* Canvas boards: a strip of scaled frame thumbnails; maximised, frame tabs over one live frame. */

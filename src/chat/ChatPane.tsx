@@ -484,7 +484,7 @@ function ChatColumn({
         pressedRange.current = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null
       }
       onFocus()
-    }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+    }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane" data-chat-overlay-root="">
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />

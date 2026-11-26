@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatReplyEmbed } from '../../shared/agent-chat'
@@ -27,7 +27,7 @@ describe('EmbedFrame: HTML mock-up', () => {
     const block = screen.getByRole('figure', { name: 'Accounts mock-up' })
     expect(block).toHaveTextContent('Accounts mock-up · Accounts.html · .canvas/settings')
     const frame = within(block).getByTitle('Accounts mock-up')
-    expect(frame).toHaveAttribute('src', html.url)
+    expect(frame).toHaveAttribute('src', `${html.url}?chat-embed=1`)
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
     expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer')
     expect(frame).toHaveAttribute('loading', 'lazy')
@@ -52,7 +52,7 @@ describe('EmbedFrame: HTML mock-up', () => {
   })
 
   it('maximises over the chat pane, live, and restores with Esc or Restore', () => {
-    const { container } = render(<section data-testid="chat-pane"><EmbedFrame embed={html} alt="Accounts" cwd={cwd} onAction={tileAction()} /></section>)
+    const { container } = render(<section data-chat-overlay-root=""><EmbedFrame embed={html} alt="Accounts" cwd={cwd} onAction={tileAction()} /></section>)
     const frame = screen.getByTitle('Accounts')
     fireEvent.click(screen.getByRole('button', { name: 'Maximise' }))
     const block = container.querySelector('.chat-embed')!
@@ -70,6 +70,43 @@ describe('EmbedFrame: HTML mock-up', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Maximise' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restore (Esc)' }))
     expect(block).not.toHaveAttribute('data-maximised')
+  })
+
+  it('restores on Esc relayed from its own frame only, and moves focus to Restore and back', () => {
+    const { container } = render(<section data-chat-overlay-root=""><EmbedFrame embed={html} alt="Accounts" cwd={cwd} /></section>)
+    const block = container.querySelector('.chat-embed')!
+    const frame = screen.getByTitle('Accounts') as HTMLIFrameElement
+    const escape = (source: MessageEventSource | null, data: unknown = { source: 'commando-canvas-frame', frameId: 'chat-embed', type: 'escape' }) =>
+      act(() => { window.dispatchEvent(new MessageEvent('message', { data, source })) })
+    fireEvent.click(screen.getByRole('button', { name: 'Maximise' }))
+    expect(screen.getByRole('button', { name: 'Restore (Esc)' })).toHaveFocus()
+    // Another window, or another message from the frame, changes nothing.
+    escape(window)
+    escape(frame.contentWindow, { source: 'commando-canvas-frame', type: 'goto', target: 'x' })
+    expect(block).toHaveAttribute('data-maximised')
+    escape(frame.contentWindow)
+    expect(block).not.toHaveAttribute('data-maximised')
+    expect(screen.getByRole('button', { name: 'Maximise' })).toHaveFocus()
+  })
+
+  it('covers the timeline when no overlay root is marked, and keeps its place in the reply', () => {
+    const view = <div className="chat-timeline"><p>Before</p><EmbedFrame embed={html} alt="Accounts" cwd={cwd} /></div>
+    const { container, rerender } = render(view)
+    const timeline = container.querySelector<HTMLElement>('.chat-timeline')!
+    timeline.getBoundingClientRect = () => ({ top: 40, left: 30, width: 600, height: 500, right: 630, bottom: 540, x: 30, y: 40, toJSON: () => ({}) })
+    const anchor = container.querySelector<HTMLElement>('.chat-embed-anchor')!
+    Object.defineProperty(anchor, 'offsetHeight', { configurable: true, get: () => 358 })
+    // The inline height is read as the block renders inline.
+    rerender(<div className="chat-timeline"><p>Before</p><EmbedFrame embed={{ ...html }} alt="Accounts" cwd={cwd} onAction={tileAction()} /></div>)
+    fireEvent.click(screen.getByRole('button', { name: 'Maximise' }))
+    expect(anchor.style.getPropertyValue('--chat-embed-max-width')).toBe('600px')
+    expect(anchor.style.getPropertyValue('--chat-embed-max-height')).toBe('500px')
+    expect(anchor.style.getPropertyValue('--chat-embed-max-top')).toBe('40px')
+    expect(anchor.style.height).toBe('358px')
+    expect(timeline.style.getPropertyValue('--chat-timeline-width')).not.toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'Restore (Esc)' }))
+    expect(anchor.style.height).toBe('')
+    expect(timeline.style.getPropertyValue('--chat-timeline-width')).toBe('')
   })
 
   it('moves to a tile and opens a chromium tile for review', async () => {
@@ -123,7 +160,7 @@ describe('EmbedFrame: canvas board', () => {
 
   it('maximises a clicked frame with tabs to switch, and moves the board to a canvas tile', async () => {
     const onAction = tileAction()
-    const { container } = render(<section data-testid="chat-pane"><EmbedFrame embed={canvas} alt="Board" cwd={cwd} onAction={onAction} /></section>)
+    const { container } = render(<section data-chat-overlay-root=""><EmbedFrame embed={canvas} alt="Board" cwd={cwd} onAction={onAction} /></section>)
     fireEvent.click(screen.getByRole('button', { name: 'Open frame 2: Accounts · teal' }))
     expect(container.querySelector('.chat-embed')).toHaveAttribute('data-maximised')
     const tabs = screen.getByRole('tablist', { name: 'Board frames' })
@@ -147,7 +184,7 @@ describe('embeds in a streaming reply', () => {
     }
     rerender(<Markdown text={`${text}\n\nDone.`} embeds={[{ ...html }]} />)
     expect(screen.getByTitle('Accounts')).toBe(frame)
-    expect(frame).toHaveAttribute('src', html.url)
+    expect(frame).toHaveAttribute('src', `${html.url}?chat-embed=1`)
     // Still live: the block itself was not remounted.
     expect(screen.getByText('Live')).toBeInTheDocument()
   })

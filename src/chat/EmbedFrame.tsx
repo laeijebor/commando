@@ -4,6 +4,7 @@ import type { ChatReplyEmbed, ChatReplyEmbedFrame, ChatReplyResource } from '../
 import { useHost } from '../HostContext'
 import type { ResourceActionHandler, ResourceActionOptions } from '../paneManagementApi'
 import { ChatBlock, useTransientStatus, type ChatBlockAction } from './ChatBlock'
+import { readCanvasFrameInput } from '../canvasFrameBridge'
 import { ResourceChip, resourceDirectory } from './ResourceChip'
 
 /**
@@ -31,20 +32,45 @@ type Props = {
 
 const fileName = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path
 
+/** Asks the artifact route to add the Esc relay (server/static/embed-frame.js); embed URLs carry no query of their own. */
+const withEscRelay = (url: string) => `${url}?chat-embed=1`
+
 /**
- * While maximised, the block covers the chat pane. The pane sits inside
+ * While maximised, the block covers the chat (the element marked
+ * `data-chat-overlay-root`, else the timeline). That area sits inside
  * size-contained boxes (tiles, the timeline), which are the containing block
  * for `position: fixed`, so this measures that block and offsets the overlay
- * onto the pane's rectangle instead of the window's.
+ * onto the area's rectangle instead of the window's. The anchor keeps the
+ * block's inline height meanwhile, so the reply doesn't reflow under it, and
+ * focus moves to Restore and back to Maximise.
  */
-function useChatPaneOverlay(anchor: RefObject<HTMLSpanElement | null>, maximised: boolean) {
+function useMaximisedOverlay(anchor: RefObject<HTMLSpanElement | null>, maximised: boolean) {
+  const inlineHeight = useRef(0)
+  const wasMaximised = useRef(false)
+  useLayoutEffect(() => {
+    if (!maximised && anchor.current) inlineHeight.current = anchor.current.offsetHeight
+  })
   useLayoutEffect(() => {
     const host = anchor.current
     const block = host?.firstElementChild as HTMLElement | null
-    const pane = host?.closest<HTMLElement>('[data-testid="chat-pane"]')
-    if (!maximised || !host || !block || !pane) return
+    const focus = (label: string) => host?.querySelector<HTMLButtonElement>(`.chat-block-bar button[aria-label="${label}"]`)?.focus({ preventScroll: true })
+    if (!maximised) {
+      if (wasMaximised.current) focus('Maximise')
+      wasMaximised.current = false
+      return
+    }
+    wasMaximised.current = true
+    const root = host?.closest<HTMLElement>('[data-chat-overlay-root]') ?? host?.closest<HTMLElement>('.chat-timeline')
+    if (!host || !block || !root) return
+    host.style.height = `${inlineHeight.current}px`
+    // The timeline stops being a size container meanwhile (chat-block.css); replies keep their table width.
+    const timeline = host.closest<HTMLElement>('.chat-timeline')
     const place = () => {
-      const area = pane.getBoundingClientRect()
+      if (timeline) {
+        const style = getComputedStyle(timeline)
+        timeline.style.setProperty('--chat-timeline-width', `${timeline.clientWidth - parseFloat(style.paddingLeft || '0') - parseFloat(style.paddingRight || '0')}px`)
+      }
+      const area = root.getBoundingClientRect()
       for (const name of ['top', 'left']) host.style.setProperty(`--chat-embed-max-${name}`, '0px')
       const origin = block.getBoundingClientRect()
       host.style.setProperty('--chat-embed-max-top', `${area.top - origin.top}px`)
@@ -53,12 +79,15 @@ function useChatPaneOverlay(anchor: RefObject<HTMLSpanElement | null>, maximised
       host.style.setProperty('--chat-embed-max-height', `${area.height}px`)
     }
     place()
+    focus('Restore (Esc)')
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(place)
-    observer?.observe(pane)
+    observer?.observe(root)
     window.addEventListener('resize', place)
     return () => {
       observer?.disconnect()
       window.removeEventListener('resize', place)
+      host.style.removeProperty('height')
+      timeline?.style.removeProperty('--chat-timeline-width')
       for (const name of ['top', 'left', 'width', 'height']) host.style.removeProperty(`--chat-embed-max-${name}`)
     }
   }, [anchor, maximised])
@@ -80,15 +109,29 @@ function tileAction(embed: ChatReplyEmbed, onAction: ResourceActionHandler | und
 }
 
 /** A frame's sandbox: scripts run, but the page gets an opaque origin, so it can't reach Commando or its cookies. */
-function SandboxedFrame({ url, title, interactive, bridge, style, preview }: {
+function SandboxedFrame({ url, title, interactive, bridge, style, preview, onEscape }: {
   url: string; title: string; interactive: boolean; bridge?: EmbedBridge; style?: CSSProperties; preview?: boolean
+  /** Esc pressed inside the page, relayed by embed-frame.js; only this frame's own messages count. */
+  onEscape?: () => void
 }) {
   const frame = useRef<HTMLIFrameElement>(null)
+  const escape = useRef(onEscape)
+  useLayoutEffect(() => { escape.current = onEscape })
   useEffect(() => {
     const node = frame.current
     if (!bridge || !node) return
     return bridge.connect(node)
   }, [bridge])
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      if (!event.source || event.source !== frame.current?.contentWindow) return
+      const data = event.data as Record<string, unknown> | null
+      if (!data || typeof data !== 'object' || data.source !== 'commando-canvas-frame') return
+      if (readCanvasFrameInput(data)?.type === 'escape') escape.current?.()
+    }
+    window.addEventListener('message', receive)
+    return () => window.removeEventListener('message', receive)
+  }, [])
   return (
     <iframe ref={frame} src={url} title={title} sandbox="allow-scripts" referrerPolicy="no-referrer" loading="lazy"
       tabIndex={interactive ? 0 : -1} style={style} {...(preview ? { 'aria-hidden': true } : {})} />
@@ -101,7 +144,7 @@ function HtmlEmbed({ embed, alt, cwd, onAction, bridge }: Props & { url: string 
   const [maximised, setMaximised] = useState(false)
   const [status, flash] = useTransientStatus()
   const anchor = useRef<HTMLSpanElement>(null)
-  useChatPaneOverlay(anchor, maximised)
+  useMaximisedOverlay(anchor, maximised)
   const interactive = live || maximised
 
   // A click back in the chat ends the live session, so the frame stops taking the wheel.
@@ -136,7 +179,7 @@ function HtmlEmbed({ embed, alt, cwd, onAction, bridge }: Props & { url: string 
         badge={interactive ? <span className="chat-embed-live">Live</span> : null} label={title}
         maximised={maximised} onMaximisedChange={setMaximised}>
         <span className="chat-embed-stage" style={{ '--chat-embed-height': `${tall ? TALL_EMBED_HEIGHT : EMBED_HEIGHT}px` } as CSSProperties}>
-          <SandboxedFrame url={embed.url!} title={title} interactive={interactive} {...(bridge ? { bridge } : {})} />
+          <SandboxedFrame url={withEscRelay(embed.url!)} title={title} interactive={interactive} onEscape={() => setMaximised(false)} {...(bridge ? { bridge } : {})} />
           {interactive ? null : (
             <button type="button" className="chat-embed-shield" aria-label={`Interact with ${title}`} onClick={() => setLive(true)}>
               <span>Click to interact</span>
@@ -156,7 +199,7 @@ function scaled(frame: ChatReplyEmbedFrame, box?: { width: number; height: numbe
   return { scale, width: Math.round(w * scale), height: Math.round(h * scale), frame: { width: w, height: h, transform: `scale(${scale})` } }
 }
 
-function CanvasStage({ frame, bridge }: { frame: ChatReplyEmbedFrame; bridge?: EmbedBridge }) {
+function CanvasStage({ frame, bridge, onEscape }: { frame: ChatReplyEmbedFrame; bridge?: EmbedBridge; onEscape: () => void }) {
   const stage = useRef<HTMLSpanElement>(null)
   const [box, setBox] = useState<{ width: number; height: number }>()
   useLayoutEffect(() => {
@@ -173,7 +216,7 @@ function CanvasStage({ frame, bridge }: { frame: ChatReplyEmbedFrame; bridge?: E
     <span ref={stage} className="chat-embed-canvas-stage">
       {size ? (
         <span className="chat-embed-canvas-screen" style={{ width: size.width, height: size.height }}>
-          <SandboxedFrame key={frame.url} url={frame.url} title={frame.title} interactive style={size.frame} {...(bridge ? { bridge } : {})} />
+          <SandboxedFrame key={frame.url} url={withEscRelay(frame.url)} title={frame.title} interactive style={size.frame} onEscape={onEscape} {...(bridge ? { bridge } : {})} />
         </span>
       ) : null}
     </span>
@@ -186,7 +229,7 @@ function CanvasEmbed({ embed, alt, onAction, bridge }: Props & { url: string }) 
   const [status, flash] = useTransientStatus()
   const anchor = useRef<HTMLSpanElement>(null)
   const maximised = selected !== null
-  useChatPaneOverlay(anchor, maximised)
+  useMaximisedOverlay(anchor, maximised)
   const tile = tileAction(embed, onAction, flash, () => setSelected(null))
   const title = alt || embed.title || 'Canvas'
   const current = frames.find((frame) => frame.id === selected) ?? frames[0]
@@ -219,7 +262,7 @@ function CanvasEmbed({ embed, alt, onAction, bridge }: Props & { url: string }) 
                 </button>
               ))}
             </span>
-            <CanvasStage frame={current} {...(bridge ? { bridge } : {})} />
+            <CanvasStage frame={current} onEscape={() => setSelected(null)} {...(bridge ? { bridge } : {})} />
           </>
         ) : frames.length ? (
           <span className="chat-embed-strip">

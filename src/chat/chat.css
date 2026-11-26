@@ -162,7 +162,8 @@
 /* A reply's table may use the timeline's full width when the text column is too narrow for it:
    the scroller spans the timeline, and the frame sits on the text column until the table outgrows it. */
 .chat-timeline { container-type: inline-size; }
-.chat-reply .chat-table-scroll { width: 100cqw; margin-inline: calc((100% - 100cqw) / 2); }
+/* --chat-timeline-width stands in while a maximised embed lifts the containment (EmbedFrame.tsx). */
+.chat-reply .chat-table-scroll { width: var(--chat-timeline-width, 100cqw); margin-inline: calc((100% - var(--chat-timeline-width, 100cqw)) / 2); }
 .chat-reply .chat-table-frame { width: max-content; min-width: min(100%, var(--chat-content-max-width)); max-width: min(100%, var(--chat-table-max-width)); margin-inline: auto; }
 .chat-markdown hr { border: 0; border-top: 1px solid var(--border); }
 /* Images a reply shows: as wide as the text, not taller than most of a screen; a click enlarges one. */
