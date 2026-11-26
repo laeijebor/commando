@@ -2,6 +2,7 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { CaptureAddress } from './board-capture-policy.js'
 import { isCaptureControlUrl } from './board-capture-policy.js'
+import { assertPinnedPeer, guardPinnedSocket } from './board-pinned-socket.js'
 
 export type CaptureRequest = { url: string; method?: string; headers?: Record<string, string>; postData?: string; hasPostData?: boolean }
 export type CaptureResponse = { status: number; headers: { name: string; value: string }[]; body: Buffer }
@@ -19,12 +20,14 @@ export const fetchCaptureRequest: CaptureFetch = (request, address, signal) => n
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).filter(([key]) => !HOP_HEADERS.test(key) && !/^(?:host|content-length|accept-encoding)$/i.test(key)))
   headers['accept-encoding'] = 'identity'
   const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
-    method: request.method ?? 'GET', headers, signal,
+    method: request.method ?? 'GET', headers, signal, agent: false,
     lookup: (_host, options, callback) => {
       if (typeof options === 'object' && options.all) callback(null, [address])
       else callback(null, address.address, address.family)
     },
   }, (response) => {
+    try { assertPinnedPeer(response.socket, address) }
+    catch (error) { response.destroy(); reject(error); return }
     const chunks: Buffer[] = []; let size = 0
     response.on('data', (chunk: Buffer) => {
       size += chunk.length
@@ -42,5 +45,6 @@ export const fetchCaptureRequest: CaptureFetch = (request, address, signal) => n
     })
   })
   req.on('error', reject)
+  guardPinnedSocket(req, address)
   req.end(request.postData)
 })

@@ -9,6 +9,7 @@ import { normalizeBoardUrl, type BoardItem } from '../shared/board.js'
 import type { BoardStore } from './boards.js'
 import type { BoardThumbCache } from './board-thumbs.js'
 import { previewRetry } from './board-preview-backoff.js'
+import { assertPinnedPeer, guardPinnedSocket } from './board-pinned-socket.js'
 import { resolveCaptureDestination, type CaptureDestination, type CaptureResolver } from './board-capture-policy.js'
 
 export const defaultBoardLinkPreviewsPath = (port: number) => join(homedir(), '.commando', `board-link-previews-${port}.json`)
@@ -62,12 +63,14 @@ type PreviewFetch = (url: string, init: RequestInit, address: Address) => Promis
 const pinnedFetch: PreviewFetch = (url, init, address) => new Promise((resolve, reject) => {
   const parsed = new URL(url)
   const req = (parsed.protocol === 'https:' ? httpsRequest : httpRequest)(parsed, {
-    method: 'GET', headers: init.headers as Record<string, string>, signal: init.signal ?? undefined,
+    method: 'GET', headers: init.headers as Record<string, string>, signal: init.signal ?? undefined, agent: false,
     lookup: (_host, options, callback) => {
       if (typeof options === 'object' && options.all) callback(null, [address])
       else callback(null, address.address, address.family)
     },
   }, (res) => {
+    try { assertPinnedPeer(res.socket, address) }
+    catch (error) { res.destroy(); reject(error); return }
     const headers = new Headers()
     for (const [key, value] of Object.entries(res.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value)
     try {
@@ -77,7 +80,7 @@ const pinnedFetch: PreviewFetch = (url, init, address) => new Promise((resolve, 
       resolve(new Response(body, { status, headers }))
     } catch (error) { res.destroy(); reject(error) }
   })
-  req.on('error', reject); req.end()
+  req.on('error', reject); guardPinnedSocket(req, address); req.end()
 })
 class PrivateUrl extends Error { constructor(readonly url: string) { super('Private preview URL') } }
 type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb']; capture?: 'public' | 'private'; shotExpires?: number; shotRetryAt?: number; shotFailures?: number; dnsRetryAt?: number; dnsFailures?: number }
