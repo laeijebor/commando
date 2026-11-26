@@ -204,6 +204,24 @@ describe('ChatReplyDiagrams', () => {
     expect(calls).toBe(2)
   })
 
+  it("treats a screenshot the renderer cannot read as a failure tried again, not a lasting validation error", async () => {
+    let now = 0
+    let calls = 0
+    const execute: PrDiagramExecutor = async (_file, args) => {
+      calls++
+      throw Object.assign(new Error('exit 1'), { code: 1, stderr: `${args[2]}: error: screens[0].image: cannot read /work/a.png\n1 of 1 document failed\n` })
+    }
+    const renderer = diagrams({ execute, now: () => now })
+    const source = JSON.stringify({ type: 'screen-flow', title: 'Flow', screens: [{ id: 'a', image: 'a.png' }] })
+    const { second } = await settled(renderer, [reply(fence(source))])
+    expect(second[0]).toMatchObject({ diagrams: [{ error: 'failed', message: 'screens[0].image: cannot read /work/a.png' }] })
+    await renderer.flush()
+    expect(JSON.parse(await readFile(join(images, 'pr-diagram-index.json'), 'utf8')).entries).toEqual([])
+    now += 61_000
+    await settled(renderer, [reply(fence(source))])
+    expect(calls).toBe(2)
+  })
+
   it('reports a timeout, and tries that document again once the retry window passes', async () => {
     let now = 0
     let calls = 0

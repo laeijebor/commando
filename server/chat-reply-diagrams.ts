@@ -388,7 +388,8 @@ export class ChatReplyDiagrams {
         const stderr = failure.stderr ?? ''
         const message = rendererMessage(stderr, file)
         // `<file>: error: …` lines are the renderer's validation; anything else is a crash, tried again later.
-        if (typeof failure.code === 'number' && stderr.includes(`${file}: error:`)) return { error: 'invalid', message }
+        // So is a screenshot it cannot read yet: the agent may still be making it.
+        if (typeof failure.code === 'number' && stderr.includes(`${file}: error:`) && !/: error: .*\bcannot read\b/.test(stderr)) return { error: 'invalid', message }
         return { error: 'failed', ...(message ? { message } : {}) }
       }
       const output = join(folder, `${name}.svg`)
