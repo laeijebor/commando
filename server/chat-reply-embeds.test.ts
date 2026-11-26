@@ -102,7 +102,7 @@ describe('ChatReplyEmbeds', () => {
   it('remembers a resolution until the manifest changes or its registration lapses', async () => {
     const canvas = join(cwd, '.canvas', 'settings')
     await file(join(canvas, 'canvas.json'), manifest([{ id: 'a', title: 'A', src: 'A.html', x: 0, y: 0 }]))
-    const register = vi.spyOn(artifacts, 'register')
+    const register = vi.spyOn(artifacts, 'ensure')
     const first = await attached('![Board](.canvas/settings)')
     await attached('![Board](.canvas/settings) and more text')
     expect(register).toHaveBeenCalledTimes(1)

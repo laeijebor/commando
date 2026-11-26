@@ -40,6 +40,8 @@ type Entry = { dir: string; registeredAt: number }
  */
 export class RedlineArtifactRegistry {
   private readonly entries = new Map<string, Entry>()
+  /** Ids a live, parked or closed tab points at, as last passed to `retain`. */
+  private retained: ReadonlySet<string> = new Set()
   private readonly statePath: string | null
   private readonly now: () => number
 
@@ -47,6 +49,22 @@ export class RedlineArtifactRegistry {
     this.statePath = options.statePath ?? null
     this.now = options.now ?? Date.now
     this.load()
+  }
+
+  /**
+   * The id of a live registration of `dir`, registering it only when there is
+   * none. Unlike `register`, an existing registration keeps its age, so
+   * reading a transcript (chat-reply-embeds.ts) never outranks the tabs that
+   * actually show an artifact.
+   */
+  ensure(dir: string): { id: string } {
+    let real: string | undefined
+    try { real = typeof dir === 'string' && isAbsolute(dir) ? realpathSync(dir) : undefined } catch { real = undefined }
+    const cutoff = this.now() - REDLINE_ARTIFACT_TTL_MS
+    if (real) {
+      for (const [id, entry] of this.entries) if (entry.dir === real && entry.registeredAt >= cutoff) return { id }
+    }
+    return this.register(dir)
   }
 
   register(dir: string): { id: string } {
@@ -74,8 +92,11 @@ export class RedlineArtifactRegistry {
       }
     }
     if (nextEntries.size >= MAX_ARTIFACT_DIRS) {
-      // Full: release the oldest registration. Re-registering refreshes an entry.
-      const [oldestId] = [...nextEntries].reduce((oldest, next) => (next[1].registeredAt < oldest[1].registeredAt ? next : oldest))
+      // Full: release the oldest registration no tab shows, or the oldest of all when every one is shown.
+      // Re-registering refreshes an entry.
+      const unshown = [...nextEntries].filter(([id]) => !this.retained.has(id))
+      const [oldestId] = (unshown.length ? unshown : [...nextEntries])
+        .reduce((oldest, next) => (next[1].registeredAt < oldest[1].registeredAt ? next : oldest))
       nextEntries.delete(oldestId)
     }
     let id: string
@@ -89,9 +110,11 @@ export class RedlineArtifactRegistry {
 
   /** Keeps registrations alive while a live, parked or closed tab still points at them. */
   retain(ids: Iterable<string>): void {
+    // The whole set each time: registering when full releases registrations outside it first.
+    this.retained = new Set(ids)
     const now = this.now()
     let nextEntries: Map<string, Entry> | undefined
-    for (const id of ids) {
+    for (const id of this.retained) {
       const entry = this.entries.get(id)
       if (!entry || entry.registeredAt < now - REDLINE_ARTIFACT_TTL_MS || entry.registeredAt >= now - RETAIN_REFRESH_MS) continue
       nextEntries ??= new Map(this.entries)

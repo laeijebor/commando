@@ -39,7 +39,7 @@ export class ChatReplyEmbeds {
   private loggedFailure = false
 
   constructor(private readonly options: {
-    artifacts: Pick<RedlineArtifactRegistry, 'register' | 'directory'>
+    artifacts: Pick<RedlineArtifactRegistry, 'ensure' | 'directory'>
     home?: string
     /** Extra temporary roots the folder rule treats as broad, for tests. */
     tempRoots?: readonly string[]
@@ -146,7 +146,7 @@ export class ChatReplyEmbeds {
     let remembered: Remembered
     if (!folder) remembered = { stamp, resolved: refused }
     else if (html) {
-      const { id } = this.options.artifacts.register(folder)
+      const { id } = this.options.artifacts.ensure(folder)
       const file = relative(folder, real).split(sep).map(encodeURIComponent).join('/')
       remembered = { stamp, resolved: { kind, path, url: `/redline/artifacts/${id}/${file}` }, registration: { id, directory: folder } }
     } else {
@@ -156,7 +156,7 @@ export class ChatReplyEmbeds {
       if (errors.some((error) => error.startsWith('canvas.json:'))) remembered = { stamp, resolved: { kind, path, error: 'invalid' } }
       else {
         // The canvas folder itself is registered, as `scripts/commando-canvas` does, so frame sources resolve inside it.
-        const { id } = this.options.artifacts.register(directory)
+        const { id } = this.options.artifacts.ensure(directory)
         const frames = canvas.frames.slice(0, MAX_FRAMES).map((frame) => ({
           id: frame.id, title: frame.title, url: `/redline/artifacts/${id}/${encodeCanvasPath(frame.src)}`, w: frame.w, h: frame.h,
         }))
