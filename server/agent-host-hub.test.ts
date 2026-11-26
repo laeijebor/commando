@@ -113,6 +113,68 @@ describe('AgentHostHub', () => {
     expect(logs).toEqual([expect.stringContaining('renderer exploded')])
   })
 
+  it("doesn't hold a snapshot for a render, and broadcasts the reply once its diagram is ready", async () => {
+    const diagram = { hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }
+    let ready = false
+    const finished: (() => void)[] = []
+    const calls: string[] = []
+    const replyDiagrams = async (items: readonly ChatItem[], cwd: string, onRendered?: (ids: string[]) => void) => items.map((entry) => {
+      if (entry.kind !== 'assistant_message') return entry
+      calls.push(`${entry.id}@${cwd}`)
+      if (ready) return { ...entry, diagrams: [diagram] }
+      if (onRendered && entry.text.includes('pr-diagram')) finished.push(() => onRendered([entry.id]))
+      return entry
+    })
+    const broadcasts: ServerMessage[] = []
+    const hub = new AgentHostHub({ paneExists: () => true, targetIdFor: () => undefined, broadcast: (message) => broadcasts.push(message), replyDiagrams })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', '```pr-diagram\n{}\n```'), item('p', 'plain')] })
+    await settle()
+    expect(broadcasts.map((message) => message.type)).toEqual(['chat_state'])
+    expect(hub.items('%1').every((entry) => !(entry.kind === 'assistant_message' && entry.diagrams))).toBe(true)
+
+    // Two renders finish together: the pane's reply is attached again once, and only it is sent.
+    ready = true
+    finished.forEach((done) => done())
+    finished.forEach((done) => done())
+    await settle()
+    await settle()
+    expect(calls).toEqual(['a@/work', 'p@/work', 'a@/work'])
+    expect(broadcasts.at(-1)).toEqual({ type: 'chat_items', paneId: '%1', items: [{ ...item('a', '```pr-diagram\n{}\n```'), diagrams: [diagram] }] })
+    expect(hub.items('%1')[0]).toMatchObject({ diagrams: [diagram] })
+  })
+
+  it('leaves a newer copy of a reply alone when an older render finishes', async () => {
+    let onDone: ((ids: string[]) => void) | undefined
+    let hold: Promise<void> | undefined
+    let release!: () => void
+    const replyDiagrams = async (items: readonly ChatItem[], _cwd: string, onRendered?: (ids: string[]) => void) => {
+      onDone ??= onRendered
+      const gate = hold
+      hold = undefined
+      if (gate) await gate
+      return items.map((entry) => gate && entry.kind === 'assistant_message' ? { ...entry, diagrams: [{ hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }] } : entry)
+    }
+    const broadcasts: ServerMessage[] = []
+    const hub = new AgentHostHub({ paneExists: () => true, targetIdFor: () => undefined, broadcast: (message) => broadcasts.push(message), replyDiagrams })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'old ```pr-diagram\n{}\n```')] })
+    await settle()
+    // The render finishes and the refresh starts; a newer copy of the reply arrives before it completes.
+    hold = new Promise<void>((resolve) => { release = resolve })
+    onDone?.(['a'])
+    await settle()
+    socket.host({ type: 'items', paneId: '%1', items: [item('a', 'new ```pr-diagram\n{}\n```')] })
+    await settle()
+    const sent = broadcasts.length
+    release()
+    await settle()
+    expect(broadcasts).toHaveLength(sent)
+    expect(hub.items('%1')[0]).toEqual(item('a', 'new ```pr-diagram\n{}\n```'))
+  })
+
   it('shows replies without their images when storing them fails', async () => {
     const logs: string[] = []
     const hub = new AgentHostHub({
