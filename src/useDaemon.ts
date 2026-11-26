@@ -1,3 +1,4 @@
+import { publishBoardRefresh } from './boardsApi'
 import { useHost } from './HostContext'
 import { daemonWebSocketUrl } from './hostPaths'
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
@@ -106,6 +107,7 @@ export function useDaemon(
         if (cancelled) return
         attempt = 0
         if (local) publishCanvasRefresh()
+        publishBoardRefresh(activeHost)
         setConnection({
           phase: 'live',
           detail: local ? 'Authenticated local stream' : 'Authenticated remote stream',

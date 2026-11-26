@@ -1,7 +1,8 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { CloudTaskAction, CloudTaskDetail } from '../shared/cloud-tasks.js'
+import type { CloudDiscoveryResponse, CloudImportDiscoveredResponse, CloudTaskAction, CloudTaskDetail } from '../shared/cloud-tasks.js'
+import { CloudDiscoveryService, type CloudDiscoveryAdapter } from './cloud-discovery.js'
 import type { CloudDispatchResult } from './cloud-provider.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
@@ -11,13 +12,13 @@ const resources: { server: Server; service: CloudTaskService }[] = []
 const confirmation = { credentialContextId: 'fixture-context', accountConfirmed: true }
 const input = { provider: 'codex', prompt: 'Private synthetic prompt', source: { environmentId: 'env_fixture', branch: 'main' }, ...confirmation }
 const jsonHeaders = { 'Content-Type': 'application/json', 'Idempotency-Key': 'intent_one' }
-async function startApi(store = new FakeCloudRepository()) {
+async function startApi(store = new FakeCloudRepository(), discovery?: CloudDiscoveryService) {
   const provider = fakeProvider()
   const service = new CloudTaskService({ store, providers: [provider.adapter] })
   const server = createServer((request, response) => {
     // Simulate a response lost after durable recording, without cancelling the service.
     if (request.headers['x-drop-response'] === '1') response.end = (() => { response.destroy(); return response }) as typeof response.end
-    void handleCloudTasksApi(request, response, new URL(request.url ?? '/', 'http://localhost'), service).then((handled) => {
+    void handleCloudTasksApi(request, response, new URL(request.url ?? '/', 'http://localhost'), service, discovery).then((handled) => {
       if (!handled) { response.writeHead(418); response.end() }
     })
   })
@@ -169,5 +170,130 @@ describe('cloud API routing (outer daemon authorization is an integrator respons
     const response = await fetch(`${base}${path}`, { method, headers, body })
     expect(response.status).toBe(status)
     expect(adapter.create).not.toHaveBeenCalled()
+  })
+
+  it('serves discovered external agents and imports Codex/Cursor agents cleanly', async () => {
+    let listTasks: () => ReturnType<CloudTaskService['listTasks']> = () => []
+    const adapters: CloudDiscoveryAdapter[] = [
+      {
+        provider: 'cursor',
+        discover: async () => ({
+          source: { provider: 'cursor', status: 'ok' },
+          agents: [{
+            id: 'bc-cursor-1',
+            provider: 'cursor',
+            title: 'Cursor cloud PR',
+            status: 'running',
+            repo: 'acme/repo',
+            url: 'https://cursor.com/agents?selectedBcId=bc-cursor-1',
+            updatedAt: '2026-11-24T12:00:00.000Z',
+            canOpenAsChat: true,
+          }],
+        }),
+      },
+      {
+        provider: 'codex',
+        discover: async () => ({
+          source: { provider: 'codex', status: 'ok' },
+          agents: [{
+            id: 'task_discovered_1',
+            provider: 'codex',
+            title: 'Codex cloud fix',
+            status: 'completed',
+            repo: 'acme/repo',
+            branch: 'fix/one',
+            url: 'https://chatgpt.com/codex/tasks/task_discovered_1',
+            updatedAt: '2026-11-24T11:00:00.000Z',
+            canOpenAsChat: false,
+          }],
+        }),
+      },
+    ]
+    const discovery = new CloudDiscoveryService({
+      adapters,
+      listTrackedTasks: () => listTasks(),
+      now: () => Date.parse('2026-11-24T12:30:00.000Z'),
+    })
+    const { base, service } = await startApi(new FakeCloudRepository(), discovery)
+    listTasks = () => service.listTasks(true)
+
+    const discoveredRes = await fetch(`${base}/api/cloud/discovered`)
+    expect(discoveredRes.status).toBe(200)
+    expect(discoveredRes.headers.get('cache-control')).toBe('no-store')
+    const discovered = await discoveredRes.json() as CloudDiscoveryResponse
+    expect(discovered.agents.map((a) => ({ id: a.id, alreadyTracked: a.alreadyTracked }))).toEqual([
+      { id: 'bc-cursor-1', alreadyTracked: false },
+      { id: 'task_discovered_1', alreadyTracked: false },
+    ])
+
+    // Import Cursor agent -> chat launch payload (relative cwd is omitted safely)
+    const cursorImportRes = await fetch(`${base}/api/cloud/discovered/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'cursor',
+        id: 'bc-cursor-1',
+        title: 'Cursor cloud PR',
+        cwd: 'relative/path',
+        url: 'https://cursor.com/agents?selectedBcId=bc-cursor-1',
+      }),
+    })
+    expect(cursorImportRes.status).toBe(200)
+    expect(await cursorImportRes.json()).toEqual({
+      kind: 'chat',
+      launch: {
+        provider: 'cursor-chat',
+        resume: 'bc-cursor-1',
+        title: 'Cursor cloud PR',
+        url: 'https://cursor.com/agents?selectedBcId=bc-cursor-1',
+      },
+    } satisfies CloudImportDiscoveredResponse)
+
+    // Import Codex agent -> links via CloudTaskService.linkTask
+    const codexImportRes = await fetch(`${base}/api/cloud/discovered/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'import_codex_1' },
+      body: JSON.stringify({
+        provider: 'codex',
+        id: 'task_discovered_1',
+        title: 'Codex cloud fix',
+        repo: 'acme/repo',
+        branch: 'fix/one',
+      }),
+    })
+    expect(codexImportRes.status).toBe(202)
+    const imported = await codexImportRes.json() as CloudImportDiscoveredResponse
+    expect(imported.kind).toBe('linked')
+    if (imported.kind === 'linked') {
+      expect(imported.operation.kind).toBe('link')
+      expect(imported.task.title).toBe('Codex cloud fix')
+      expect(imported.task.source).toEqual({ repository: 'acme/repo', branch: 'fix/one' })
+    }
+
+    // Wait for link dispatch to complete so providerTaskId is recorded, then re-discover
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const rediscovered = await (await fetch(`${base}/api/cloud/discovered`)).json() as CloudDiscoveryResponse
+    expect(rediscovered.agents.find((a) => a.id === 'task_discovered_1')?.alreadyTracked).toBe(true)
+
+    // Method & validation checks
+    expect((await fetch(`${base}/api/cloud/discovered`, { method: 'POST' })).status).toBe(405)
+    expect((await fetch(`${base}/api/cloud/discovered/import`, { method: 'GET' })).status).toBe(405)
+    expect((await fetch(`${base}/api/cloud/discovered/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'codex', id: 'not-a-valid-task-id' }),
+    })).status).toBe(400)
+    expect((await fetch(`${base}/api/cloud/discovered/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'cursor', id: 'bc-1', url: 'javascript:alert(1)' }),
+    })).status).toBe(400)
+  })
+
+  it('returns 503 when discovery service is not configured', async () => {
+    const { base } = await startApi()
+    const response = await fetch(`${base}/api/cloud/discovered`)
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ code: 'discovery_unavailable' })
   })
 })

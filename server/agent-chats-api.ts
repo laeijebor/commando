@@ -6,6 +6,15 @@ import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { AgentChatFailure, AgentChatInput, AgentChatLaunch, AgentChatResult } from '../shared/agent-chats.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import { CHAT_PERMISSION_MODES, CURSOR_CHAT_PERMISSION_MODES, chatLaunchPermission, chatLaunchProvider, chatPermissionModes, isChatLaunchProvider, type ChatLaunchProvider, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
+import {
+  PERMISSION_RANK,
+  chatPermissionRank,
+  effectivePermissionRank,
+  grantPermissionRank,
+  handoffPermissionMode,
+  inheritedPermissionMode,
+  launchPermissionModeFor,
+} from '../shared/chat-handoff.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { launchFlags, type AgentLaunch } from './agent-resume-command.js'
 import type { ChatPlanStore } from './chat-plans.js'
@@ -15,7 +24,6 @@ import type { RepoPrepareCommands } from './repo-prepare-commands.js'
 import { TmuxCreateCommandError, validClaudeConfigDir, type TmuxCreator } from './tmux-create.js'
 
 const ROOT = '/api/agent-chats'
-const PERMISSION_RANK: Record<ChatPermissionMode, number> = { plan: 0, default: 1, auto: 1, acceptEdits: 2, bypassPermissions: 3 }
 const MAX_PROMPT_BYTES = 256 * 1024
 const MAX_PANE_PROMPT_BYTES = 7_800
 const CONTROL_CHARACTER = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u
@@ -42,59 +50,15 @@ type Dependencies = {
   now?: () => number
 }
 
-/**
- * What a chat in `mode` needs its caller to allow. Compare each provider's modes by their access,
- * rather than their shared mode names. Codex's default (workspace access) edits and runs commands
- * without asking, like Claude's acceptEdits; so does Muse's, inside its sandbox. Muse's
- * approve-everything skips every prompt, so only a bypass caller may open one.
- */
-function effectiveRank(provider: string, mode: ChatPermissionMode): number {
-  if (provider === 'cursor-chat') {
-    const ranks: Partial<Record<ChatPermissionMode, number>> = {
-      bypassPermissions: PERMISSION_RANK.bypassPermissions,
-      auto: PERMISSION_RANK.bypassPermissions,
-      default: PERMISSION_RANK.acceptEdits,
-      plan: PERMISSION_RANK.plan,
-    }
-    return ranks[mode] ?? PERMISSION_RANK[mode]
-  }
-  if (provider === 'muse-chat' && mode === 'acceptEdits') return PERMISSION_RANK.bypassPermissions
-  return (provider === 'codex-chat' || provider === 'muse-chat') && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
-}
-
-/** Claude auto and unrecognized modes retain their existing asking-first fallback. */
-function launchMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'> | undefined): ChatPermissionMode {
-  if (chat?.permissionMode === 'auto' && chat.provider !== 'cursor') return 'default'
-  return chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'
-}
-
-/**
- * What a caller in `mode` may hand on. Muse's approve-everything keeps its sandbox, so it
- * grants no more than acceptEdits; Muse's full access (--yolo) is a real bypass.
- */
-function grantRank(provider: string, mode: ChatPermissionMode): number {
-  return provider === 'muse-chat' && mode === 'acceptEdits' ? PERMISSION_RANK.acceptEdits : effectiveRank(provider, mode)
-}
-
-function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode' | 'sandboxed'>): number {
-  const mode = launchMode(chat)
-  // Earlier Muse hosts ran bypassPermissions inside the sandbox. Only a host that says its
-  // sandbox is off grants full access; any other Muse bypass grants what its sandbox allows.
-  if (chat.provider === 'muse' && mode === 'bypassPermissions' && chat.sandboxed !== false) return grantRank('muse-chat', 'acceptEdits')
-  return grantRank(chatLaunchProvider(chat.provider), mode)
-}
-
-/** The most permissive mode `provider` supports that does not exceed what `rank` allows, if any does. */
-function inheritedMode(provider: ChatLaunchProvider, rank: number): ChatPermissionMode | undefined {
-  return [...chatPermissionModes(provider)].map((mode) => mode.value)
-    .filter((mode) => effectiveRank(provider, mode) <= rank)
-    // On a tie, the more permissive mode: a bypass caller gets Muse's full access, not its sandboxed one.
-    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left) || PERMISSION_RANK[right] - PERMISSION_RANK[left])[0]
-}
+const effectiveRank = effectivePermissionRank
+const launchMode = launchPermissionModeFor
+const grantRank = grantPermissionRank
+const chatRank = chatPermissionRank
+const inheritedMode = inheritedPermissionMode
 
 /** The mode a chat started from `chat` gets: as permissive as it, never more. */
 export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode' | 'sandboxed'>, provider: ChatLaunchProvider): ChatPermissionMode {
-  return inheritedMode(provider, chatRank(chat)) ?? 'plan'
+  return handoffPermissionMode(chat, provider)
 }
 
 type TerminalCaller = { provider: ChatLaunchProvider; rank: number; configDir?: string; warning?: string }
@@ -390,7 +354,7 @@ export class AgentChatsApi {
       if (Buffer.byteLength(prompt) > MAX_PANE_PROMPT_BYTES) {
         const file = await this.dependencies.plans.stash(prompt)
         agent.prompt = `Read the full opening brief at ${JSON.stringify(file.path)} and follow its instructions.`
-        if (agent.provider === 'claude-chat') agent.readableDir = file.dir
+        if (agent.provider === 'claude-chat' || agent.provider === 'cursor-chat') agent.readableDir = file.dir
       }
       let result: TmuxCreateResponse
       try {

@@ -94,7 +94,8 @@ export async function prDiagramRendererVersion(bin: string): Promise<string> {
 
 const parser = unified().use(remarkParse).use(remarkGfm)
 type Node = { type: string; lang?: string | null; value?: string; children?: Node[]; position?: { start: { offset?: number }; end: { offset?: number } } }
-const CLOSING_FENCE = /\n[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*$/
+/** A closing fence line, after any blockquote markers and list indentation in front of it. */
+const CLOSING_FENCE = /^[ \t>]*(?:`{3,}|~{3,})[ \t]*$/
 const OPENING_FENCE = /(?:`{3,}|~{3,})[ \t]*pr-diagram/
 
 /** The sources of the closed ```pr-diagram fences in a reply, in order, each once. A fence still streaming is skipped. */
@@ -104,7 +105,9 @@ export function prDiagramFences(text: string): string[] {
   const visit = (node: Node) => {
     if (node.type === 'code') {
       const raw = text.slice(node.position?.start.offset, node.position?.end.offset)
-      if (node.lang === 'pr-diagram' && node.value?.trim() && CLOSING_FENCE.test(raw.trimEnd())) sources.push(node.value)
+      // Closed only by its own fence line; one that runs to the end of a streaming reply is still being written.
+      const lines = raw.trimEnd().split('\n')
+      if (node.lang === 'pr-diagram' && node.value?.trim() && lines.length > 1 && CLOSING_FENCE.test(lines.at(-1)!)) sources.push(node.value)
       return
     }
     node.children?.forEach(visit)
@@ -118,20 +121,42 @@ type Result = { id: string } | { error: ChatReplyDiagramError; message?: string 
 type Remembered = { result: Result; until?: number; unverified?: true }
 
 /** A fence ready to render: the document to write, or why it can't be rendered at all. */
-type Prepared = { hash: string; relative: boolean; document: string } | { hash: string; result: Result }
+/** `assets`: the files the renderer reads (screen-flow screenshots), whose changes render the diagram again. */
+type Prepared = { hash: string; relative: boolean; assets: string[]; document: string } | { hash: string; result: Result }
 
-/** Screen-flow screenshots are read relative to the document, which is written to a temporary folder: anchor them to the chat's folder. */
-function anchorAssets(document: Record<string, unknown>, cwd: string, home: string): boolean {
+/**
+ * Screen-flow screenshots are read relative to the document, which is
+ * written to a temporary folder: anchor them to the chat's folder. Without
+ * a folder, relative ones are left as they are.
+ */
+function anchorAssets(document: Record<string, unknown>, cwd: string, home: string): { relative: boolean; assets: string[] } {
   let relative = false
-  if (!Array.isArray(document.screens)) return false
+  const assets: string[] = []
+  if (!Array.isArray(document.screens)) return { relative, assets }
   for (const screen of document.screens) {
     if (!screen || typeof screen !== 'object' || typeof (screen as { image?: unknown }).image !== 'string') continue
     const entry = screen as { image: string }
-    if (isAbsolute(entry.image)) continue
-    relative = true
-    entry.image = entry.image.startsWith('~/') ? join(home, entry.image.slice(2)) : resolve(cwd, entry.image)
+    if (!isAbsolute(entry.image)) {
+      if (!cwd) continue
+      relative = true
+      entry.image = entry.image.startsWith('~/') ? join(home, entry.image.slice(2)) : resolve(cwd, entry.image)
+    }
+    assets.push(entry.image)
   }
-  return relative
+  return { relative, assets: [...new Set(assets)] }
+}
+
+/** Each asset's size and time, so a screenshot written again is a new key. */
+async function assetStamp(assets: readonly string[]): Promise<string> {
+  const stamps = await Promise.all(assets.map(async (path) => {
+    try {
+      const stats = await stat(path)
+      return `${path}:${stats.size}:${stats.mtimeMs}`
+    } catch {
+      return `${path}:missing`
+    }
+  }))
+  return stamps.join('\n')
 }
 
 export function preparePrDiagram(source: string, cwd: string, home = homedir()): Prepared {
@@ -146,8 +171,8 @@ export function preparePrDiagram(source: string, cwd: string, home = homedir()):
   if (!document || typeof document !== 'object' || Array.isArray(document)) {
     return { hash, result: { error: 'invalid', message: 'A pr-diagram document is one JSON object with a "type".' } }
   }
-  const relative = cwd ? anchorAssets(document as Record<string, unknown>, cwd, home) : false
-  return { hash, relative, document: relative ? JSON.stringify(document) : source }
+  const { relative, assets } = anchorAssets(document as Record<string, unknown>, cwd, home)
+  return { hash, relative, assets, document: relative ? JSON.stringify(document) : source }
 }
 
 /** What the renderer reported, without the temporary file's name or its summary line. */
@@ -255,7 +280,8 @@ export class ChatReplyDiagrams {
         diagrams.push({ hash: fence.hash, error: 'renderer_missing' })
         continue
       }
-      const key = createHash('sha256').update(`${renderer.version}\0${fence.relative ? cwd : ''}\0${fence.hash}`).digest('hex')
+      const assets = fence.assets.length ? await assetStamp(fence.assets) : ''
+      const key = createHash('sha256').update(`${renderer.version}\0${fence.relative ? cwd : ''}\0${fence.hash}\0${assets}`).digest('hex')
       const known = await this.cached(key)
       if (known) {
         diagrams.push({ hash: fence.hash, ...known })

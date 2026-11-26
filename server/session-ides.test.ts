@@ -215,11 +215,22 @@ describe('opening files in a loaded IDE window', () => {
     await expect(service.openFile('$1', 'a.ts')).rejects.toThrow('absolute')
     await expect(service.openFile('$1', join(directory, 'missing.ts'))).rejects.toThrow('no longer exists')
     await expect(service.openFile('$1', join(directory, 'other'))).rejects.toThrow('Only files')
-    await expect(service.openFile('$1', join(directory, 'a #1.ts'), 300)).rejects.toThrow('not finished loading')
+    await expect(service.openFile('$1', join(directory, 'a #1.ts'), undefined, 300)).rejects.toThrow('not finished loading')
     setTimeout(() => { windows.push({ folder: workspace, socket: window.socket }) }, 300)
     await service.openFile('$1', join(directory, 'a #1.ts'))
     expect(queries).toContain(join(workspace, '.commando-open-file'))
     expect(window.opened).toEqual([{ type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts`], folderURIs: [], forceReuseWindow: true }])
+    // VS Code's goto-line mode reads `:line:column` from the end of the file URI's path.
+    await service.openFile('$1', join(directory, 'a #1.ts'), { line: 12, column: 5 })
+    await service.openFile('$1', join(directory, 'a #1.ts'), { line: 7 })
+    expect(window.opened.slice(1)).toEqual([
+      { type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts:12:5`], folderURIs: [], forceReuseWindow: true, gotoLineMode: true },
+      { type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts:7`], folderURIs: [], forceReuseWindow: true, gotoLineMode: true },
+    ])
+    // A numeric segment between colons would be read as the line, so such a path opens at the top.
+    await writeFile(join(directory, 'log:2'), '')
+    await service.openFile('$1', join(directory, 'log:2'), { line: 3 })
+    expect(window.opened.at(-1)).toEqual({ type: 'open', fileURIs: [`file://${workspace}/log:2`], folderURIs: [], forceReuseWindow: true })
   })
 
   it('opens only in a window it can tell belongs to this worktree among several IDEs', async () => {
@@ -273,6 +284,6 @@ describe('opening files in a loaded IDE window', () => {
     await service.attach('$2', directory)
     await expect(service.openFile('$1', join(directory, 'other', 'a.ts'))).rejects.toBeInstanceOf(IdeWindowAmbiguousError)
     // The ancestor's own window is unambiguous: nested folders do not contain its probe.
-    await expect(service.openFile('$2', join(directory, 'other', 'a.ts'), 0)).rejects.toThrow('not finished loading')
+    await expect(service.openFile('$2', join(directory, 'other', 'a.ts'), undefined, 0)).rejects.toThrow('not finished loading')
   })
 })

@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { resolve } from 'node:path'
+
+const usage = `usage: commando-board list [--json]
+       commando-board add <path|url> [--title T] [--caption C] [--group G] [--pin]
+       commando-board clip "text" [--tone decision|gotcha|note] [--group G]
+       commando-board group <id> --title T [--tone green] [--near G]
+       commando-board link <from> <to> [--label L]
+       commando-board place <key> --group G
+       commando-board remove <key>`
+const fail = (message, code = 2) => { console.error(`commando-board: ${message}`); process.exit(code) }
+const args = process.argv.slice(2)
+if (args[0] === '--help' || args[0] === '-h') { console.log(usage); process.exit(0) }
+const command = args.shift()
+const config = {
+  list: { count: 0, flags: ['json'] },
+  add: { count: 1, flags: ['title', 'caption', 'group', 'pin'] },
+  clip: { count: 1, flags: ['tone', 'group'] },
+  group: { count: 1, flags: ['title', 'tone', 'near'] },
+  link: { count: 2, flags: ['label'] },
+  place: { count: 1, flags: ['group'] },
+  remove: { count: 1, flags: [] },
+}[command]
+if (!config) fail(usage)
+const positional = [], flags = {}
+while (args.length) {
+  const arg = args.shift()
+  if (arg.startsWith('--')) {
+    const flag = arg.slice(2)
+    if (!config.flags.includes(flag) || Object.hasOwn(flags, flag)) fail(`unexpected flag ${arg}`)
+    if (flag === 'json' || flag === 'pin') flags[flag] = true
+    else {
+      const value = args.shift()
+      if (value === undefined || value.startsWith('--') || !value.trim()) fail(`${arg} needs a value`)
+      flags[flag] = value
+    }
+  } else positional.push(arg)
+}
+if (positional.length !== config.count) fail(usage)
+if (command === 'group' && !flags.title) fail('--title is required')
+if (command === 'place' && !flags.group) fail('--group is required')
+if (command === 'clip' && flags.tone && !['decision', 'gotcha', 'note'].includes(flags.tone)) fail('invalid clip tone')
+if (command === 'group' && flags.tone && !['accent', 'blue', 'green', 'amber', 'pink', 'teal'].includes(flags.tone)) fail('invalid group tone')
+const pane = process.env.TMUX_PANE
+if (!pane || !/^%\d+$/.test(pane)) fail('TMUX_PANE must identify a tmux pane', 1)
+const port = process.env.COMMANDO_PORT ?? '4310'
+if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) fail('invalid COMMANDO_PORT')
+const tokenPath = process.env.COMMANDO_AGENT_HOOK_TOKEN_PATH ?? `${homedir()}/.commando/agent-hook-token`
+let token
+try { token = readFileSync(tokenPath, 'utf8').trim() } catch { fail(`agent hook token not readable at ${tokenPath}; run npm run hooks:install first`, 1) }
+const base = `http://127.0.0.1:${port}/api/boards/by-pane/${encodeURIComponent(pane)}`
+let path = '', method = 'POST', payload
+switch (command) {
+  case 'list': method = 'GET'; break
+  case 'add': {
+    const value = positional[0]
+    const pr = /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?(?:[?#][^\s]*)?$/i.test(value)
+    payload = { kind: pr ? 'pr' : undefined, ...(/^https?:\/\//i.test(value) ? { url: value } : { path: resolve(value) }), title: flags.title, caption: flags.caption, group: flags.group, pinned: flags.pin || undefined }
+    path = '/items'; break
+  }
+  case 'clip': payload = { text: positional[0], tone: flags.tone, group: flags.group }; path = '/items'; break
+  case 'group': payload = { id: positional[0], title: flags.title, tone: flags.tone, near: flags.near }; path = '/groups'; break
+  case 'link': payload = { from: positional[0], to: positional[1], label: flags.label }; path = '/links'; break
+  case 'place': payload = { key: positional[0], group: flags.group }; path = '/place'; break
+  case 'remove': method = 'DELETE'; path = `/items/${encodeURIComponent(positional[0])}`; break
+}
+try {
+  const response = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`, 'X-Commando-Pane': pane, ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined, signal: AbortSignal.timeout(15000) })
+  const result = await response.json()
+  if (!response.ok) fail(`daemon responded ${response.status}: ${result.error ?? 'request failed'}`, 1)
+  if (command === 'list' && !flags.json) {
+    for (const item of result.items) console.log(`${item.key}\t${item.kind}\t${item.state}\t${item.title}`)
+  } else console.log(JSON.stringify(result, null, 2))
+} catch (error) { fail(`daemon unavailable or invalid response: ${error.message}`, 1) }

@@ -14,6 +14,8 @@ function apiWithSummary(summary: GitDiffSummary): GitDiffApiClient {
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
     fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
     blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
+    navigate: vi.fn().mockResolvedValue({ kind: "definition", source: "text", rev: "worktree", locations: [], truncated: false }),
+    fileAt: vi.fn().mockResolvedValue({ file: "", rev: "worktree", contents: null, unavailable: "missing" }),
     search: vi.fn().mockResolvedValue({ query: '', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
     repo: vi.fn().mockResolvedValue({ isRepo: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: true, branches: [] }),

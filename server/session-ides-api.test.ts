@@ -155,7 +155,15 @@ it('opens files only in a session’s ready IDE', async () => {
   await post('', {})
   expect((await post('/files', {})).status).toBe(400)
   expect((await post('/files', { path: join(directory, 'x.ts') })).status).toBe(200)
-  expect(openFile).toHaveBeenCalledWith('$1', join(directory, 'x.ts'))
+  expect(openFile).toHaveBeenCalledWith('$1', join(directory, 'x.ts'), undefined)
+  expect((await post('/files', { path: join(directory, 'x.ts'), line: 12, column: 5 })).status).toBe(200)
+  expect(openFile).toHaveBeenLastCalledWith('$1', join(directory, 'x.ts'), { line: 12, column: 5 })
+  expect((await post('/files', { path: join(directory, 'x.ts'), line: 3 })).status).toBe(200)
+  expect(openFile).toHaveBeenLastCalledWith('$1', join(directory, 'x.ts'), { line: 3 })
+  for (const bad of [{ line: 0 }, { line: 1.5 }, { line: '4' }, { column: 2 }, { line: 2, column: -1 }]) {
+    expect((await post('/files', { path: join(directory, 'x.ts'), ...bad })).status).toBe(400)
+  }
+  expect(openFile).toHaveBeenCalledTimes(3)
   openFile.mockRejectedValueOnce(new Error('File no longer exists in this worktree'))
   const failed = await post('/files', { path: '/gone.ts' })
   expect(failed.status).toBe(502)

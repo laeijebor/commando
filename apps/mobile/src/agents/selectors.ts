@@ -1,3 +1,4 @@
+import { chatMessageSummary, parseAsideKey } from '@commando/agent-chat'
 import { providerPresentation } from '../ui/providerPresentation'
 
 import type {
@@ -147,7 +148,7 @@ export function buildAgentRows({ statuses, snapshot, briefs = {} }: AgentRowInpu
   const sessions = new Map((snapshot?.sessions ?? []).map((session) => [session.id, session]))
   const windows = new Map((snapshot?.windows ?? []).map((window) => [window.id, window]))
 
-  return Object.values(statuses).map((status) => {
+  return Object.values(statuses).filter((status) => !parseAsideKey(status.paneId)).map((status) => {
     const pane = panes.get(status.paneId)
     const session = pane ? sessions.get(pane.sessionId) : undefined
     const window = pane ? windows.get(pane.windowId) : undefined
@@ -161,7 +162,7 @@ export function buildAgentRows({ statuses, snapshot, briefs = {} }: AgentRowInpu
       sessionId: pane?.sessionId,
       sessionName: session?.name ?? brief?.sessionName ?? status.agentSessionName ?? status.paneId,
       windowName: window?.name,
-      headline: briefHeadline(status, brief),
+      headline: chatMessageSummary(briefHeadline(status, brief)),
       activity: activityLine(status),
       progress: progress ? { completed: progress.completed, total: progress.total } : undefined,
       pendingQuestionCount: status.details?.requests?.length ?? 0,

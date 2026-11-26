@@ -1,5 +1,6 @@
 import type {
-  CloudCreateInput, CloudDiff, CloudLinkInput, CloudMessageInput, CloudOperation,
+  CloudCreateInput, CloudDiff, CloudDiscoveryResponse, CloudImportDiscoveredInput,
+  CloudImportDiscoveredResponse, CloudLinkInput, CloudMessageInput, CloudOperation,
   CloudProvidersResponse, CloudResumeInput, CloudTask, CloudTaskAction, CloudTaskDetail, CloudTaskSummary,
 } from '../shared/cloud-tasks'
 
@@ -18,6 +19,8 @@ export interface CloudTasksApi {
   operation(id: string): Promise<CloudOperation>
   byKey(key: string): Promise<CloudOperation | null>
   resumeOperation(id: string, input: CloudResumeInput): Promise<CloudTaskAction>
+  discoverAgents(): Promise<CloudDiscoveryResponse>
+  importDiscovered(input: CloudImportDiscoveredInput, key?: string): Promise<CloudImportDiscoveredResponse>
 }
 
 export class CloudTasksHttpError extends Error {
@@ -85,5 +88,11 @@ export function createCloudTasksApi(token: string, fetcher: typeof fetch = fetch
         throw error
       }
     },
+    discoverAgents: () => request('cloud/discovered'),
+    importDiscovered: (input, key) => request('cloud/discovered/import', {
+      method: 'POST',
+      body: JSON.stringify(input),
+      ...(key ? { headers: { 'Idempotency-Key': key } } : {}),
+    }),
   }
 }

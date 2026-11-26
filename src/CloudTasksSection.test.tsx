@@ -74,6 +74,28 @@ function fixtureApi(initial = fixtureTask(), extra: CloudTask[] = []): CloudTask
       records.set(task.id, { task, operations: previous.operations.map((op) => op.id === id ? operation : op) })
       return { task, operation, reused: true }
     }),
+    discoverAgents: vi.fn(async () => ({ agents: [], sources: [], discoveredAt: '2026-11-24T12:00:00.000Z' })),
+    importDiscovered: vi.fn(async (req, key) => {
+      if (req.provider === 'cursor') {
+        return { kind: 'chat' as const, launch: { provider: 'cursor-chat' as const, resume: req.id, title: req.title ?? req.id } }
+      }
+      const task = fixtureTask({
+        id: `imported-${req.id}`,
+        provider: req.provider,
+        title: req.title ?? 'Imported task',
+        providerTaskId: req.id,
+        identityEvidence: 'user_link',
+        observationState: 'unavailable',
+      })
+      const operation = fixtureOperation(task, {
+        id: `import-op-${req.id}`,
+        idempotencyKey: key ?? 'import-key',
+        kind: 'link',
+        receipt: { providerTaskId: req.id, providerUrl: task.providerUrl!, evidence: 'user_link' },
+      })
+      records.set(task.id, { task, operations: [operation] })
+      return { kind: 'linked' as const, task, operation, reused: false }
+    }),
   }
 }
 beforeEach(() => { localStorage.clear(); vi.stubGlobal('crypto', webcrypto) })
@@ -745,5 +767,126 @@ describe('multiple provider connections', () => {
     await act(async () => { await cloudTaskStoreFor(api).refresh() })
     expect(screen.getByLabelText('Connection')).toHaveValue(chosenKey)
     expect(screen.getByRole('option', { name: /\(unavailable\)/ })).toBeDisabled()
+  })
+})
+
+describe('agents started elsewhere discovery subsection', () => {
+  it('lists untracked agents, hides tracked ones, shows subtle source hints, and supports collapse & refresh', async () => {
+    const api = fixtureApi()
+    vi.mocked(api.discoverAgents).mockResolvedValue({
+      agents: [
+        {
+          id: 'bc-cursor-open',
+          provider: 'cursor',
+          title: 'Build dark theme',
+          status: 'running',
+          repo: 'acme/web',
+          branch: 'feat/dark',
+          url: 'https://cursor.com/agents?selectedBcId=bc-cursor-open',
+          alreadyTracked: false,
+          canOpenAsChat: true,
+        },
+        {
+          id: 'task_codex_ext',
+          provider: 'codex',
+          title: 'Fix flaky migration',
+          status: 'completed',
+          repo: 'acme/api',
+          branch: 'fix/migration',
+          url: 'https://chatgpt.com/codex/tasks/task_codex_ext',
+          alreadyTracked: false,
+          canOpenAsChat: false,
+        },
+        {
+          id: 'task_already_tracked',
+          provider: 'codex',
+          title: 'Already tracked task',
+          status: 'running',
+          alreadyTracked: true,
+          canOpenAsChat: false,
+        },
+      ],
+      sources: [
+        { provider: 'cursor', status: 'ok' },
+        { provider: 'codex', status: 'ok' },
+        { provider: 'claude', status: 'unauthenticated', message: 'Log in to Claude to list background agents.' },
+      ],
+      discoveredAt: '2026-11-24T12:00:00.000Z',
+    })
+
+    render(<CloudTasksSection api={api} />)
+    const discovered = within(screen.getByRole('region', { name: 'Started elsewhere' }))
+    expect(await discovered.findByText('Build dark theme')).toBeInTheDocument()
+    expect(discovered.getByText('Fix flaky migration')).toBeInTheDocument()
+    expect(discovered.getByText('acme/web · feat/dark')).toBeInTheDocument()
+    expect(discovered.getByText('acme/api · fix/migration')).toBeInTheDocument()
+    expect(discovered.queryByText('Already tracked task')).not.toBeInTheDocument()
+    expect(discovered.getByText('Claude: log in to list cloud agents')).toBeInTheDocument()
+
+    // Collapse & expand
+    const toggle = discovered.getByRole('button', { name: /Started elsewhere/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(discovered.queryByText('Build dark theme')).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(discovered.getByText('Build dark theme')).toBeInTheDocument()
+
+    // Refresh
+    fireEvent.click(discovered.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(api.discoverAgents).toHaveBeenCalledTimes(2))
+  })
+
+  it('imports a discovered Codex agent into Cloud Tasks and opens a discovered Cursor agent as chat', async () => {
+    const api = fixtureApi()
+    const onOpenDiscoveredChat = vi.fn(async () => {})
+    const onSelectTask = vi.fn()
+    vi.mocked(api.discoverAgents).mockResolvedValue({
+      agents: [
+        {
+          id: 'bc-cursor-chat-1',
+          provider: 'cursor',
+          title: 'Cursor refactor',
+          status: 'running',
+          url: 'https://cursor.com/agents?selectedBcId=bc-cursor-chat-1',
+          alreadyTracked: false,
+          canOpenAsChat: true,
+        },
+        {
+          id: 'task_codex_import',
+          provider: 'codex',
+          title: 'Codex background PR',
+          status: 'completed',
+          repo: 'acme/api',
+          branch: 'main',
+          alreadyTracked: false,
+          canOpenAsChat: false,
+        },
+      ],
+      sources: [
+        { provider: 'cursor', status: 'ok' },
+        { provider: 'codex', status: 'ok' },
+      ],
+      discoveredAt: '2026-11-24T12:00:00.000Z',
+    })
+
+    render(<CloudTasksSection api={api} onSelectTask={onSelectTask} onOpenDiscoveredChat={onOpenDiscoveredChat} />)
+    const discovered = within(screen.getByRole('region', { name: 'Started elsewhere' }))
+    await discovered.findByText('Codex background PR')
+
+    fireEvent.click(discovered.getByRole('button', { name: 'Import' }))
+    await waitFor(() => expect(api.importDiscovered).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex', id: 'task_codex_import', title: 'Codex background PR' }),
+      expect.any(String),
+    ))
+    await waitFor(() => expect(onSelectTask).toHaveBeenCalledWith('imported-task_codex_import'))
+    expect(discovered.queryByText('Codex background PR')).not.toBeInTheDocument()
+
+    fireEvent.click(discovered.getByRole('button', { name: 'Open as chat' }))
+    await waitFor(() => expect(onOpenDiscoveredChat).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'bc-cursor-chat-1',
+      provider: 'cursor',
+    })))
+    await waitFor(() => expect(discovered.queryByText('Cursor refactor')).not.toBeInTheDocument())
   })
 })

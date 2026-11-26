@@ -745,6 +745,56 @@ describe('AgentHostHub switch to Claude Code', () => {
     await settle()
     expect(saved).toEqual([expect.objectContaining({ draft: { text: 'from last time\n\ntyped now', images: [image] } })])
   })
+
+  it('preserves prior timeline items and inserts a divider across cross-provider handoff', async () => {
+    const { hub, connect, broadcasts } = setup()
+    const claudeSocket = connect()
+    claudeSocket.host({
+      type: 'session_snapshot',
+      session: session('%1', { provider: 'claude', hostPid: 10 }),
+      items: [item('u1', 'First reply')],
+    })
+    await settle()
+
+    const divider = hub.prepareProviderHandoff('%1', 'claude', 'cursor')
+    expect(divider).toMatchObject({ kind: 'notice', level: 'info', text: 'Handed off from Claude to Cursor' })
+    hub.announceProviderHandoff('%1')
+    expect(hub.items('%1').at(-1)).toEqual(divider)
+    expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_items', paneId: '%1', items: [divider] })
+
+    claudeSocket.close()
+    const cursorSocket = connect()
+    cursorSocket.host({
+      type: 'session_snapshot',
+      session: session('%1', { provider: 'cursor', hostPid: 20 }),
+      items: [item('u1', 'Cursor reply')],
+    })
+    await settle()
+
+    const timeline = hub.items('%1')
+    expect(timeline.map((entry) => entry.kind === 'notice' ? entry.text : entry.kind === 'assistant_message' ? entry.text : entry.kind)).toEqual([
+      'First reply',
+      'Handed off from Claude to Cursor',
+      'Cursor reply',
+    ])
+    // Carried items are namespaced so the new host's colliding id (`u1`) does not overwrite prior turns.
+    expect(timeline[0]?.id).not.toBe('u1')
+    expect(timeline[2]?.id).toBe('u1')
+  })
+
+  it('discards prepared provider handoff carry-over when cancelled', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { provider: 'claude' }), items: [item('a1', 'Old')] })
+    await settle()
+    hub.prepareProviderHandoff('%1', 'claude', 'cursor')
+    hub.cancelProviderHandoff('%1')
+
+    const next = connect()
+    next.host({ type: 'session_snapshot', session: session('%1', { provider: 'cursor', hostPid: 21 }), items: [item('b1', 'Fresh')] })
+    await settle()
+    expect(hub.items('%1').map((entry) => entry.id)).toEqual(['b1'])
+  })
 })
 
 describe('aside hub routing', () => {
@@ -762,12 +812,12 @@ describe('aside hub routing', () => {
     })
     const socket = new FakeSocket()
     hub.connect(socket as unknown as WebSocket)
-    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9, sessionId: 'main' }), items: [] })
-    socket.host({ type: 'session_snapshot', session: session('%1~abcd1234', { hostVersion: 9, sessionId: 'child', aside }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10, sessionId: 'main' }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1~abcd1234', { hostVersion: 10, sessionId: 'child', aside }), items: [] })
     await settle()
     const statusCount = statuses.length
     socket.host({ type: 'items', paneId: '%1~abcd1234', items: [{ ...item('request', ''), kind: 'request', requestId: 'ask', requestKind: 'approval', toolName: 'Bash', title: 'Allow?' }] })
-    socket.host({ type: 'session_update', session: session('%1~abcd1234', { hostVersion: 9, sessionId: 'child', status: 'waiting', aside }) })
+    socket.host({ type: 'session_update', session: session('%1~abcd1234', { hostVersion: 10, sessionId: 'child', status: 'waiting', aside }) })
     await settle()
     expect(checks).toEqual(['%1', '%1'])
     expect(statuses).toHaveLength(statusCount)
@@ -801,7 +851,7 @@ describe('aside hub routing', () => {
   it('matches lifecycle results by request, pane and socket, updates main state and rejects old hosts', async () => {
     const { hub, broadcasts, connect } = setup()
     const socket = connect()
-    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9 }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10 }), items: [] })
     await settle()
     const pending = hub.aside('%1', { action: 'open', text: 'Why?' })
     const request = socket.sent.at(-1) as { requestId: string }
@@ -825,10 +875,10 @@ describe('aside hub routing', () => {
   it('rejects aside snapshots from a different parent owner or host pid', async () => {
     const { hub, broadcasts, connect } = setup()
     const owner = connect(), impostor = connect()
-    owner.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9 }), items: [] })
+    owner.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10 }), items: [] })
     await settle()
     const aside = { parentPaneId: '%1', id: 'abcd1234', title: 'Side', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1 }
-    const child = session('%1~abcd1234', { hostVersion: 9, aside: aside as ChatSessionInfo['aside'] })
+    const child = session('%1~abcd1234', { hostVersion: 10, aside: aside as ChatSessionInfo['aside'] })
     impostor.host({ type: 'session_snapshot', session: child, items: [] })
     owner.host({ type: 'session_snapshot', session: { ...child, hostPid: 99 }, items: [] })
     await settle()

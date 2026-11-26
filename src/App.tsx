@@ -1,3 +1,4 @@
+import { chatMessageSummary } from '../shared/agent-chat'
 import { HostProvider, HostWorkspace, useHost } from './HostContext'
 import { HostSwitcher, HostsSettings } from './HostSwitcher'
 import { commanderInbox, commanderRepoOptions, keepNeedsYouOrder, type NeedsYouOrder } from './commanderInbox'
@@ -127,6 +128,7 @@ import { SessionTree, type SessionActions } from './SessionTree'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
 import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
 import type { AgentChatRequest } from '../shared/agent-chats'
+import type { IdeFilePosition } from '../shared/ide-position'
 import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
 import { createAgentChatsApi } from './agentChatsApi'
@@ -146,7 +148,8 @@ import { PanePaletteMenu, panePaletteEntries, type PanePaletteScreen } from './P
 import { McpSettings } from './McpSettings'
 import type { ChatMcpRequest, ChatMcpResult } from '../shared/chat-mcp'
 import { providerLabel } from '../shared/chat-composer'
-import { chatConversationKey } from '../shared/chat-conversations'
+import { chatConversationKey, isChatConversationSessionId } from '../shared/chat-conversations'
+import { isSafeExternalUrl, type DiscoveredExternalAgent } from '../shared/cloud-tasks'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
 import { PANE_MARK_PRESETS } from './paneMarks'
@@ -179,17 +182,20 @@ import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
-import { PaneWorklog } from './PaneWorklog'
+import { BoardTile } from './BoardTile'
+import { publishBoardChange } from './boardsApi'
 import { ChatPane, type ChatFlowServices, type ChatAsideServices } from './chat/ChatPane'
+import type { ChatHandoffTarget } from './chat/ComposerControls'
 import { paneAsks } from './chat/sessionAsks'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
-import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
+import { handoffChatPane, openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch, type SessionCreation } from '../shared/tmux-create'
+import { availableProviderModels } from '../shared/chat-handoff'
+import { chatLaunchPermission, chatProfileConfigDir, type ModelCatalogs, type SessionAgentLaunch, type SessionCreation } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   asideKey,
@@ -206,6 +212,7 @@ import {
   type ChatFileSearchResult,
   type ChatHandoffInfo,
   type ChatImageRef,
+  type ChatModelOption,
   type ChatSendOptions,
   type ChatSessionPermissionMode,
   type ChatSettingsChange,
@@ -434,6 +441,8 @@ type TerminalPaneProps = {
   onChatInterrupt?: (dropQueued?: string[]) => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
+  chatProviderModels?: Partial<Record<ChatProvider, ChatModelOption[]>>
+  onChatHandoff?: (target: ChatHandoffTarget) => Promise<void>
   onChatRestart?: () => void
   onChatOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   onChatDismissPrs?: (prs: PanePrSummary[]) => void
@@ -537,6 +546,8 @@ export function TerminalPaneCard({
   onChatInterrupt,
   onChatAnswer,
   onChatConfigure,
+  chatProviderModels,
+  onChatHandoff,
   onChatRestart,
   onChatOpenPr,
   onChatDismissPrs,
@@ -583,6 +594,7 @@ export function TerminalPaneCard({
   const bodyRef = useRef<HTMLDivElement>(null)
   useChatPaneMeasurement(bodyRef, showChat && resizeOwner, measurementKey, `${pane.width}x${pane.height}`, onResize)
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
+  const taskHeadline = brief?.headline ? chatMessageSummary(brief.headline) : pane.command || pane.path
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
@@ -727,7 +739,7 @@ export function TerminalPaneCard({
               />
             </form>
           ) : <strong>{paneLabel}</strong>}
-          <small title={brief?.headline || pane.command || pane.path}>{brief?.headline || pane.command || pane.path}</small>
+          <small title={taskHeadline}>{taskHeadline}</small>
         </span>
         {panelTrigger ?? (paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
           {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
@@ -852,6 +864,8 @@ export function TerminalPaneCard({
             onInterrupt={(dropQueued) => onChatInterrupt?.(dropQueued)}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
             onConfigure={(change) => onChatConfigure?.(change)}
+            {...(chatProviderModels ? { providerModels: chatProviderModels } : {})}
+            {...(onChatHandoff ? { onHandoff: onChatHandoff } : {})}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
             {...(onChatOpenPr ? { onOpenPr: onChatOpenPr } : {})}
             {...(onChatDismissPrs ? { onDismissPrs: onChatDismissPrs } : {})}
@@ -1502,6 +1516,9 @@ function HostApp() {
 
   const handleServerMessage = (message: ServerMessage) => {
     switch (message.type) {
+      case 'board:changed':
+        publishBoardChange({ targetId: message.targetId, rev: message.rev, host: activeHost })
+        break
       case 'capabilities':
         setRevealInFinder(local && message.capabilities.revealInFinder)
         break
@@ -2260,7 +2277,7 @@ function HostApp() {
   const sessionHistory = useSessionHistory(local ? 'local' : activeHost, snapshot?.sessions, selectedSessionId, selectSession)
 
   /** Opens (attaching if needed) the session's IDE; `file` is shown in it once loaded. */
-  const openSessionIde = async (sessionId: string, options: { paneId?: string; file?: string } = {}) => {
+  const openSessionIde = async (sessionId: string, options: { paneId?: string; file?: string; position?: IdeFilePosition } = {}) => {
     if (!local) return
     setSelectedSessionId(sessionId)
     setArea('ide')
@@ -2278,8 +2295,8 @@ function HostApp() {
       setSessionIdes((current) => current.some((item) => item.id === ide.id)
         ? current.map((item) => item.id === ide.id && item.generation === ide.generation ? { ...item, url: ide.url } : item)
         : [...current, ide])
-      if (options.file && openedIdeFrames.has(ideFrameKey(ide))) await openFileInLoadedIde(sessionId, ide, options.file)
-      else if (options.file) setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: options.file!, revision: 0 } }))
+      if (options.file && openedIdeFrames.has(ideFrameKey(ide))) await openFileInLoadedIde(sessionId, ide, options.file, options.position)
+      else if (options.file) setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: options.file!, position: options.position, revision: 0 } }))
       setOpenedIdeFrames((current) => new Set([...current, ideFrameKey(ide)]))
     } catch (error) {
       setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open IDE' }))
@@ -2290,20 +2307,20 @@ function HostApp() {
   }
 
   /** Opens `file` in the loaded window, reloading it on the file when the daemon cannot target it. */
-  const openFileInLoadedIde = async (sessionId: string, ide: SessionIde, file: string) => {
-    if (await createSessionIdesApi(token, daemonFetch).openFile(sessionId, file) !== 'reload') return
-    setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: file, revision: (current[ideFrameKey(ide)]?.revision ?? 0) + 1 } }))
+  const openFileInLoadedIde = async (sessionId: string, ide: SessionIde, file: string, position?: IdeFilePosition) => {
+    if (await createSessionIdesApi(token, daemonFetch).openFile(sessionId, file, position) !== 'reload') return
+    setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: file, position, revision: (current[ideFrameKey(ide)]?.revision ?? 0) + 1 } }))
   }
 
-  /** From a diff: reuse the loaded IDE window, or start the IDE on this file. */
-  const openFileInSessionIde = (sessionId: string, paneId: string, file: string) => {
+  /** From a diff: reuse the loaded IDE window, or start the IDE on this file (at `position`, when given). */
+  const openFileInSessionIde = (sessionId: string, paneId: string, file: string, position?: IdeFilePosition) => {
     const ide = sessionIdes.find((item) => item.sessionIds.includes(sessionId))
-    if (ide?.state !== 'ready' || !openedIdeFrames.has(ideFrameKey(ide))) { void openSessionIde(sessionId, { paneId, file }); return }
+    if (ide?.state !== 'ready' || !openedIdeFrames.has(ideFrameKey(ide))) { void openSessionIde(sessionId, { paneId, file, position }); return }
     setSelectedSessionId(sessionId)
     setArea('ide')
     setLeftPanelOpen(false)
     setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
-    openFileInLoadedIde(sessionId, ide, file).catch((error: unknown) => {
+    openFileInLoadedIde(sessionId, ide, file, position).catch((error: unknown) => {
       setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open file in IDE' }))
     })
   }
@@ -2802,6 +2819,20 @@ function HostApp() {
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token, daemonFetch)
+  const [modelCatalogs, setModelCatalogs] = useState<ModelCatalogs | null>(null)
+  useEffect(() => {
+    if (!connected) return
+    let cancelled = false
+    void createTmuxHttpApi(token, daemonFetch).models().then(
+      (catalogs) => { if (!cancelled) setModelCatalogs(catalogs) },
+      () => undefined,
+    )
+    return () => { cancelled = true }
+  }, [connected, token, daemonFetch])
+  const chatModelsKey = Object.values(chats).map(({ session }) => `${session.provider}:${session.models?.length ?? 0}`).join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const providerModels = useMemo(() => availableProviderModels(modelCatalogs, Object.values(chats).map((chat) => chat.session)), [modelCatalogs, chatModelsKey])
+  const handoffChat = useCallback((paneId: string, target: ChatHandoffTarget) => handoffChatPane(token, paneId, target, daemonFetch), [token, daemonFetch])
   const sessionNamingApi = useMemo(() => createSessionNamingApi(token, daemonFetch), [token])
   const sessionNamingSettings = useMemo(() => ({ api: sessionNamingApi, loadModels: createTmuxHttpApi(token, daemonFetch).models }), [sessionNamingApi, token])
   const chatConversationsApi = useMemo(() => createChatConversationsApi(token, daemonFetch), [token])
@@ -2850,12 +2881,28 @@ function HostApp() {
       prompt = implementPlanFilePrompt(stashed.path)
       readableDir = stashed.dir
     }
+    const agent: SessionAgentLaunch = session?.provider === 'cursor'
+      ? {
+          provider: 'cursor-chat',
+          permissionMode: mode === 'bypassPermissions' || mode === 'auto' ? mode : 'default',
+          prompt,
+          ...(readableDir ? { readableDir } : {}),
+          ...(session.selectedModel ? { model: session.selectedModel } : {}),
+          ...(session.fast ? { fast: true as const } : {}),
+        }
+      : {
+          provider: 'claude-chat',
+          permissionMode: launchPermissionMode(mode),
+          prompt,
+          ...(session?.configDir ? { configDir: session.configDir } : {}),
+          ...(readableDir ? { readableDir } : {}),
+        }
     const created = await tmuxCreateApi.createPane({
       targetId: pane.id,
       direction: 'horizontal',
       placement: 'after',
       cwd: session?.cwd ?? pane.path,
-      agent: { provider: 'claude-chat', permissionMode: launchPermissionMode(mode), prompt, ...(session?.configDir ? { configDir: session.configDir } : {}), ...(readableDir ? { readableDir } : {}) },
+      agent,
     })
     setMaximizedPaneId(null)
     setPendingPaneFocus({ paneId: created.paneId })
@@ -2966,6 +3013,7 @@ function HostApp() {
       const finish = (result: ChatAsideResult) => {
         window.clearTimeout(timer)
         chatAsideReplies.current.delete(id)
+        if (result.ok && result.promotedPaneId) setPendingPaneFocus({ paneId: result.promotedPaneId, waitForCreation: true })
         resolve(result)
       }
       const timer = window.setTimeout(() => finish({ ok: false, error: 'The aside operation timed out and may still be in progress' }), 125_000)
@@ -3108,6 +3156,8 @@ function HostApp() {
           onInterrupt={(dropQueued) => interruptChat(row.paneId, dropQueued)}
           onAnswer={(chatRequestId, answer) => answerChat(row.paneId, chatRequestId, answer)}
           onConfigure={(settings) => configureChat(row.paneId, settings)}
+          providerModels={providerModels}
+          onHandoff={(target) => handoffChat(row.paneId, target)}
           onRestart={() => restartChat(row.paneId)}
           onOpenPr={(repo, number, tab) => { void revealPrTab(row.paneId, repo, number, tab) }}
           onDismissPrs={(prs) => closePrTabs(row.paneId, prs)}
@@ -4093,7 +4143,7 @@ function HostApp() {
   const renderBuiltinPanelTab = (tab: BuiltinPanelTab, visible: boolean, data: PanePanelData) => {
     const pane = paneMap.get(tab.anchorPaneId)
     if (!pane) return null
-    const onOpenInIde = local ? (file: string) => openFileInSessionIde(pane.sessionId, pane.id, file) : undefined
+    const onOpenInIde = local ? (file: string, position?: IdeFilePosition) => openFileInSessionIde(pane.sessionId, pane.id, file, position) : undefined
     if (tab.key === 'terminal') {
       const shell = snapshot?.shells?.find((candidate) => candidate.anchorPaneId === pane.id)?.pane
       return <PaneShellTab key={pane.targetId} shell={shell} visible={visible} connected={connected}
@@ -4126,9 +4176,9 @@ function HostApp() {
     const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
     const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
       paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
-      state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
+      state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Board', headlineSource: 'hook', updates: [], updatedAt: 0,
     }
-    return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
+    return <BoardTile token={token} panePrs={data.prs} key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
       fullWidth visible={visible} onAttentionChange={reportSessionAttention}
       empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
       simsApi={local ? simsApi : undefined} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
@@ -4647,7 +4697,7 @@ function HostApp() {
                             } else setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))
                           }}>
                           <PanelTop aria-hidden="true" />{paneTabs.length > 0 && <span>{paneTabs.length}</span>}
-                          {hasNew && <i className={`side-panel-new${sessionWarnings[pane.id] ? ' is-warning' : ''}`} aria-label={sessionWarnings[pane.id] ? 'Session resume failed' : 'New updates'} />}
+                          {hasNew && <i className={`side-panel-new${sessionWarnings[pane.id] ? ' is-warning' : ''}`} aria-label={sessionWarnings[pane.id] ? 'Board resume failed' : 'New updates'} />}
                         </button> : undefined
                         if (pane.empty) {
                           return [
@@ -4726,6 +4776,8 @@ function HostApp() {
                             onChatInterrupt={(dropQueued) => interruptChat(pane.id, dropQueued)}
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
+                            chatProviderModels={providerModels}
+                            onChatHandoff={(target) => handoffChat(pane.id, target)}
                             onChatRestart={() => restartChat(pane.id)}
                             onChatOpenPr={(repo, number, tab) => { void revealPrTab(pane.id, repo, number, tab) }}
                             onChatDismissPrs={(prs) => closePrTabs(pane.id, prs)}
@@ -4923,7 +4975,41 @@ function HostApp() {
               switcher={panesSwitcher}
             />
           ) : null}
-          {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
+          {area === 'cloud' ? (
+            <CloudTasksSection
+              api={cloudTasksApi}
+              selectedTaskId={selectedCloudTaskId}
+              onSelectTask={setSelectedCloudTaskId}
+              onOpenDiscoveredChat={async (agent: DiscoveredExternalAgent) => {
+                if (agent.provider === 'cursor') {
+                  const imported = await cloudTasksApi.importDiscovered({
+                    provider: agent.provider,
+                    id: agent.id,
+                    title: agent.title,
+                    ...(agent.cwd ? { cwd: agent.cwd } : {}),
+                    ...(agent.url ? { url: agent.url } : {}),
+                  })
+                  if (imported.kind === 'chat' && isChatConversationSessionId(imported.launch.resume)) {
+                    const cwd = imported.launch.cwd ?? paneMap.get(effectivePaneId ?? '')?.path ?? snapshot?.panes[0]?.path
+                    const slug = imported.launch.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
+                    const name = slug || `cursor-${imported.launch.resume.slice(0, 8)}`
+                    const created = await tmuxCreateApi.createSession({
+                      name,
+                      autoName: true,
+                      ...(cwd ? { cwd } : {}),
+                      agent: { provider: 'cursor-chat', permissionMode: 'bypassPermissions', resume: imported.launch.resume },
+                    })
+                    setArea('workspace')
+                    setPendingPaneFocus({ paneId: created.created.paneId })
+                    return
+                  }
+                }
+                if (isSafeExternalUrl(agent.url)) {
+                  window.open(agent.url, '_blank', 'noopener,noreferrer')
+                }
+              }}
+            />
+          ) : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
               <NotesSection

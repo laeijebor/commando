@@ -1,4 +1,5 @@
 import type { GitRepoInfo } from '../shared/tmux-create'
+import type { CodeNavFile, CodeNavRequest, CodeNavResult } from '../shared/code-nav'
 export type GitChangedFile = {
   path: string
   status: string
@@ -127,6 +128,10 @@ export interface GitDiffApiClient {
   fileContents(paneId: string, file: string, options?: GitComparisonOptions): Promise<GitFileContents>
   /** Line-by-line blame of a file at a rev returned by fileContents (a commit SHA or 'worktree'). */
   blame(paneId: string, file: string, rev: string): Promise<GitBlame>
+  /** Definition, references or callers of the symbol at a position in one diff side. */
+  navigate(paneId: string, request: CodeNavRequest): Promise<CodeNavResult>
+  /** One file at a rev ('worktree' or a full SHA), for the navigation peek. */
+  fileAt(paneId: string, file: string, rev: string): Promise<CodeNavFile>
   search(paneId: string, query: string, target?: string, head?: string, baseFallbackRepo?: string, baseFallbackBranch?: string): Promise<GitDiffSearchResult>
   branches(paneId: string): Promise<GitBranches>
 }
@@ -183,6 +188,16 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
         baseFallbackBranch: options.baseFallbackBranch,
       }),
     blame: (paneId, file, rev) => request<GitBlame>('blame', { paneId, file, rev }),
+    navigate: (paneId, nav) => request<CodeNavResult>('nav', {
+      paneId,
+      kind: nav.kind,
+      file: nav.file,
+      rev: nav.rev,
+      line: String(nav.line),
+      character: String(nav.character),
+      symbol: nav.symbol,
+    }),
+    fileAt: (paneId, file, rev) => request<CodeNavFile>('file-at', { paneId, file, rev }),
     search: (paneId, query, target, head, baseFallbackRepo, baseFallbackBranch) => request<GitDiffSearchResult>('search', { paneId, query, target, head, baseFallbackRepo, baseFallbackBranch }),
     branches: (paneId) => request<GitBranches>('branches', { paneId }),
     repo: (directory) => request<GitRepoInfo>('repo', { path: directory }),

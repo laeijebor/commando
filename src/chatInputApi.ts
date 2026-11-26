@@ -1,4 +1,4 @@
-import { isChatImageId, isChatVideoId, type ChatImageRef } from '../shared/agent-chat'
+import { isChatImageId, isChatVideoId, type ChatImageRef, type ChatProvider } from '../shared/agent-chat'
 import type { PreparedImage } from './chat/attachImages'
 import type { PullRequestOption } from './chat/composerTriggers'
 import type { PrsApiClient } from './prsApi'
@@ -62,4 +62,31 @@ export async function stashChatPlan(token: string, markdown: string, fetcher: ty
   const saved = await postPlan(token, 'file', markdown, fetcher)
   if (!saved.dir) throw new Error("Commando didn't say where it saved the plan")
   return { path: saved.path, dir: saved.dir }
+}
+
+/** Hands a chat pane over to another provider in the same worktree, carrying a distilled brief. */
+export async function handoffChatPane(
+  token: string,
+  paneId: string,
+  target: { provider: ChatProvider; model?: string; note?: string },
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const response = await fetcher(`/api/chat/${encodeURIComponent(paneId)}/handoff`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      targetProvider: target.provider,
+      ...(target.model ? { model: target.model } : {}),
+      ...(target.note ? { note: target.note } : {}),
+    }),
+  })
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({})) as { error?: unknown }
+    throw new Error(typeof result.error === 'string' && result.error ? result.error : `Hand off failed (${response.status})`)
+  }
 }

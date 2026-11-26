@@ -21,6 +21,8 @@ export class RedlineArtifactError extends Error {
 }
 
 type RegistryOptions = {
+  /** Durable owners (boards) keep registrations across a daemon's downtime. */
+  retainedIds?: Iterable<string>
   /** Where registrations persist across daemon restarts; omit for in-memory only. */
   statePath?: string
   now?: () => number
@@ -36,16 +38,17 @@ type Entry = { dir: string; registeredAt: number }
  * daemon restarts (same id keeps serving); entries whose directory vanished
  * or whose ttl lapsed are dropped on load, and every surviving entry is
  * re-validated through the same realpath checks as a fresh registration.
- * Registering a new directory when full releases the oldest registration.
+ * The capacity bounds unretained entries; live tabs and boards protect their
+ * registrations from capacity eviction as well as TTL expiry.
  */
 export class RedlineArtifactRegistry {
+  private retained = new Set<string>()
   private readonly entries = new Map<string, Entry>()
-  /** Ids a live, parked or closed tab points at, as last passed to `retain`. */
-  private retained: ReadonlySet<string> = new Set()
   private readonly statePath: string | null
   private readonly now: () => number
 
   constructor(options: RegistryOptions = {}) {
+    this.retained = new Set(options.retainedIds)
     this.statePath = options.statePath ?? null
     this.now = options.now ?? Date.now
     this.load()
@@ -87,32 +90,28 @@ export class RedlineArtifactRegistry {
       if (entry.dir === real) {
         // Same directory keeps its id (and its URLs) across re-registrations.
         nextEntries.set(id, { ...entry, registeredAt })
+        this.trim(nextEntries)
         this.commit(nextEntries)
         return { id }
       }
-    }
-    if (nextEntries.size >= MAX_ARTIFACT_DIRS) {
-      // Full: release the oldest registration no tab shows, or the oldest of all when every one is shown.
-      // Re-registering refreshes an entry.
-      const unshown = [...nextEntries].filter(([id]) => !this.retained.has(id))
-      const [oldestId] = (unshown.length ? unshown : [...nextEntries])
-        .reduce((oldest, next) => (next[1].registeredAt < oldest[1].registeredAt ? next : oldest))
-      nextEntries.delete(oldestId)
     }
     let id: string
     do {
       id = randomBytes(8).toString('hex')
     } while (this.entries.has(id))
     nextEntries.set(id, { dir: real, registeredAt })
+    this.trim(nextEntries)
     this.commit(nextEntries)
     return { id }
   }
 
   /** Keeps registrations alive while a live, parked or closed tab still points at them. */
   retain(ids: Iterable<string>): void {
-    // The whole set each time: registering when full releases registrations outside it first.
-    this.retained = new Set(ids)
     const now = this.now()
+    this.retained = new Set([...ids].filter((id) => {
+      const entry = this.entries.get(id)
+      return entry && entry.registeredAt >= now - REDLINE_ARTIFACT_TTL_MS
+    }))
     let nextEntries: Map<string, Entry> | undefined
     for (const id of this.retained) {
       const entry = this.entries.get(id)
@@ -120,7 +119,9 @@ export class RedlineArtifactRegistry {
       nextEntries ??= new Map(this.entries)
       nextEntries.set(id, { ...entry, registeredAt: now })
     }
-    if (nextEntries) this.commit(nextEntries)
+    const trimmed = nextEntries ?? new Map(this.entries)
+    this.trim(trimmed)
+    if (nextEntries || trimmed.size !== this.entries.size) this.commit(trimmed)
   }
 
   unregister(id: string): boolean {
@@ -210,11 +211,11 @@ export class RedlineArtifactRegistry {
         dirty = true
         continue
       }
-      if (typeof registeredAt !== 'number' || !Number.isFinite(registeredAt) || registeredAt < cutoff) {
+      if (typeof registeredAt !== 'number' || !Number.isFinite(registeredAt) || (registeredAt < cutoff && !this.retained.has(id))) {
         dirty = true
         continue
       }
-      const clampedRegisteredAt = Math.min(registeredAt, now)
+      const clampedRegisteredAt = this.retained.has(id) ? now : Math.min(registeredAt, now)
       if (clampedRegisteredAt !== registeredAt) dirty = true
       // Persisted paths are canonical; a changed realpath means the directory
       // was rebound and the old capability must not follow it.
@@ -234,7 +235,7 @@ export class RedlineArtifactRegistry {
     candidates.sort(([, a], [, b]) => b.registeredAt - a.registeredAt)
     const dirs = new Set<string>()
     for (const [id, entry] of candidates) {
-      if (this.entries.has(id) || dirs.has(entry.dir) || this.entries.size >= MAX_ARTIFACT_DIRS) {
+      if (this.entries.has(id) || dirs.has(entry.dir) || (!this.retained.has(id) && [...this.entries.keys()].filter((key) => !this.retained.has(key)).length >= MAX_ARTIFACT_DIRS)) {
         dirty = true
         continue
       }
@@ -242,6 +243,11 @@ export class RedlineArtifactRegistry {
       dirs.add(entry.dir)
     }
     if (dirty) this.persist(this.entries)
+  }
+
+  private trim(entries: Map<string, Entry>): void {
+    const unretained = [...entries].filter(([id]) => !this.retained.has(id)).sort((a, b) => a[1].registeredAt - b[1].registeredAt)
+    for (const [id] of unretained.slice(0, Math.max(0, unretained.length - MAX_ARTIFACT_DIRS))) entries.delete(id)
   }
 
   private commit(entries: ReadonlyMap<string, Entry>): void {

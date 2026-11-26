@@ -325,7 +325,7 @@ export function SidePanel({
           <button className="side-panel-expand" type="button" aria-label="Expand side panel" onClick={() => changeCollapsed(false)}><PanelRightOpen /></button>
           {focusedTabs.filter(isBuiltinTab).filter((tab, index, builtins) => !tab.prState || builtins.findIndex((candidate) => candidate.prState) === index).map((tab) => {
             const Icon = panelTabIcon(tab)
-            return <button key={tab.id} className="side-panel-expand" type="button" aria-label={`Open ${tab.prState ? 'PRs' : tab.label}`} title={tab.prState ? 'PRs' : tab.label} onClick={() => { onSelect(tab); changeCollapsed(false) }}><Icon />{tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Session resume failed' : 'New updates'} />}</button>
+            return <button key={tab.id} className="side-panel-expand" type="button" aria-label={`Open ${tab.prState ? 'PRs' : tab.label}`} title={tab.prState ? 'PRs' : tab.label} onClick={() => { onSelect(tab); changeCollapsed(false) }}><Icon />{tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Board resume failed' : 'New updates'} />}</button>
           })}
         </div> : (
           <header className="side-panel-head">
@@ -335,11 +335,11 @@ export function SidePanel({
                   const pr = parsePrPanelKey(tab.key)
                   const Icon = panelTabIcon(tab)
                   return <div className={`side-panel-tab${active?.id === tab.id ? ' is-active' : ''}`} key={tab.id}>
-                    <button type="button" role="tab" aria-label={tab.prState ? `${tab.label} ${tab.prState}` : undefined} aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)}>
+                    <button type="button" role="tab" aria-label={tab.prState ? `${tab.label} ${tab.prState}` : tab.key === 'session' ? tab.label : undefined} aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)}>
                       <Icon aria-hidden="true" className={tab.prState ? `side-panel-pr-state ${tab.prState}` : undefined} /><span>{tab.label}</span>
                       {tab.prState && <i className={`side-panel-pr-indicator ${tab.prState}`} aria-label={tab.prState} />}
                       {tab.key === 'changes' && <span className="side-panel-counts"><b className="added">+{tab.additions}</b> <b className="deleted">−{tab.deletions}</b></span>}
-                      {tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Session resume failed' : 'New updates'} />}
+                      {tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Board resume failed' : 'New updates'} />}
                     </button>
                     {pr && <button type="button" className="side-panel-tab-close" aria-label={`Close PR #${pr.number} tab`} onClick={() => onDismissPr?.(tab, tab.prSignature!, active?.id === tab.id
                       ? resolveActivePanelTab(focusedTabs.filter((candidate) => candidate.id !== tab.id), tab.key, focusedTabs) : undefined)}><X /></button>}

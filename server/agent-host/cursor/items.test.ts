@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_CHAT_ITEMS, parseChatItem } from '../../../shared/agent-chat.js'
-import { CursorItemMapper, QUESTION_REFUSED } from './items.js'
+import { CursorItemMapper, parseCursorTranscriptJsonl, QUESTION_REFUSED } from './items.js'
 
 const tool = (mapper: CursorItemMapper, type: string, args: unknown, result?: unknown) => mapper.delta({ type: 'tool-call-completed', callId: type, toolCall: { type, args, result } }).at(-1)
 describe('CursorItemMapper', () => {
@@ -136,5 +136,178 @@ describe('CursorItemMapper', () => {
     expect(mapper.delta(null)).toEqual([])
     expect(mapper.delta({ type: 'tool-call-started' })).toEqual([])
     expect(mapper.replay({})).toEqual([])
+  })
+  it('streams shell-output-delta stdout/stderr into the active running shell and replaces with authoritative output on completion', () => {
+    let now = 10
+    const mapper = new CursorItemMapper(() => ++now)
+    mapper.begin('t1')
+    expect(mapper.delta({ type: 'shell-output-delta', event: { case: 'stdout', value: { data: 'ignored' } } })).toEqual([])
+
+    mapper.delta({ type: 'tool-call-started', callId: 'sh1', toolCall: { type: 'shell', args: { command: 'npm test' } } })
+    const out1 = mapper.delta({ type: 'shell-output-delta', event: { case: 'stdout', value: { data: 'line 1\n' } } })
+    expect(out1).toMatchObject([{ kind: 'command', command: 'npm test', output: 'line 1\n', status: 'running' }])
+    const out2 = mapper.delta({ type: 'shell-output-delta', event: { case: 'stderr', value: { data: 'warn\n' } } })
+    expect(out2).toMatchObject([{ kind: 'command', output: 'line 1\nwarn\n', status: 'running' }])
+    // Partial tool call without result must not wipe streamed output.
+    const partial = mapper.delta({ type: 'partial-tool-call', callId: 'sh1', toolCall: { type: 'shell', args: { command: 'npm test' } } })
+    expect(partial).toMatchObject([{ kind: 'command', output: 'line 1\nwarn\n', status: 'running' }])
+    // Completion replaces streamed output with authoritative stdout + stderr and clears active shell tracking.
+    const done = mapper.delta({
+      type: 'tool-call-completed',
+      callId: 'sh1',
+      toolCall: { type: 'shell', args: { command: 'npm test' }, result: { status: 'success', value: { stdout: 'final out\n', stderr: 'final err\n' } } },
+    })
+    expect(done).toMatchObject([{ kind: 'command', output: 'final out\nfinal err\n', status: 'completed' }])
+    expect(mapper.delta({ type: 'shell-output-delta', event: { case: 'stdout', value: { data: 'late' } } })).toEqual([])
+
+    // Settle also clears activeShellId.
+    mapper.delta({ type: 'tool-call-started', callId: 'sh2', toolCall: { type: 'shell', args: { command: 'sleep 10' } } })
+    mapper.settle('t1', 'interrupted')
+    expect(mapper.delta({ type: 'shell-output-delta', event: { case: 'stdout', value: { data: 'after settle' } } })).toEqual([])
+    expect(mapper.list().every((item) => parseChatItem(item))).toBe(true)
+  })
+  it('streams subagent tool-call-delta child items with parentToolUseId and settles them on task completion', () => {
+    const mapper = new CursorItemMapper(() => 100)
+    mapper.begin('turn-1')
+    const [started] = mapper.delta({
+      type: 'tool-call-started',
+      callId: 'task-1',
+      toolCall: { type: 'task', args: { description: 'Explore repo', prompt: 'Find files', model: 'auto' } },
+    })
+    expect(started).toMatchObject({ id: 'cursor:turn-1:tool:task-1', kind: 'subagent', state: 'running' })
+    // Running subagents must never expose agentId (no stop/background controls in Cursor SDK).
+    expect(started).not.toHaveProperty('agentId')
+
+    mapper.delta({ type: 'tool-call-delta', callId: 'task-1', taskUpdate: { type: 'thinking-delta', text: 'Checking' } })
+    mapper.delta({ type: 'tool-call-delta', callId: 'task-1', taskUpdate: { type: 'thinking-completed' } })
+    mapper.delta({ type: 'tool-call-delta', callId: 'task-1', taskUpdate: { type: 'text-delta', text: 'Scanning...' } })
+    mapper.delta({
+      type: 'tool-call-delta',
+      callId: 'task-1',
+      taskUpdate: { type: 'tool-call-started', callId: 'nested-1', toolCall: { type: 'read', args: { path: 'README.md' } } },
+    })
+    mapper.delta({
+      type: 'tool-call-delta',
+      callId: 'task-1',
+      taskUpdate: { type: 'tool-call-completed', callId: 'nested-1', toolCall: { type: 'read', args: { path: 'README.md' }, result: { status: 'success', value: { text: '# Hi' } } } },
+    })
+    mapper.delta({ type: 'tool-call-delta', callId: 'task-1', taskUpdate: { type: 'text-delta', text: 'Found it' } })
+
+    const children = mapper.list().filter((item) => item.parentToolUseId === started!.id)
+    expect(children).toMatchObject([
+      { kind: 'reasoning', text: 'Checking', status: 'completed', parentToolUseId: started!.id },
+      { kind: 'assistant_message', text: 'Scanning...', status: 'completed', parentToolUseId: started!.id },
+      { kind: 'tool', toolName: 'read', title: 'Read file: README.md', status: 'completed', parentToolUseId: started!.id },
+      { kind: 'assistant_message', text: 'Found it', status: 'running', parentToolUseId: started!.id },
+    ])
+    expect(children.every((item) => item.id.startsWith('cursor:turn-1:sub:task-1:'))).toBe(true)
+
+    const completedBatch = mapper.delta({
+      type: 'tool-call-completed',
+      callId: 'task-1',
+      toolCall: {
+        type: 'task',
+        args: { description: 'Explore repo', prompt: 'Find files' },
+        result: {
+          status: 'success',
+          value: {
+            agentId: 'sub-abc',
+            isBackground: true,
+            durationMs: 1234,
+            resultSuffix: 'Saved report.',
+            conversationSteps: [
+              { type: 'thinkingMessage', message: { text: 'Plan' } },
+              { type: 'toolCall', message: { type: 'read', args: { path: 'a.ts' }, result: { status: 'success', value: {} } } },
+              { type: 'assistantMessage', message: { text: 'Final summary' } },
+            ],
+          },
+        },
+      },
+    })
+    const completedParent = completedBatch.at(-1)!
+    expect(completedParent).toMatchObject({
+      kind: 'subagent',
+      state: 'completed',
+      agentId: 'sub-abc',
+      background: true,
+      durationMs: 1234,
+      output: 'Final summary\n\nSaved report.',
+    })
+    // Still-running child item was settled when the parent task completed.
+    expect(mapper.list().filter((item) => item.parentToolUseId === started!.id).every((item) => item.status === 'completed')).toBe(true)
+    expect(mapper.list().every((item) => parseChatItem(item))).toBe(true)
+
+    // Subagent transcript replays stored conversationSteps.
+    const transcript = mapper.subagentTranscript('sub-abc')
+    expect(transcript?.items).toMatchObject([
+      { kind: 'reasoning', text: 'Plan', status: 'completed' },
+      { kind: 'tool', toolName: 'read', title: 'Read file: a.ts', status: 'completed' },
+      { kind: 'assistant_message', text: 'Final summary', status: 'completed' },
+    ])
+    expect(transcript?.items.every((item) => parseChatItem(item))).toBe(true)
+
+    // clear() resets items, active shell, and stored subagents.
+    mapper.clear()
+    expect(mapper.list()).toEqual([])
+    expect(mapper.subagentTranscript('sub-abc')).toBeNull()
+  })
+  it('supports proto-JSON conversationSteps and transcriptPath-only subagents', () => {
+    const mapper = new CursorItemMapper(() => 50)
+    mapper.begin('turn-2')
+    const protoTask = tool(mapper, 'task', { description: 'Proto', prompt: 'Check' }, {
+      status: 'success',
+      value: {
+        agentId: 'proto-agent',
+        conversationSteps: [
+          { toolCall: { shellToolCall: { args: { command: 'echo hi' }, result: { success: { stdout: 'hi\n', stderr: '' } } } } },
+          { assistantMessage: { text: 'Proto answer' } },
+        ],
+      },
+    })
+    expect(protoTask).toMatchObject({ kind: 'subagent', agentId: 'proto-agent', output: 'Proto answer' })
+    expect(mapper.subagentTranscript('proto-agent')?.items).toMatchObject([
+      { kind: 'command', command: 'echo hi', output: 'hi\n', status: 'completed' },
+      { kind: 'assistant_message', text: 'Proto answer', status: 'completed' },
+    ])
+
+    const pathOnly = mapper.delta({
+      type: 'tool-call-completed',
+      callId: 'path-call',
+      toolCall: {
+        type: 'task',
+        args: { description: 'File backed', prompt: 'Go' },
+        result: { status: 'success', value: { transcriptPath: '/tmp/sub.jsonl' } },
+      },
+    }).at(-1)
+    expect(pathOnly).toMatchObject({ kind: 'subagent', agentId: 'path-call' })
+    expect(mapper.subagentTranscript('path-call')).toEqual({ items: [], transcriptPath: '/tmp/sub.jsonl' })
+  })
+  it('parses Cursor subagent JSONL transcripts cleanly', () => {
+    const jsonl = [
+      JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text: 'Inspect files' }] } }),
+      'not-valid-json',
+      JSON.stringify({
+        role: 'assistant',
+        message: {
+          content: [
+            { type: 'thinking', thinking: 'Let me check' },
+            { type: 'tool_use', id: 'tu-1', name: 'Shell', input: { command: 'ls' } },
+            { type: 'text', text: 'Checked directory' },
+          ],
+        },
+      }),
+      JSON.stringify({
+        role: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'a.ts\nb.ts' }] },
+      }),
+    ].join('\n')
+    const items = parseCursorTranscriptJsonl(jsonl, 'sub-1', () => 1)
+    expect(items).toMatchObject([
+      { kind: 'user_message', text: 'Inspect files' },
+      { kind: 'reasoning', text: 'Let me check' },
+      { kind: 'command', command: 'ls', output: 'a.ts\nb.ts', status: 'completed' },
+      { kind: 'assistant_message', text: 'Checked directory' },
+    ])
+    expect(items.every((item) => parseChatItem(item))).toBe(true)
   })
 })

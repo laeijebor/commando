@@ -1,17 +1,24 @@
 import { Code2, LoaderCircle, Minus, RefreshCw, Unplug } from 'lucide-react'
 import { useState } from 'react'
+import { ideGotoSuffix, type IdeFilePosition } from '../shared/ide-position'
 import type { SessionIde } from '../shared/protocol'
 import './session-ide.css'
 
 /**
  * Workbench URL that opens `file` as the window loads. code-server reads the
  * `payload` query on startup; the authority is the host it is served from.
+ * A position uses the workbench's goto-line mode, which reads `:line:column`
+ * from the end of the file URI's path.
  */
-export function ideFrameUrl(url: string, file?: string): string {
+export function ideFrameUrl(url: string, file?: string, position?: IdeFilePosition): string {
   if (!file) return url
   const target = new URL(url, window.location.href)
   const path = file.split('/').map(encodeURIComponent).join('/')
-  target.searchParams.set('payload', JSON.stringify([['openFile', `vscode-remote://${target.host}${path}`]]))
+  const suffix = ideGotoSuffix(file, position)
+  target.searchParams.set('payload', JSON.stringify([
+    ['openFile', `vscode-remote://${target.host}${path}${suffix}`],
+    ...(suffix ? [['gotoLineMode', 'true']] : []),
+  ]))
   return url.startsWith('/') ? `${target.pathname}${target.search}` : target.href
 }
 
@@ -19,11 +26,11 @@ export function ideFrameUrl(url: string, file?: string): string {
 export const ideFrameKey = (ide: Pick<SessionIde, 'id' | 'generation'>) => `${ide.id}:${ide.generation}`
 
 /** `revision` reloads the window on `path`, when the loaded one cannot be targeted. */
-export type IdeInitialFile = { path: string; revision: number }
+export type IdeInitialFile = { path: string; position?: IdeFilePosition; revision: number }
 
-function IdeFrame({ ide, file, hidden }: { ide: SessionIde; file?: string; hidden: boolean }) {
+function IdeFrame({ ide, file, hidden }: { ide: SessionIde; file?: IdeInitialFile; hidden: boolean }) {
   // Fixed at mount: changing an iframe's src reloads the whole workbench.
-  const [src] = useState(() => ideFrameUrl(ide.url, file))
+  const [src] = useState(() => ideFrameUrl(ide.url, file?.path, file?.position))
   return <iframe
     className="session-ide-frame"
     hidden={hidden}
@@ -102,7 +109,7 @@ export function SessionIdeView({
     {ides.filter((item) => item.state === 'ready' && openedFrames.has(ideFrameKey(item))).map((item) => <IdeFrame
       key={`${ideFrameKey(item)}:${initialFiles[ideFrameKey(item)]?.revision ?? 0}`}
       ide={item}
-      file={initialFiles[ideFrameKey(item)]?.path}
+      file={initialFiles[ideFrameKey(item)]}
       hidden={!active || item.id !== ide?.id}
     />)}
   </section>

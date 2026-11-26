@@ -78,7 +78,7 @@ describe('SidePanel', () => {
     expect(screen.getByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
     summary = { isRepo: true, target: 'main', files: [] }
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     expect(onSelect).not.toHaveBeenCalled()
     summary = changed
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
@@ -101,10 +101,10 @@ describe('SidePanel', () => {
     expect(screen.getAllByRole('button', { name: 'Open PRs' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:4' }))
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', 'Terminal', '#4', '#3', '#2', '#1'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Board', 'Terminal', '#4', '#3', '#2', '#1'])
     expect(screen.getByRole('tab', { name: '#4 open' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getAllByRole('button', { name: /Close PR #\d+ tab/ })).toHaveLength(4)
-    expect(screen.queryByRole('button', { name: 'Close Session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Close Board' })).not.toBeInTheDocument()
     const first = screen.getByLabelText('State of pr:acme:widgets:4')
     fireEvent.change(first, { target: { value: 'retained' } })
     view.rerender(element('pr:acme:widgets:3'))
@@ -123,8 +123,8 @@ describe('SidePanel', () => {
     expect(screen.getByRole('tab', { name: '#3 draft' })).toHaveAttribute('aria-selected', 'true')
     prs = []
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', 'Terminal'])
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Board', 'Terminal'])
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('dismisses only PR tabs, falls forward, restores from the menu and filters the rail', async () => {
@@ -145,7 +145,7 @@ describe('SidePanel', () => {
     let view!: ReturnType<typeof render>
     await act(async () => { view = render(element()) })
     expect(screen.queryByRole('button', { name: 'Close Changes' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Close Session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Close Board' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
     expect(screen.queryByRole('heading', { name: 'Closed PRs' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
@@ -200,7 +200,7 @@ describe('SidePanel', () => {
     } else {
       expect(onUnavailable).toHaveBeenCalledOnce()
       expect(onVisible).not.toHaveBeenCalled()
-      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     }
     fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
     view.rerender(<PendingPanel windowId="@2" />)
@@ -209,9 +209,9 @@ describe('SidePanel', () => {
 
   it('shows failed resume attention in the collapsed rail and expanded Session tab', () => {
     const view = render(<SidePanel windowId="@1" tabs={[]} focusedPaneId="%12" paneLabel="pane" titles={{}} simulatorNames={{}} sessionAttention={{ '%12': true }} sessionWarnings={{ '%12': true }} onSelect={vi.fn()} onClose={vi.fn()} onOpen={vi.fn()} renderTab={() => null}>{null}</SidePanel>)
-    expect(screen.getByLabelText('Session resume failed')).toHaveClass('is-warning')
-    fireEvent.click(screen.getByRole('button', { name: 'Open Session' }))
-    expect(screen.getByRole('tab', { name: /Session/ }).querySelector('.is-warning')).toBeInTheDocument()
+    expect(screen.getByLabelText('Board resume failed')).toHaveClass('is-warning')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Board' }))
+    expect(screen.getByRole('tab', { name: /Board/ }).querySelector('.is-warning')).toBeInTheDocument()
     expect(view.container.querySelector('.side-panel-add-menu')).not.toBeInTheDocument()
   })
 
@@ -239,7 +239,7 @@ describe('SidePanel', () => {
     expect(layout).not.toHaveClass('is-collapsed')
     view.rerender(panel('%12', vi.fn(), []))
     expect(layout).not.toHaveClass('is-collapsed')
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBeNull()
   })
 
@@ -297,8 +297,8 @@ describe('SidePanel', () => {
     expect(view.container.querySelector('.window-panel-layout')).not.toBeNull()
     expect(screen.getByRole('complementary')).toBeInTheDocument()
     expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-collapsed')
-    fireEvent.click(screen.getByRole('button', { name: 'Open Session' }))
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Board' }))
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBe('false')
     expect(screen.queryByRole('separator')).toBeInTheDocument()
   })
@@ -360,6 +360,8 @@ describe('narrow tabs drawer', () => {
       fileDiff: vi.fn(async () => ({ file: 'a.ts', diff: 'DIFF' })),
       fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
       blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
+      navigate: vi.fn().mockResolvedValue({ kind: "definition", source: "text", rev: "worktree", locations: [], truncated: false }),
+      fileAt: vi.fn().mockResolvedValue({ file: "", rev: "worktree", contents: null, unavailable: "missing" }),
       search: vi.fn(async (query: string) => ({ query, matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false })),
       repo: vi.fn(async () => ({ isRepo: false })),
       branches: vi.fn(async () => ({ isRepo: true, branches: ['main'] })),
@@ -507,7 +509,7 @@ describe('narrow tabs drawer', () => {
     const view = render(<Drawer />)
     const drawer = view.container.querySelector<HTMLElement>('.side-panel')!
     expect(view.container.querySelector('.side-panel-rail')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Open Session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Board' })).not.toBeInTheDocument()
     expect(drawer).toHaveAttribute('inert')
     expect(drawer).toHaveAttribute('aria-hidden', 'true')
     fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))

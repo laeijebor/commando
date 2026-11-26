@@ -136,32 +136,15 @@ describe('RedlineArtifactRegistry', () => {
     expect(persisted.artifacts.map((artifact) => artifact.id)).not.toContain(ids[1])
   })
 
-  it('when full, releases the oldest registration no tab shows before any a tab still shows', () => {
+  it('never releases a registration a tab still shows, however many others are registered', () => {
     let clock = 1_000
     const registry = new RedlineArtifactRegistry({ now: () => clock++ })
     const dirs = Array.from({ length: MAX_ARTIFACT_DIRS }, () => realpathSync(artifactDir()))
     const ids = dirs.map((dir) => registry.register(dir).id)
-    // The two oldest are open in tabs; the third oldest is not.
-    registry.retain([ids[0], ids[1]])
-    registry.register(realpathSync(artifactDir()))
+    registry.retain([ids[0]])
+    for (let i = 0; i < MAX_ARTIFACT_DIRS; i++) registry.register(realpathSync(artifactDir()))
     expect(registry.directory(ids[0])).toBe(dirs[0])
-    expect(registry.directory(ids[1])).toBe(dirs[1])
-    expect(registry.directory(ids[2])).toBeNull()
-    // Each retain call replaces the set: ids[0] is no longer shown, so it goes next.
-    registry.retain([ids[1]])
-    registry.register(realpathSync(artifactDir()))
-    expect(registry.directory(ids[0])).toBeNull()
-    expect(registry.directory(ids[1])).toBe(dirs[1])
-  })
-
-  it('releases the oldest of all when every registration is shown', () => {
-    let clock = 1_000
-    const registry = new RedlineArtifactRegistry({ now: () => clock++ })
-    const ids = Array.from({ length: MAX_ARTIFACT_DIRS }, () => registry.register(realpathSync(artifactDir())).id)
-    registry.retain(ids)
-    registry.register(realpathSync(artifactDir()))
-    expect(registry.directory(ids[0])).toBeNull()
-    expect(registry.directory(ids[1])).not.toBeNull()
+    expect(registry.directory(ids[1])).toBeNull()
   })
 
   it('ensure reuses a live registration without refreshing it, and registers a missing one', () => {
@@ -379,6 +362,20 @@ describe('RedlineArtifactRegistry', () => {
     expect(registry.resolve(id, 'index.html')).toBe(join(dir, 'index.html'))
   })
 
+  it('trims all released overflow registrations and keeps the bound during further insertions', () => {
+    let now = 1000
+    const registry = new RedlineArtifactRegistry({ now: () => now++ }), ids: string[] = []
+    for (let i = 0; i < MAX_ARTIFACT_DIRS + 10; i++) {
+      ids.push(registry.register(realpathSync(artifactDir())).id)
+      registry.retain(ids)
+    }
+    registry.retain([])
+    expect(ids.filter((id) => registry.directory(id))).toHaveLength(MAX_ARTIFACT_DIRS)
+    expect(registry.directory(ids[0])).toBeNull()
+    const newest = registry.register(realpathSync(artifactDir())).id
+    expect(ids.filter((id) => registry.directory(id))).toHaveLength(MAX_ARTIFACT_DIRS - 1)
+    expect(registry.directory(newest)).not.toBeNull()
+  })
   it('unregister removes the entry from the state file too', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
     const registry = new RedlineArtifactRegistry({ statePath })

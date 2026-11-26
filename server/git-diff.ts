@@ -26,11 +26,13 @@ const MAX_SEARCHED_UNTRACKED_CHARS = 2 * 1024 * 1024
 export const MAX_FILE_CONTENTS_BYTES = 1024 * 1024
 const MAX_BLAME_CACHE_ENTRIES = 100
 const UNCOMMITTED_SHA = '0'.repeat(40)
-const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
+export const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
 const BLAME_HEADER = /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ (\d+)(?: \d+)?$/u
 /** git blame's answer for a worktree path HEAD doesn't have (untracked, or no commits yet). */
 const BLAME_NOT_IN_HEAD = /no such path .* in HEAD|no such ref: HEAD|bad revision 'HEAD'/iu
 const NUL = '\u0000'
+/** git's answer for a SHA that names no object in the repository. */
+export const UNKNOWN_OBJECT = /not a tree object|bad object|unable to parse object|not a valid object name|bad revision|invalid object name/iu
 const REF_FORBIDDEN = /[\s~^:?*[\\]/u
 const PULL_REQUEST_URL = /https?:\/\/[a-z0-9.-]+\/[a-z0-9_.-]+\/[a-z0-9_.-]+\/pull\/([1-9]\d*)/giu
 
@@ -144,7 +146,7 @@ export const nodeWorktreeFiles: WorktreeFiles = {
 }
 
 /** One side of a comparison before its contents are read, so oversize files are never loaded. */
-type FileSource = { size: number; read: () => Promise<string> }
+export type FileSource = { size: number; read: () => Promise<string> }
 
 export function validateBlameRev(value: unknown): string {
   if (value === 'worktree' || (typeof value === 'string' && COMMIT_SHA.test(value))) return value
@@ -195,7 +197,7 @@ export function parseBlamePorcelain(output: string, now: () => number = Date.now
   return { commits, lines }
 }
 
-function gitFailure(error: unknown, action: string): GitDiffError {
+export function gitFailure(error: unknown, action: string): GitDiffError {
   if (error instanceof GitDiffError) return error
   if (error instanceof GitCommandFailure) {
     if (error.missingBinary) return new GitDiffError('exec', 'git is not installed on the daemon host')
@@ -352,7 +354,7 @@ export function validateGitTarget(value: unknown): string {
   return value
 }
 
-function validateRepoRelativePath(root: string, file: unknown): string {
+export function validateRepoRelativePath(root: string, file: unknown): string {
   if (typeof file !== 'string' || file.length === 0 || file.includes(NUL) || path.isAbsolute(file)) {
     throw new GitDiffError('bad-file', 'Invalid file path')
   }
@@ -793,6 +795,52 @@ export class GitDiffInspector {
         lines: Array.from({ length: count }, () => commit.sha),
       }
     }
+  }
+
+  /** The repository containing `cwd` and a validated repo-relative path in it. */
+  async repoFile(cwd: string, file: unknown): Promise<{ root: string; relative: string }> {
+    const repo = await this.repoContext(cwd)
+    if (!repo) throw new GitDiffError('exec', 'Not a git repository')
+    return { root: repo.root, relative: validateRepoRelativePath(repo.root, file) }
+  }
+
+  /**
+   * A file at a rev from fileContents or blame: `'worktree'` reads the disk under the same rules as
+   * fileContents (symlinks as link text, no escaping through symlinked parents), a full SHA reads
+   * the committed blob. Undefined when the file doesn't exist there.
+   */
+  async revisionSource(root: string, relative: string, rev: string): Promise<FileSource | undefined> {
+    if (rev === 'worktree') return this.worktreeSource(root, relative)
+    try {
+      return await this.treeSource(root, rev, relative)
+    } catch (error) {
+      if (error instanceof GitCommandFailure && UNKNOWN_OBJECT.test(error.stderr)) {
+        throw new GitDiffError('bad-target', `Unknown commit: ${rev}`)
+      }
+      throw error
+    }
+  }
+
+  /** The checked-out commit's SHA, or undefined when HEAD has no commits yet. */
+  async headSha(root: string): Promise<string | undefined> {
+    try {
+      return await this.commitSha(root, 'HEAD')
+    } catch (error) {
+      if (error instanceof GitCommandFailure && error.missingBinary) throw gitFailure(error, 'git rev-parse')
+      return undefined
+    }
+  }
+
+  /** Runs git in a repository with the inspector's executor and environment. */
+  runGit(
+    cwd: string,
+    args: readonly string[],
+    options: { timeout?: number; maxBuffer?: number; allowExitCodes?: readonly number[] } = {},
+  ): Promise<{ stdout: string; stderr: string }> {
+    return this.execute('git', args, {
+      ...this.options(cwd, options.timeout ?? COMMAND_TIMEOUT_MS, options.maxBuffer ?? COMMAND_BUFFER_BYTES),
+      ...(options.allowExitCodes ? { allowExitCodes: options.allowExitCodes } : {}),
+    })
   }
 
   private async commitSha(root: string, rev: string): Promise<string> {

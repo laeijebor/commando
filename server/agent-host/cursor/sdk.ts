@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentOptions, ConversationTurn, GetAgentMessagesOptions, ListResult, ListRunsOptions, ModelListItem, Run, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
+import type { AgentMessage, AgentOptions, AgentUsage, ConversationTurn, GetAgentMessagesOptions, ListResult, ListRunsOptions, ModelListItem, Run, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_ITEMS } from '../../../shared/agent-chat.js'
 import { CursorItemMapper, list, record, string } from './items.js'
 
@@ -11,6 +11,7 @@ export interface CursorAgent {
   readonly agentId: string
   send(message: SDKUserMessage, options: SendOptions): Promise<CursorRun>
   reload?(): Promise<void>
+  getUsage?(): Promise<AgentUsage>
   close(): void
 }
 export interface CursorHistory {

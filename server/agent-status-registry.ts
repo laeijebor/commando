@@ -1,7 +1,7 @@
 import { cursorProducerIdentity, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { isCursorInvocation, normalizeCursorHook } from './cursor-hooks.js'
 import { inferAgentProvider } from './agent-status.js'
-import { stripAttachmentNotesFromSummary, type ChatProvider } from '../shared/agent-chat.js'
+import { chatMessageSummary, stripAttachmentNotesFromSummary, type ChatProvider } from '../shared/agent-chat.js'
 import type {
   AgentActivity,
   AgentActivityKind,
@@ -48,6 +48,7 @@ export type ChatHostReport = {
   status: AgentStatusKind
   sessionId?: string
   title?: string
+  intent?: string
 }
 
 type ChatHostState = ChatHostReport & {
@@ -795,6 +796,8 @@ function withChatHost(record: RegistryRecord, chat: ChatHostState): RegistryReco
   const pendingRequests = new Map([...record.pendingRequests].filter(([key]) => !key.startsWith(CHAT_REQUEST_KEY)))
   for (const [key, pending] of chat.requests) pendingRequests.set(key, pending)
   const details = cloneDetails(record.status.details ?? emptyDetails())
+  if (chat.intent) details.intent = boundedText(chatMessageSummary(chat.intent), MAX_INTENT_LENGTH) ?? undefined
+  else if (details.intent) details.intent = chatMessageSummary(details.intent)
   syncAttention(details, pendingRequests)
   const sessionId = chat.sessionId || record.status.agentSessionId || ''
   const name = chat.title ?? record.status.agentSessionName ?? null
@@ -996,6 +999,7 @@ export class AgentStatusRegistry {
       previous?.status === report.status &&
       previous.sessionId === report.sessionId &&
       previous.title === report.title &&
+      previous.intent === report.intent &&
       // A hook (SessionEnd, say) can drop the record; the next report brings it back.
       this.records.has(paneId)
     ) return null
@@ -1209,7 +1213,7 @@ export class AgentStatusRegistry {
     if (!status) return null
     // A chat pane's prompt carries a note per attached image naming its saved
     // copy; the summary is what the person typed (the hook may have cut a note short).
-    const intent = boundedText(typeof payload.intent === 'string' ? stripAttachmentNotesFromSummary(payload.intent) : payload.intent, MAX_INTENT_LENGTH)
+    const intent = boundedText(typeof payload.intent === 'string' ? stripAttachmentNotesFromSummary(chatMessageSummary(payload.intent)) : payload.intent, MAX_INTENT_LENGTH)
     const promptId = boundedText(payload.prompt_id, 200)
     const nextTurnId = eventName === 'UserPromptSubmit'
       ? JSON.stringify([promptId, intent])

@@ -1,6 +1,7 @@
-import { FlatList } from 'react-native'
+import { FlatList, StyleSheet } from 'react-native'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
-import { ThemeProvider } from '../theme'
+import { asideReportText } from '@commando/agent-chat'
+import { THEMES, ThemeProvider } from '../theme'
 import { ChatTimeline } from './ChatTimeline'
 import { item } from './testing'
 const scrollEvent = (y: number) => ({ nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: 390, height: 1500 }, layoutMeasurement: { width: 390, height: 500 } } })
@@ -46,6 +47,29 @@ it('ignores the momentum end of its own scrollToEnd, so following never loops', 
   act(() => jest.advanceTimersByTime(30))
   expect(scroll).not.toHaveBeenCalled()
 })
+it('cancels scheduled scrolling while hidden and preserves a scrolled-back position on return', async () => {
+  const scroll = jest.spyOn(FlatList.prototype, 'scrollToEnd').mockImplementation(() => undefined)
+  const timeline = (active: boolean) => <ThemeProvider><ChatTimeline active={active} baseUrl="http://studio" cwd="/tmp"
+    items={[item('user_message', { text: 'Hi' })]} working={false} /></ThemeProvider>
+  const view = render(timeline(true))
+  await act(async () => undefined)
+  // Hide before the opening animation frame runs.
+  view.rerender(timeline(false))
+  const list = screen.getByTestId('chat-timeline')
+  fireEvent(list, 'contentSizeChange', 390, 1500)
+  fireEvent(list, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 0, height: 0 } } })
+  act(() => jest.advanceTimersByTime(30))
+  expect(scroll).not.toHaveBeenCalled()
+  view.rerender(timeline(true))
+  fireEvent(list, 'scrollBeginDrag')
+  fireEvent(list, 'scrollEndDrag', scrollEvent(300))
+  view.rerender(timeline(false))
+  view.rerender(timeline(true))
+  fireEvent(list, 'contentSizeChange', 390, 1600)
+  act(() => jest.advanceTimersByTime(30))
+  expect(scroll).not.toHaveBeenCalled()
+  expect(screen.getByLabelText('Jump to the newest turn')).toBeTruthy()
+})
 it('marks an attached video with a film tile instead of loading it as an image', async () => {
   const video = `${'e'.repeat(64)}.mov`
   const image = `${'a'.repeat(64)}.png`
@@ -54,4 +78,67 @@ it('marks an attached video with a film tile instead of loading it as an image',
   expect(screen.getByLabelText('Video: clip.mov')).toBeTruthy()
   expect(screen.queryByLabelText('Open clip.mov')).toBeNull()
   expect(screen.getByLabelText('Open pane.png')).toBeTruthy()
+})
+it('renders reports and typed text in order, with separate report links and a single attachment strip', () => {
+  const first = { asideId: 'aside001', title: 'First', body: 'First finding' }
+  const second = { asideId: 'aside002', title: 'Second', body: 'Second finding' }
+  const text = ['Before', asideReportText(first), 'Between', asideReportText(second), 'After'].join('\n\n')
+  const onOpenReport = jest.fn()
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false} onOpenReport={onOpenReport}
+    items={[item('user_message', { text, images: [{ id: `${'a'.repeat(64)}.png`, name: 'pane.png' }], steered: true })]} /></ThemeProvider>)
+  const ordered = screen.getAllByText(/^(Before|Between|After|First|Second)$/)
+  expect(ordered.map((node) => node.props.children)).toEqual(['Before', 'First', 'Between', 'Second', 'After'])
+  expect(screen.getByText('First finding')).toBeTruthy()
+  expect(screen.getByText('Second finding')).toBeTruthy()
+  expect(screen.getAllByLabelText('Open pane.png')).toHaveLength(1)
+  expect(screen.getAllByText(/Steered: sent while/)).toHaveLength(1)
+  expect(screen.queryByText(/<!--/)).toBeNull()
+  fireEvent.press(screen.getByLabelText('Open aside First'))
+  expect(onOpenReport).toHaveBeenLastCalledWith(expect.objectContaining(first))
+  fireEvent.press(screen.getByLabelText('Open aside Second'))
+  expect(onOpenReport).toHaveBeenLastCalledWith(expect.objectContaining(second))
+})
+it('renders adjacent reports individually without an empty user bubble', () => {
+  const reports = ['First', 'Second'].map((title, index) => asideReportText({ asideId: `aside00${index}`, title, body: `${title} finding` }))
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false}
+    items={[item('user_message', { text: reports.join('\n\n') })]} /></ThemeProvider>)
+  expect(screen.getAllByText('From aside')).toHaveLength(2)
+  expect(screen.queryByText(/<!--/)).toBeNull()
+})
+it.each([
+  '**From aside “Unfinished”**\n<!-- commando-aside:aside001 -->\n\nStill typing',
+  '**From aside “Invalid ID”**\n<!-- commando-aside:%ZZ -->\n\nFinding\n<!-- /commando-aside -->',
+])('keeps an unrecognised envelope as normal user text', (text) => {
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false}
+    items={[item('user_message', { text })]} /></ThemeProvider>)
+  expect(screen.getByText(text)).toBeTruthy()
+  expect(screen.queryByText(/^From aside “/)).toBeNull()
+})
+
+
+it('lays out a cyan report header above its growing markdown body and keeps the link beside the title', () => {
+  const body = 'Summary\n\n- First bullet\n- Second bullet\n- Last bullet stays inside the bubble'
+  const open = jest.fn()
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false} onOpenReport={open}
+    items={[item('user_message', { text: asideReportText({ asideId: 'aside001', title: 'Layout report', body }) })]} /></ThemeProvider>)
+  const bubble = screen.getByTestId('aside-report-bubble')
+  const header = screen.getByTestId('aside-report-header')
+  const markdown = screen.getByTestId('aside-report-body')
+  const hostParent = (node: typeof header) => {
+    let parent = node.parent
+    while (parent && typeof parent.type !== 'string') parent = parent.parent
+    return parent
+  }
+  expect(hostParent(header) === bubble).toBe(true)
+  expect(hostParent(markdown) === bubble).toBe(true)
+  const children = bubble.findAll((node) => typeof node.type === 'string' && hostParent(node) === bubble)
+  expect(children.map((child) => child.props.testID)).toEqual(['aside-report-header', 'aside-report-body'])
+  expect(StyleSheet.flatten(header.props.style).flexDirection).toBe('row')
+  expect(StyleSheet.flatten(bubble.props.style)).toMatchObject({ borderWidth: 1, flexShrink: 0, width: '88%' })
+  expect(StyleSheet.flatten(bubble.props.style).height).toBeUndefined()
+  expect(screen.getByText('From aside')).toHaveStyle({ color: THEMES.purple.cyan })
+  expect(screen.getByText('Open aside')).toHaveStyle({ color: THEMES.purple.cyan })
+  expect(screen.getByText('Last bullet stays inside the bubble')).toBeTruthy()
+  fireEvent.press(screen.getByLabelText('Open aside Layout report'))
+  expect(open).toHaveBeenCalledWith(expect.objectContaining({ body, title: 'Layout report' }))
 })

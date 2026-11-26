@@ -7,6 +7,7 @@ import { PierreDiffView } from './PierreDiffView'
 import { relativeTime, type FileBlame } from './gitBlame'
 import type { GitBlame, GitFileContents } from './gitApi'
 import { pierreRenders } from './pierreReactMock'
+import { pierreHighlighterOptions } from './pierreWorker'
 
 vi.mock('@pierre/diffs/react', () => import('./pierreReactMock'))
 
@@ -75,6 +76,12 @@ function hoverLine(side: 'deletions' | 'additions', lineNumber: number, lineType
 }
 
 describe('PierreDiffView', () => {
+  it('renders tokens with the transformer the worker pool uses, so Cmd-click reaches token handlers', () => {
+    render(view())
+    expect(pierreHighlighterOptions.useTokenTransformer).toBe(true)
+    expect(pierreRenders.at(-1)?.options?.useTokenTransformer).toBe(true)
+  })
+
   it('maps the layout toggle onto Pierre diff styles', () => {
     const { rerender } = render(view())
     expect(pierreRenders.at(-1)?.options?.diffStyle).toBe('split')
@@ -174,5 +181,65 @@ describe('relativeTime', () => {
     expect(relativeTime(seconds - 2 * 3600, nowMs)).toBe('2 hours ago')
     expect(relativeTime(seconds - 24 * 3600, nowMs)).toBe('yesterday')
     expect(relativeTime(seconds - 400 * 24 * 3600, nowMs)).toBe('last year')
+  })
+})
+
+describe('PierreDiffView navigation', () => {
+  const token = (text: string, element = document.createElement('span')) => ({
+    type: 'token' as const, side: 'additions' as const, lineNumber: 2, lineCharStart: 0, lineCharEnd: text.length, tokenText: text, tokenElement: element,
+  })
+
+  it('reports only Cmd/Ctrl-clicks on symbols and leaves token events off without a handler', () => {
+    const { rerender } = render(view())
+    expect(pierreRenders.at(-1)?.options?.onTokenClick).toBeUndefined()
+    const onNavigate = vi.fn()
+    rerender(view({ onNavigate }))
+    const options = pierreRenders.at(-1)!.options!
+    options.onTokenClick!(token('TWO'), new MouseEvent('click'))
+    options.onTokenClick!(token('('), new MouseEvent('click', { metaKey: true }))
+    expect(onNavigate).not.toHaveBeenCalled()
+    options.onTokenClick!(token('TWO'), new MouseEvent('click', { ctrlKey: true }))
+    expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ side: 'additions', lineNumber: 2, text: 'TWO', start: 0, end: 3 })
+  })
+
+  it('styles the hovered symbol as a link while Cmd/Ctrl is held', () => {
+    render(view({ onNavigate: vi.fn() }))
+    const options = pierreRenders.at(-1)!.options!
+    const element = document.createElement('span')
+    act(() => { options.onTokenEnter!(token('TWO', element), new MouseEvent('pointermove') as PointerEvent) })
+    expect(element).not.toHaveAttribute('data-commando-nav-token')
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Meta', metaKey: true })) })
+    expect(element).toHaveAttribute('data-commando-nav-token')
+    act(() => { window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Meta' })) })
+    expect(element).not.toHaveAttribute('data-commando-nav-token')
+    act(() => { options.onTokenEnter!(token('TWO', element), new MouseEvent('pointermove', { ctrlKey: true }) as PointerEvent) })
+    expect(element).toHaveAttribute('data-commando-nav-token')
+    act(() => { options.onTokenLeave!(token('TWO', element), new MouseEvent('pointermove') as PointerEvent) })
+    expect(element).not.toHaveAttribute('data-commando-nav-token')
+    // Punctuation never looks clickable.
+    const paren = document.createElement('span')
+    act(() => { options.onTokenEnter!(token('(', paren), new MouseEvent('pointermove', { metaKey: true }) as PointerEvent) })
+    expect(paren).not.toHaveAttribute('data-commando-nav-token')
+    expect(options.unsafeCSS).toContain('[data-commando-nav-token]')
+  })
+
+  it.each([
+    ['additions', 3, 'three'],
+    ['deletions', 2, 'two'],
+  ] as const)('reveals a line on the %s side and reports it', (side, line, text) => {
+    vi.useFakeTimers()
+    const onRevealed = vi.fn()
+    render(view({ reveal: { id: 7, side, line }, onRevealed }))
+    const target = screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')
+    expect(target).toHaveTextContent(text)
+    expect(target?.closest('code')).toHaveAttribute(`data-${side}`)
+    expect(onRevealed).toHaveBeenCalledExactlyOnceWith(7)
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(target).not.toHaveAttribute('data-commando-nav-target')
+  })
+
+  it('falls back to the nearest rendered line when the target is collapsed', () => {
+    render(view({ reveal: { id: 1, side: 'additions', line: 40 } }))
+    expect(screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')).toHaveTextContent('three')
   })
 })
