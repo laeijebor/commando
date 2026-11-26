@@ -134,9 +134,12 @@ describe('Muse chat launch', () => {
 })
 
 describe('Cursor chat launch arguments', () => {
-  it('defaults to full access without carrying Claude directories', () => {
-    expect(sessionAgentArgv({ provider: 'cursor-chat', configDir: '/unused', readableDir: '/unused' }))
+  it('defaults to full access and forwards readableDir before --prompt while ignoring configDir', () => {
+    const dir = `/home/me/.commando/chat-plans/${'e'.repeat(32)}`
+    expect(sessionAgentArgv({ provider: 'cursor-chat', configDir: '/unused' }))
       .toEqual(['commando-agent', 'cursor', '--permission-mode', 'bypassPermissions'])
+    expect(sessionAgentArgv({ provider: 'cursor-chat', configDir: '/unused', readableDir: dir, prompt: 'PLEASE IMPLEMENT --now' }))
+      .toEqual(['commando-agent', 'cursor', '--permission-mode', 'bypassPermissions', '--readable-dir', dir, '--prompt', 'PLEASE IMPLEMENT --now'])
   })
   it('places resume before arbitrary prompt data', () => {
     expect(sessionAgentArgv({ provider: 'cursor-chat', permissionMode: 'auto', resume: 'agent-12345678-0000', prompt: '--model injected\nhello' }))

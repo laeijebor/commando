@@ -1,6 +1,9 @@
 import { asideEnv, asideInstructions } from '../aside-brief.js'
 import { AsideTimeline } from '../aside-timeline.js'
 import { randomUUID } from 'node:crypto'
+import { readFile, realpath, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { AgentOptions, ModelListItem, ModelSelection, SDKImage, SettingSource } from '@cursor/sdk'
 import {
   AGENT_HOST_PROTOCOL_VERSION, MAX_CHAT_IMAGES, MAX_QUEUED_MESSAGES, takeQueueBatch, attachmentNote, isChatEffort, isChatVideoId, isModelValue,
@@ -12,9 +15,41 @@ import type { ChatMcpRequest, ChatMcpResult } from '../../../shared/chat-mcp.js'
 import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents } from '../provider.js'
 import { hasInitialTurn, type AgentSessionSpec } from '../session.js'
-import { CursorItemMapper, record, string } from './items.js'
-import { CursorMcpController, type CursorMcpCli } from './mcp.js'
+import { CURSOR_BUILTIN_COMMANDS, discoverCursorCommands } from './commands.js'
+import { CursorItemMapper, parseCursorTranscriptJsonl, record, string } from './items.js'
+import { CursorMcpController, cursorDataDir, type CursorMcpCli } from './mcp.js'
 import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from './sdk.js'
+
+const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
+
+function isWithinDir(candidate: string, root: string): boolean {
+  const rel = relative(root, candidate)
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+async function resolveExisting(path: string): Promise<string> {
+  try { return await realpath(path) } catch { return resolve(path) }
+}
+
+async function readSafeTranscriptJsonl(
+  transcriptPath: string,
+  cwd: string,
+  env: Record<string, string | undefined>,
+): Promise<string | null> {
+  if (!transcriptPath || transcriptPath.includes('\0') || !transcriptPath.toLowerCase().endsWith('.jsonl')) return null
+  const realCandidate = await realpath(transcriptPath).catch(() => null)
+  if (!realCandidate) return null
+  const home = env.HOME || homedir()
+  const roots = await Promise.all([
+    resolveExisting(join(cursorDataDir(env, home), 'projects')),
+    resolveExisting(join(home, '.cursor', 'projects')),
+    resolveExisting(cwd),
+  ])
+  if (!roots.some((root) => isWithinDir(realCandidate, root))) return null
+  const info = await stat(realCandidate).catch(() => null)
+  if (!info || !info.isFile() || info.size > MAX_TRANSCRIPT_BYTES) return null
+  return readFile(realCandidate, 'utf8')
+}
 
 const errorText = (error: unknown) => string(record(error).message) ?? String(error)
 const EFFORT_PARAMETERS = ['effort', 'reasoning_effort', 'reasoning']
@@ -62,7 +97,8 @@ export function cursorImageMime(data: Buffer): string | undefined {
 
 interface ActiveRun { run: CursorRun; turnId: string; text: string; images: ChatImageRef[] }
 export class CursorChatSession implements ChatProviderSession {
-  readonly commands: ChatCommand[] = [{ name: 'login', description: 'Log in to Cursor', argumentHint: '[cancel]', kind: 'command' }]
+  private commandList: ChatCommand[] = [...CURSOR_BUILTIN_COMMANDS]
+  private commandsRead = 0
   private sdk?: CursorSdk
   private agent?: CursorAgent
   private readonly mapper = new CursorItemMapper()
@@ -121,11 +157,23 @@ export class CursorChatSession implements ChatProviderSession {
     }
   }
   get paneId(): string { return this.spec.paneId }
+  get commands(): ChatCommand[] { return this.commandList }
   get busy(): boolean { return Boolean(this.active || this.sending || this.queue.length || this.loginController || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
-  private emitItems(items: ChatItem[]): void { items = this.asideTimeline.updates(items); if (!this.closing && items.length) this.listeners.items.forEach((listener) => listener(items)) }
+  private emitItems(items: ChatItem[], replace?: true): void { items = this.asideTimeline.updates(items, Boolean(replace)); if (!this.closing && (items.length || replace)) this.listeners.items.forEach((listener) => listener(items, replace)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
+  private async refreshCommands(): Promise<void> {
+    const read = ++this.commandsRead
+    try {
+      const discovered = await discoverCursorCommands(this.spec.cwd, this.spec.env)
+      if (this.closing || read !== this.commandsRead) return
+      this.commandList = discovered
+      this.listeners.commands.forEach((listener) => listener(this.commandList))
+    } catch {
+      // Discovery is best-effort and must never block startup.
+    }
+  }
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.asideTimeline.snapshot(this.mapper.list()) } }
   setResumeCommand(command: string): void { if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
   private safeError(error: unknown): string {
@@ -145,6 +193,7 @@ export class CursorChatSession implements ChatProviderSession {
         const reason = 'Cursor needs you to log in before this chat can start.'
         this.update({ login: { state: 'required', reason }, status: 'idle' })
         this.emitItems(this.mapper.notice('info', reason))
+        void this.refreshCommands()
         return
       }
       await this.ready()
@@ -175,6 +224,9 @@ export class CursorChatSession implements ChatProviderSession {
     return cursorModelSelection(option, this.info.effort, this.info.fast)
   }
   private agentOptions(): AgentOptions {
+    const dirs = this.spec.readableDirectories?.length
+      ? [...new Set([this.spec.cwd, ...this.spec.readableDirectories])]
+      : undefined
     // Local runs refuse askQuestion and fail closed on tools needing approval;
     // there is no host approval callback. This also keeps ephemeral asides non-interactive.
     return {
@@ -182,6 +234,7 @@ export class CursorChatSession implements ChatProviderSession {
       disallowedTools: ['askQuestion'],
       local: {
         cwd: this.spec.cwd,
+        ...(dirs ? { dirs } : {}),
         settingSources: [...CURSOR_SETTING_SOURCES],
         ...cursorPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.info.prePlanPermissionMode),
       },
@@ -214,7 +267,8 @@ export class CursorChatSession implements ChatProviderSession {
     }
     this.readyToSend = true
     this.update({ status: 'idle', error: undefined })
-    this.listeners.commands.forEach((listener) => listener(this.commands))
+    this.listeners.commands.forEach((listener) => listener(this.commandList))
+    void this.refreshCommands()
   }
   private sendInitialPrompt(): void {
     if (!this.closing && this.readyToSend && hasInitialTurn(this.spec) && !this.initialSent) { this.initialSent = true; this.send(this.spec.initialPrompt ?? '', this.spec.initialImages) }
@@ -275,12 +329,29 @@ export class CursorChatSession implements ChatProviderSession {
       this.flushQueue()
     }
   }
+  private clearConversation(): void {
+    if (this.active || this.sending || this.loginController) {
+      this.emitItems(this.mapper.notice('error', 'Finish or stop the current turn before clearing the conversation.'))
+      return
+    }
+    try { this.agent?.close() } catch { /* Best effort when the SDK is already closed. */ }
+    this.agent = undefined
+    this.stale = false
+    this.ranUnsandboxed = false
+    this.historyLoaded = false
+    this.setQueue([])
+    this.update({ sessionId: undefined, title: undefined, error: undefined })
+    this.mapper.clear()
+    const notice = this.mapper.notice('info', 'Context cleared: Cursor starts a new conversation from here')
+    this.emitItems(notice, true)
+  }
   send(text: string, images: ChatImageRef[] = [], options: ChatSendOptions = {}): void {
     const trimmed = text.trim()
     if (trimmed === '/login cancel') { this.loginController?.abort(); return }
     if (trimmed === '/login') { void this.login(); return }
-    if (!trimmed && !images.length) return
     if (this.closing) return
+    if (trimmed === '/clear') { this.clearConversation(); return }
+    if (!trimmed && !images.length) return
     if ((this.info.login || this.loginController) && !this.loginFinishing) {
       // Let an already-resolved browser login schedule readiness before deciding whether to reject.
       queueMicrotask(() => {
@@ -480,7 +551,22 @@ export class CursorChatSession implements ChatProviderSession {
     this.authRestartTimer.unref?.()
   }
   async controlTask(_action: ChatTaskAction, _agentId: string, _toolUseId: string): Promise<void> { throw new Error('Cursor subagent controls are not available in this chat') }
-  async subagentTranscript(_agentId: string): Promise<ChatSubagentTranscript> { return { items: [], error: 'Cursor subagent transcripts are not available in this chat' } }
+  async subagentTranscript(agentId: string): Promise<ChatSubagentTranscript> {
+    const found = this.mapper.subagentTranscript(agentId)
+    if (found?.items.length) return { items: found.items }
+    if (found?.transcriptPath) {
+      try {
+        const raw = await readSafeTranscriptJsonl(found.transcriptPath, this.spec.cwd, this.spec.env)
+        if (raw !== null) {
+          const items = parseCursorTranscriptJsonl(raw, `subagent-${agentId}`)
+          if (items.length) return { items }
+        }
+      } catch {
+        // Fall through to unavailable error below.
+      }
+    }
+    return { items: [], error: 'No saved transcript is available for this Cursor subagent.' }
+  }
   close(): void {
     if (this.closing) return
     this.closing = true

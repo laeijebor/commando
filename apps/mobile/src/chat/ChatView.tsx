@@ -1,8 +1,8 @@
 import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
-import { hostTakesTurnFlow, type ChatItem, type ChatSessionStatus, type ChatState, type ChatSubagentTranscript, type ChatTaskAction } from '@commando/agent-chat'
+import { hostTakesTurnFlow, type ChatItem, type ChatLogin, type ChatSessionStatus, type ChatState, type ChatSubagentTranscript, type ChatTaskAction } from '@commando/agent-chat'
 import { findSubagent, subagentLabel, subagentLive, switcherSubagents } from '@commando/chat-subagents'
 import { pendingRequests, withExternalAgentRuns, type SubagentItem } from '@commando/chat-timeline'
 import { parseTileEventIds, withTileEvents, type ChatCardEvent } from '@commando/chat-tile-events'
@@ -12,7 +12,7 @@ import type { ConnectionPhase } from '../daemon/state'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
 import { providerPresentation } from '../ui/providerPresentation'
-import { withAlpha } from '../ui/primitives'
+import { Button, withAlpha } from '../ui/primitives'
 import { useChatChannel, type ChatChannel } from './channel'
 import { ChatComposer } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
@@ -115,7 +115,7 @@ function ChatThread({ host, chat, client, phase, onOpenTile, openTileIds, thread
             items={items}
             now={view.now}
             onBack={() => view.select(undefined)}
-            onMessage={() => agent.agentId && view.setRelay({ agentId: agent.agentId, label: subagentLabel(agent) })}
+            onMessage={chat.session.provider === 'claude' ? () => agent.agentId && view.setRelay({ agentId: agent.agentId, label: subagentLabel(agent) }) : undefined}
             onTask={view.task}
             provider={provider}
           />
@@ -169,6 +169,13 @@ function ChatThread({ host, chat, client, phase, onOpenTile, openTileIds, thread
           icon="terminal"
           text={chat.session.claudeCodeSwitch === 'after_turn' ? 'Switching to Claude Code when this turn ends…' : 'Switching to Claude Code…'}
           tone="accent"
+        />
+      ) : null}
+      {chat.session.login ? (
+        <CursorLoginBanner
+          disabled={!hostConnected || !channel}
+          login={chat.session.login}
+          onSend={(text) => { channel?.send(text) }}
         />
       ) : null}
       {request && channel ? (
@@ -356,6 +363,67 @@ function SubagentTimeline({ active, agent, items, transcript, provider, cwd, bas
   )
 }
 
+function safeHttpsUrl(url: string | undefined): string | null {
+  if (!url) return null
+  try {
+    return new URL(url).protocol === 'https:' ? url : null
+  } catch {
+    return null
+  }
+}
+
+function CursorLoginBanner({ login, disabled, onSend }: {
+  login: ChatLogin
+  disabled: boolean
+  onSend: (text: string) => void
+}): React.JSX.Element {
+  const theme = useTheme()
+  const url = safeHttpsUrl(login.url)
+  const message = login.state === 'required'
+    ? login.reason || 'Cursor needs you to log in.'
+    : 'Finish logging in to Cursor in your browser.'
+  return (
+    <View
+      accessibilityRole="alert"
+      style={[styles.loginBanner, { backgroundColor: theme.surface, borderColor: theme.borderMid }]}
+      testID="cursor-login-banner"
+    >
+      <View style={styles.loginRow}>
+        <Feather color={theme.accent} name="log-in" size={14} />
+        <Text style={[styles.bannerText, { color: theme.textSoft }]}>{message}</Text>
+      </View>
+      <View style={styles.loginActions}>
+        {login.state === 'required' ? (
+          <Button
+            disabled={disabled}
+            label="Log in to Cursor"
+            onPress={() => onSend('/login')}
+            style={styles.loginButton}
+            variant="primary"
+          />
+        ) : (
+          <>
+            {url ? (
+              <Button
+                label="Open login page"
+                onPress={() => { void Promise.resolve(Linking.openURL(url)).catch(() => undefined) }}
+                style={styles.loginButton}
+                variant="primary"
+              />
+            ) : null}
+            <Button
+              disabled={disabled}
+              label="Cancel"
+              onPress={() => onSend('/login cancel')}
+              style={styles.loginButton}
+            />
+          </>
+        )}
+      </View>
+    </View>
+  )
+}
+
 function Banner({ icon, text, tone }: { icon: React.ComponentProps<typeof Feather>['name']; text: string; tone: 'amber' | 'red' | 'accent' }): React.JSX.Element {
   const theme = useTheme()
   const color = tone === 'amber' ? theme.amber : tone === 'red' ? theme.red : theme.accent
@@ -385,6 +453,10 @@ const styles = StyleSheet.create({
   composerDock: { flexShrink: 0 },
   banner: { flexShrink: 0, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
   bannerText: { flex: 1, fontSize: 12.5, lineHeight: 17 },
+  loginBanner: { flexShrink: 0, gap: 8, marginHorizontal: 12, marginTop: 6, marginBottom: 6, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  loginRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  loginActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  loginButton: { paddingVertical: 7, paddingHorizontal: 12, minHeight: 34, borderRadius: 9 },
   waiting: { fontSize: 13, textAlign: 'center', padding: 12 },
   task: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16, gap: 4 },
   taskHead: { flexDirection: 'row', alignItems: 'center', gap: 5 },

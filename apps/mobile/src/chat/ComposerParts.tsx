@@ -15,7 +15,7 @@ import {
   type ChatSessionInfo,
   type ChatSettingsChange,
 } from '@commando/agent-chat'
-import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable } from '@commando/chat-composer'
+import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatTokens, modelLabel, modelMenuAvailable } from '@commando/chat-composer'
 
 import { settingsPresentation } from './settingsPresentation'
 import { providerPresentation } from '../ui/providerPresentation'
@@ -169,7 +169,7 @@ export function showSheet(anchor: View | null, title: string, options: string[],
   })
 }
 
-/** The model, effort and permission pills (the web's pickers) as native menus; the context meter is read-only. */
+/** The model, effort, fast mode and permission pills (the web's pickers) as native menus; the context meter is read-only. */
 export function SettingsPills({ session, disabled, onConfigure, modelSheet, onModelSheetShown }: {
   session: ChatSessionInfo
   disabled: boolean
@@ -188,6 +188,8 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   const efforts = presentation.efforts
   const settable = hostTakesSettings(session)
   const models = modelMenuAvailable(session) ? session.models ?? [] : []
+  const fast = fastModeOn(session)
+  const showFast = fastModeAvailable(session)
 
   const pickModel = async () => {
     if (!models.length) return
@@ -228,6 +230,15 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
           label={session.effort ? EFFORT_LABELS[session.effort] : 'Effort'}
           onPress={() => void pickEffort()}
           ref={effortRef}
+        />
+      ) : null}
+      {showFast ? (
+        <Pill
+          a11y="Fast mode"
+          disabled={disabled}
+          label={fast ? '⚡ Fast' : 'Fast off'}
+          on={fast}
+          onPress={() => onConfigure({ fast: !fast })}
         />
       ) : null}
       {session.aside?.mode === 'read-only' ? (

@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentOptions, ModelListItem, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_IMAGES, MAX_CHAT_ITEMS, MAX_QUEUED_MESSAGES, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 import type { AgentSessionSpec } from '../session.js'
@@ -669,7 +672,7 @@ describe('CursorChatSession', () => {
     const { session, sdk } = await running()
     expect(session.answer('x', { kind: 'approval', decision: 'allow' })).toBe(false)
     await expect(session.controlTask('stop', 'a', 't')).rejects.toThrow('not available')
-    expect(await session.subagentTranscript('a')).toMatchObject({ items: [], error: expect.stringContaining('not available') })
+    expect(await session.subagentTranscript('a')).toMatchObject({ items: [], error: 'No saved transcript is available for this Cursor subagent.' })
     const closed = vi.fn()
     session.on('closed', closed)
     session.close(); session.close(); await tick()
@@ -727,6 +730,147 @@ describe('CursorChatSession', () => {
     secondDone.resolve({ ok: true })
     await vi.waitFor(() => expect(restart).toHaveBeenCalledTimes(1))
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('MCP credentials updated for linear') })
+    session.close()
+  })
+
+  const tempDirs: string[] = []
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+  })
+
+  it('discovers slash commands and skills on start (logged-out and ready) and emits them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'commando-cursor-session-cmds-'))
+    tempDirs.push(root)
+    const cwd = join(root, 'repo')
+    const home = join(root, 'home')
+    await mkdir(join(cwd, '.cursor', 'commands'), { recursive: true })
+    await mkdir(join(home, '.cursor', 'skills', 'helper'), { recursive: true })
+    await writeFile(join(cwd, '.cursor', 'commands', 'ship.md'), '---\ndescription: Ship release\n---\n')
+    await writeFile(join(home, '.cursor', 'skills', 'helper', 'SKILL.md'), '---\ndescription: Home helper\n---\n')
+
+    const { session, sdk } = harness({ cwd, env: { HOME: home } })
+    sdk.authStatus.mockResolvedValue({ status: 'logged-out' })
+    const emitted: unknown[] = []
+    session.on('commands', (list) => emitted.push(list))
+    await session.start()
+    await vi.waitFor(() => expect(session.commands.map((c) => c.name)).toEqual(['login', 'clear', 'helper', 'ship']))
+    expect(emitted.at(-1)).toEqual(session.commands)
+    session.close()
+  })
+
+  it('handles /clear when idle by resetting the conversation and replacing the timeline, and refuses while busy', async () => {
+    const { session, sdk } = await running()
+    const itemEvents: Array<{ items: unknown[]; replace?: true }> = []
+    session.on('items', (items, replace) => itemEvents.push({ items, replace }))
+
+    // Refused while a turn is running.
+    session.send('/clear')
+    expect(itemEvents.at(-1)).toMatchObject({
+      replace: undefined,
+      items: [{ kind: 'notice', level: 'error', text: 'Finish or stop the current turn before clearing the conversation.' }],
+    })
+    expect(sdk.agent.close).not.toHaveBeenCalled()
+
+    sdk.runs[0].finish(); await tick()
+    expect(session.snapshot().session.sessionId).toBe('agent-123')
+    expect(session.snapshot().session.title).toBe('Hello')
+
+    // Clears conversation when idle.
+    session.send('/clear')
+    expect(sdk.agent.close).toHaveBeenCalledTimes(1)
+    expect(session.snapshot().session.sessionId).toBeUndefined()
+    expect(session.snapshot().session.title).toBeUndefined()
+    expect(session.snapshot().items).toMatchObject([{ kind: 'notice', level: 'info', text: 'Context cleared: Cursor starts a new conversation from here' }])
+    expect(itemEvents.at(-1)).toMatchObject({
+      replace: true,
+      items: [{ kind: 'notice', level: 'info', text: 'Context cleared: Cursor starts a new conversation from here' }],
+    })
+
+    // Next send starts a fresh agent instead of resuming the cleared one.
+    session.send('Fresh start'); await tick()
+    expect(sdk.create).toHaveBeenCalledTimes(2)
+    expect(sdk.resume).not.toHaveBeenCalled()
+    session.close()
+  })
+
+  it('passes readableDirectories deduplicated with cwd as local.dirs', async () => {
+    const { session, sdk } = harness({ cwd: '/repo', readableDirectories: ['/plans', '/repo', '/shared'] })
+    await session.start()
+    session.send('Check dirs'); await tick()
+    expect(sdk.create.mock.calls[0][0].local?.dirs).toEqual(['/repo', '/plans', '/shared'])
+    session.close()
+  })
+
+  it('loads subagent transcripts from conversationSteps or safe JSONL files and rejects unsafe paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'commando-cursor-subagent-'))
+    tempDirs.push(root)
+    const cwd = join(root, 'repo')
+    const home = join(root, 'home')
+    const outside = join(root, 'outside')
+    const projectsDir = join(home, '.cursor', 'projects', 'repo', 'agent-transcripts', 'subagents')
+    await mkdir(cwd, { recursive: true })
+    await mkdir(projectsDir, { recursive: true })
+    await mkdir(outside, { recursive: true })
+
+    const safeTranscript = join(projectsDir, 'sub-file.jsonl')
+    await writeFile(safeTranscript, [
+      JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text: 'Inspect code' }] } }),
+      JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text: 'Looks good' }] } }),
+    ].join('\n'))
+    const unsafeTranscript = join(outside, 'secret.jsonl')
+    await writeFile(unsafeTranscript, JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text: 'secret' }] } }))
+
+    const { session, sdk } = await running({ cwd, env: { HOME: home } })
+    // 1. Subagent with inline conversationSteps
+    sdk.delta({
+      type: 'tool-call-completed',
+      callId: 't-steps',
+      toolCall: {
+        type: 'task',
+        args: { description: 'Steps agent', prompt: 'Do work' },
+        result: {
+          status: 'success',
+          value: {
+            agentId: 'sub-steps',
+            conversationSteps: [{ type: 'assistantMessage', message: { text: 'From steps' } }],
+          },
+        },
+      },
+    })
+    // 2. Subagent with safe transcriptPath inside ~/.cursor/projects
+    sdk.delta({
+      type: 'tool-call-completed',
+      callId: 't-file',
+      toolCall: {
+        type: 'task',
+        args: { description: 'File agent', prompt: 'Do work' },
+        result: { status: 'success', value: { agentId: 'sub-file', transcriptPath: safeTranscript } },
+      },
+    })
+    // 3. Subagent with unsafe transcriptPath outside ~/.cursor/projects and cwd
+    sdk.delta({
+      type: 'tool-call-completed',
+      callId: 't-unsafe',
+      toolCall: {
+        type: 'task',
+        args: { description: 'Unsafe agent', prompt: 'Do work' },
+        result: { status: 'success', value: { agentId: 'sub-unsafe', transcriptPath: unsafeTranscript } },
+      },
+    })
+
+    const fromSteps = await session.subagentTranscript('sub-steps')
+    expect(fromSteps.error).toBeUndefined()
+    expect(fromSteps.items).toMatchObject([{ kind: 'assistant_message', text: 'From steps' }])
+
+    const fromFile = await session.subagentTranscript('sub-file')
+    expect(fromFile.error).toBeUndefined()
+    expect(fromFile.items).toMatchObject([
+      { kind: 'user_message', text: 'Inspect code' },
+      { kind: 'assistant_message', text: 'Looks good' },
+    ])
+
+    const fromUnsafe = await session.subagentTranscript('sub-unsafe')
+    expect(fromUnsafe).toEqual({ items: [], error: 'No saved transcript is available for this Cursor subagent.' })
     session.close()
   })
 })
