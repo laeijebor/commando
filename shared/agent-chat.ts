@@ -9,7 +9,7 @@ import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type Chat
 import type { ChatCardEvent } from './chat-tile-events.js'
 import { ASK_KEY } from './session-asks.js'
 
-export const AGENT_HOST_PROTOCOL_VERSION = 10
+export const AGENT_HOST_PROTOCOL_VERSION = 11
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -64,6 +64,15 @@ export const CHAT_ASIDES_HOST_VERSION = 10
 
 export function hostTakesAsides(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_ASIDES_HOST_VERSION
+}
+/**
+ * Hosts from this version take their plan limits from the daemon (`plan_usage`),
+ * which reads them once per Claude login, instead of asking Claude themselves.
+ */
+export const CHAT_PLAN_USAGE_HOST_VERSION = 11
+
+export function hostTakesPlanUsage(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_PLAN_USAGE_HOST_VERSION
 }
 
 export type ChatAsideMode = 'read-only' | 'inherit'
@@ -820,6 +829,8 @@ export type DaemonToHostMessage =
   | { type: 'switch'; paneId: string; action: ChatSwitchAction; requestId: string }
   /** Answers `handoff`: false when the daemon couldn't keep it, and the switch is off. */
   | { type: 'handoff_saved'; paneId: string; ok: boolean; error?: string }
+  /** The plan limits of the chat's Claude login, read by the daemon for every chat on it. */
+  | { type: 'plan_usage'; paneId: string; usage: ChatPlanUsage }
 
 // ---- validation (host and client input both cross a trust boundary) ----
 
@@ -1456,6 +1467,10 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
       return isChatKey(value.paneId) && typeof value.ok === 'boolean'
         ? withOptional({ type: 'handoff_saved' as const, paneId: value.paneId, ok: value.ok }, { error: optionalText(value.error, 1000) })
         : null
+    case 'plan_usage': {
+      const usage = parsePlanUsage(value.usage)
+      return isChatKey(value.paneId) && usage ? { type: 'plan_usage', paneId: value.paneId, usage } : null
+    }
     case 'answer': {
       const answer = parseChatAnswer(value.answer)
       return isChatKey(value.paneId) && shortString(value.chatRequestId) && answer && shortString(value.requestId)

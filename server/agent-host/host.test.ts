@@ -92,6 +92,19 @@ describe('AgentHost input relays', () => {
       expect(session.send).toHaveBeenCalledWith('Try edits', undefined, { permissionMode: 'default' })
     } finally { host.stop() }
   })
+  it("hands the daemon's plan reading to the session it names", async () => {
+    const host = new AgentHost('ws://unused', async () => 'token', 'pane', { info: vi.fn() })
+    const session = { paneId: '%4', on: vi.fn(), commands: [], close: vi.fn(), applyPlanUsage: vi.fn(), snapshot: () => ({ session: { paneId: '%4' }, items: [] }) }
+    try {
+      host.add(session as unknown as ChatProviderSession)
+      const relay = host as unknown as { onMessage(message: DaemonToHostMessage): Promise<void> }
+      const usage = { limits: [{ kind: 'session', title: 'Current session', percent: 5, severity: 'normal' as const }], updatedAt: 1 }
+      await relay.onMessage({ type: 'plan_usage', paneId: '%4', usage })
+      await relay.onMessage({ type: 'plan_usage', paneId: '%9', usage })
+      expect(session.applyPlanUsage).toHaveBeenCalledTimes(1)
+      expect(session.applyPlanUsage).toHaveBeenCalledWith(usage)
+    } finally { host.stop() }
+  })
   it('sends the command list after the snapshot and answers file searches', async () => {
     const { WebSocketServer } = await import('ws')
     const { AgentHost } = await import('./host.js')
