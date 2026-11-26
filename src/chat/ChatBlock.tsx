@@ -26,6 +26,8 @@ export type ChatBlockProps = {
   actions?: readonly ChatBlockAction[]
   /** A short message in the caption bar, such as "Copied". */
   status?: string
+  /** A chip after the title that stays whole when the title truncates, such as Live. */
+  badge?: ReactNode
   children: ReactNode
   /** Fills the window; Esc asks to restore through `onMaximisedChange`. */
   maximised?: boolean
@@ -60,7 +62,7 @@ function ActionButton({ action, ghost }: { action: ChatBlockAction; ghost?: bool
  * bordered body, a slim caption bar (icon, title, detail and ghost buttons)
  * and a floating toolbar that appears on hover or keyboard focus.
  */
-export function ChatBlock({ title, detail, icon: Icon, toolbar = [], actions = [], status, children, maximised = false, onMaximisedChange, inline = false, className, label }: ChatBlockProps) {
+export function ChatBlock({ title, detail, icon: Icon, toolbar = [], actions = [], status, badge, children, maximised = false, onMaximisedChange, inline = false, className, label }: ChatBlockProps) {
   const Frame: ElementType = inline ? 'span' : 'figure'
   const Part: ElementType = inline ? 'span' : 'div'
   const Caption: ElementType = inline ? 'span' : 'figcaption'
@@ -90,6 +92,7 @@ export function ChatBlock({ title, detail, icon: Icon, toolbar = [], actions = [
       <Caption className="chat-block-bar">
         {Icon ? <Icon className="chat-block-icon" aria-hidden="true" /> : null}
         <span className="chat-block-title"><b>{title}</b>{detail ? <> · {detail}</> : null}</span>
+        {badge}
         {status ? <span className="chat-block-status" role="status">{status}</span> : null}
         {actions.map((action) => <ActionButton key={action.key} action={action} ghost />)}
       </Caption>

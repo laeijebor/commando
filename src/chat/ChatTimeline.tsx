@@ -2,7 +2,7 @@ import { Children, cloneElement, isValidElement, createContext, memo, use, useEf
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyDiagram, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyDiagram, type ChatReplyEmbed, type ChatReplyImage, findChatReplyEmbed, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
 import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
@@ -13,6 +13,7 @@ import { PlanCard, type SavePlan } from './PlanCard'
 import type { ResourceActionHandler } from '../paneManagementApi'
 import { ResourceChip, ResourceCardList } from './ResourceChip'
 import { ReplyImage } from './ReplyImage'
+import { EmbedFrame } from './EmbedFrame'
 import { ReplyDiagramsContext } from './DiagramBlock'
 import { SubagentGroup, useNow } from './Subagents'
 import { TileEventCard } from './TileEventCard'
@@ -56,11 +57,14 @@ const ResourceActionsContext = createContext<{ cwd: string; onResourceAction?: R
 const keepImageSources: UrlTransform = (url, key, node) => (key === 'src' && node.tagName === 'img') || (key === 'href' && /^(?:\/(?!\/)|~\/|\.\.?\/|file:\/\/)/i.test(url)) ? url : defaultUrlTransform(url)
 
 /** The reply a Markdown image belongs to; context keeps `img` one component, so images don't reload as a reply streams. */
-const ReplyImagesContext = createContext<{ images?: readonly ChatReplyImage[]; running?: boolean }>({})
+const ReplyImagesContext = createContext<{ images?: readonly ChatReplyImage[]; embeds?: readonly ChatReplyEmbed[]; running?: boolean }>({})
 
 function MarkdownImage({ src, alt }: { src?: unknown; alt?: string }) {
-  const { images, running } = use(ReplyImagesContext)
-  const { onAction } = use(ReplyResourcesContext)
+  const { images, embeds, running } = use(ReplyImagesContext)
+  const { onAction, cwd } = use(ReplyResourcesContext)
+  // HTML mock-ups and canvas boards use image syntax too.
+  const embed = typeof src === 'string' ? findChatReplyEmbed(embeds, src) : undefined
+  if (embed) return <EmbedFrame embed={embed} alt={alt ?? ''} cwd={cwd} onAction={onAction} />
   return <ReplyImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} images={images} running={running} onAction={onAction} />
 }
 
@@ -124,9 +128,9 @@ const replyComponents: Components = {
 }
 
 /** Local images and resources are attached by the daemon while a reply streams. */
-export const Markdown = memo(function Markdown({ text, images, resources, diagrams, running }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; diagrams?: readonly ChatReplyDiagram[]; running?: boolean }) {
+export const Markdown = memo(function Markdown({ text, images, resources, diagrams, embeds, running }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; diagrams?: readonly ChatReplyDiagram[]; embeds?: readonly ChatReplyEmbed[]; running?: boolean }) {
   const actions = use(ResourceActionsContext)
-  const reply = useMemo(() => ({ images, running }), [images, running])
+  const reply = useMemo(() => ({ images, embeds, running }), [images, embeds, running])
   const resourceReply = useMemo(() => ({ resources, text, cwd: actions.cwd, onAction: actions.onResourceAction }), [resources, text, actions])
   const diagramReply = useMemo(() => ({ diagrams, running }), [diagrams, running])
   return (
@@ -423,7 +427,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
       const asks = context.askMarkers?.get(row.item.id)
       return (
         <div className="chat-reply pb-3" {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
-          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} diagrams={row.item.diagrams} running={row.item.status === 'running'} />
+          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} diagrams={row.item.diagrams} embeds={row.item.embeds} running={row.item.status === 'running'} />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
               <span className="chat-ask-marker-diamond" aria-hidden="true">◆</span>

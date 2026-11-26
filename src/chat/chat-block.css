@@ -116,3 +116,105 @@ svg.chat-block-icon { flex-shrink: 0; width: 14px; height: 14px; color: var(--ac
 .chat-diagram-pending svg { width: 14px; height: 14px; animation: chat-block-spin 1s linear infinite; }
 @keyframes chat-block-spin { to { transform: rotate(360deg); } }
 .chat-diagram-note { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+
+/* Inline HTML mock-ups and canvas boards (EmbedFrame) */
+.chat-embed-anchor { display: block; }
+* + .chat-embed-anchor { margin-top: 10px; }
+.chat-embed-stage { position: relative; display: block; height: var(--chat-embed-height, 320px); }
+.chat-embed-stage > iframe, .chat-embed-canvas-screen > iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.chat-embed-shield {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.chat-embed-shield > span {
+  padding: 4px 12px;
+  border: 1px solid var(--border-mid);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-deep) 92%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.chat-embed-shield:hover > span, .chat-embed-shield:focus-visible > span { opacity: 1; }
+.chat-embed-shield:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (hover: none) { .chat-embed-shield > span { opacity: 1; } }
+.chat-embed-live { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; color: var(--green); font-size: 11px; font-weight: 600; }
+.chat-embed-live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+/* Maximised: over the chat pane (useChatPaneOverlay), bar on top, frame filling the rest. */
+.chat-block.chat-embed[data-maximised] {
+  inset: auto;
+  top: var(--chat-embed-max-top, 16px);
+  left: var(--chat-embed-max-left, 16px);
+  width: var(--chat-embed-max-width, calc(100vw - 32px));
+  height: var(--chat-embed-max-height, calc(100vh - 32px));
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface-deep);
+  box-shadow: none;
+}
+.chat-embed[data-maximised] > .chat-block-bar { order: -1; border-top: 0; border-bottom: 1px solid var(--border); background: var(--surface-raised); }
+.chat-embed[data-maximised] > .chat-block-bar .chat-block-title b { color: var(--text); font-size: 13px; font-weight: 600; }
+.chat-embed[data-maximised] > .chat-block-body { display: flex; flex-direction: column; overflow: hidden; }
+.chat-embed[data-maximised] .chat-embed-stage { flex: 1; height: auto; }
+/* The timeline is size-contained, which would make it the overlay's (scrolling) containing block. */
+.chat-timeline:has(.chat-embed[data-maximised]) { container-type: normal; }
+
+/* Canvas boards: a strip of scaled frame thumbnails; maximised, frame tabs over one live frame. */
+.chat-embed-strip { display: flex; gap: 10px; padding: 10px; overflow-x: auto; background: var(--surface-soft); }
+.chat-embed-thumb { position: relative; display: flex; flex: none; flex-direction: column; gap: 5px; }
+.chat-embed-thumb-view { position: relative; display: block; overflow: hidden; border: 1px solid var(--border-mid); border-radius: 6px; background: #fff; }
+.chat-embed-thumb-view > iframe { display: block; border: 0; transform-origin: 0 0; pointer-events: none; }
+.chat-embed-thumb-caption {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-soft);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+/* The caption button covers the thumbnail too, so a click anywhere opens the frame. */
+.chat-embed-thumb-caption::before { content: ''; position: absolute; inset: 0; border-radius: 6px; }
+.chat-embed-thumb:hover .chat-embed-thumb-view, .chat-embed-thumb:focus-within .chat-embed-thumb-view { border-color: var(--accent); }
+.chat-embed-thumb-caption:focus-visible { outline: none; }
+.chat-embed-thumb-caption:focus-visible::before { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chat-embed-thumb-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chat-embed-frame-number { flex-shrink: 0; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.chat-embed-empty { display: block; padding: 16px 12px; background: var(--surface-soft); color: var(--muted); font-size: 12px; }
+.chat-embed-tabs { display: flex; flex: none; gap: 4px; padding: 6px 8px; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface); }
+.chat-embed-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-embed-tab:hover { background: var(--surface-hover); color: var(--text); }
+.chat-embed-tab[aria-selected='true'] { border-color: var(--border-mid); background: var(--surface-raised); color: var(--text); }
+.chat-embed-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-embed-canvas-stage { display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; padding: 16px; overflow: hidden; }
+.chat-embed-canvas-screen { position: relative; display: block; flex: none; overflow: hidden; border-radius: 6px; box-shadow: var(--shadow); }
+.chat-embed-canvas-screen > iframe { transform-origin: 0 0; }
