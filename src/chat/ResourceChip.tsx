@@ -134,8 +134,9 @@ function ResourceCard({ resource, description, cwd, onAction }: ResourceCardRow 
     <div className="chat-resource-card-content min-w-0 flex-1">
       <div className="chat-resource-title truncate" title={missing ? `${resource.path} — not found` : resource.path}>
         <span className={`font-mono text-foreground ${missing ? 'chat-resource-missing' : ''}`}>{resource.path.split('/').filter(Boolean).at(-1) || '/'}</span>
-        {detail.hasContent ? <><span className="text-muted-foreground"> · </span><span className="chat-resource-description text-muted-foreground">{detail.content}</span></> : null}
       </div>
+      {/* The agent's note wraps in full: it can hold sentences, inline code and nested lists. */}
+      {detail.hasContent ? <div className="chat-resource-description text-muted-foreground">{detail.content}</div> : null}
       <div className="chat-resource-directory truncate font-mono text-muted-foreground" title={resource.path}>{resourceDirectory(resource.path, cwd)}</div>
       {notice ? <div role="status" className="text-xs text-destructive">{notice}</div> : null}
     </div>
