@@ -91,6 +91,19 @@ describe('PR links in replies', () => {
   })
 })
 
+describe('backticked links in replies', () => {
+  it('turns a backticked PR or Linear address into a chip, but leaves fenced code alone', async () => {
+    const prSummary = vi.fn().mockResolvedValue({ title: 'feat: add thing', state: 'open' })
+    const linearIssue = vi.fn().mockResolvedValue({ identifier: 'ENG-42', title: 'Fix the login loop', url: ISSUE })
+    const { container } = renderReply(`PR \`${PR}\` closes \`${ISSUE}\`.\n\n\`\`\`\n${PR.replace('12', '99')}\n\`\`\``, { prSummary, linearIssue })
+    expect(await screen.findByRole('link', { name: /acme\/widgets#12.*feat: add thing/ })).toHaveAttribute('href', PR)
+    expect(await screen.findByRole('link', { name: /ENG-42.*Fix the login loop/ })).toHaveAttribute('href', ISSUE)
+    expect(prSummary).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('pre')).toHaveTextContent(PR.replace('12', '99'))
+    expect(container.querySelector('pre a, pre .chat-rich-chip')).toBeNull()
+  })
+})
+
 describe('Linear links in replies', () => {
   it('shows the issue title, state and assignee, opening the issue in the browser', async () => {
     const linearIssue = vi.fn().mockResolvedValue({ identifier: 'ENG-42', title: 'Fix the login loop', url: ISSUE, state: { name: 'In Progress', color: '#f2c94c' }, assignee: 'Ada' })
