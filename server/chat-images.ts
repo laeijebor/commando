@@ -39,7 +39,7 @@ export function chatImagesDir(env: Record<string, string | undefined> = process.
 /** Images in tool results and replies can be larger than the ones people attach. */
 export const MAX_STORED_IMAGE_BYTES = 32 * 1024 * 1024
 /** A diagram is text; anything bigger is not one worth drawing. */
-const MAX_SVG_BYTES = 5 * 1024 * 1024
+export const MAX_SVG_BYTES = 5 * 1024 * 1024
 /** The widest PNG drawn from an SVG: sharp on a phone, small enough to load quickly. */
 const STILL_MAX_WIDTH = 1600
 /** Unused images are pruned; a resumed transcript stores them again. */

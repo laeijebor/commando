@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ComponentPropsWithoutRef } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef } from 'react'
 import type { ExtraProps } from 'react-markdown'
 import { DiagramBlock, PrDiagramFence, standaloneSvg } from './chat/DiagramBlock'
 import { documentMermaidThemeVariables, useThemeName } from './mermaidTheme'
@@ -28,6 +28,9 @@ function loadMermaid() {
     mermaid.initialize({
       startOnLoad: false, theme: 'base', themeVariables: documentMermaidThemeVariables(),
       securityLevel: 'strict', suppressErrorRendering: true,
+      // Mermaid defaults to 16px text (and sequence diagrams to 150px actors), larger than the chat around it.
+      fontSize: 13,
+      sequence: { width: 120, height: 40, actorMargin: 40, boxMargin: 8, diagramMarginX: 16, diagramMarginY: 8 },
     })
     return mermaid
   })
@@ -62,6 +65,12 @@ export function MermaidDiagram({ source }: { source: string }) {
     }, RENDER_DELAY_MS)
     return () => { cancelled = true; clearTimeout(timer) }
   }, [baseId, source, theme])
+  // Never wider than drawn: a small diagram stays its size, centred, and still shrinks in a narrow pane.
+  useLayoutEffect(() => {
+    const element = picture.current?.querySelector('svg')
+    const width = Number(element?.getAttribute('viewBox')?.trim().split(/[\s,]+/)[2])
+    if (element && width > 0) element.style.maxWidth = `${Math.ceil(width)}px`
+  }, [svg])
   // A half-streamed source often fails to parse; keep the last good diagram.
   if (svg) {
     const read = () => {

@@ -24,6 +24,8 @@ const architectureId = `${'a'.repeat(64)}.svg`
 const pipelineId = `${'b'.repeat(64)}.svg`
 
 test('diagrams in a reply get a block with expand, source and copy', async ({ page, context }, testInfo) => {
+  // Mermaid and the image clipboard are slow on a loaded machine.
+  test.setTimeout(120_000)
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseUrl })
   await page.setViewportSize({ width: 1100, height: 1400 })
   const errors: string[] = []
@@ -121,6 +123,10 @@ test('diagrams in a reply get a block with expand, source and copy', async ({ pa
   // Mermaid: drawn in the theme, Source shows the text, and Copy copies what is shown.
   const sequence = chatPane.getByRole('figure', { name: 'Sequence diagram' })
   await expect(sequence.getByRole('img', { name: 'Mermaid diagram' }).locator('svg')).toBeVisible()
+  // Drawn at its own size, not stretched to the column.
+  const drawn = await sequence.getByRole('img', { name: 'Mermaid diagram' }).locator('svg').evaluate((svg) => ({ width: svg.getBoundingClientRect().width, natural: Number(svg.getAttribute('viewBox')?.split(/\s+/)[2]) }))
+  expect(Math.abs(drawn.width - drawn.natural)).toBeLessThan(2)
+  expect(drawn.width).toBeLessThan(560)
   await sequence.getByRole('button', { name: 'Show source' }).click()
   await expect(sequence.locator('pre')).toContainText('Agent->>Daemon: reply with a fence')
   await sequence.hover()
@@ -142,7 +148,7 @@ test('diagrams in a reply get a block with expand, source and copy', async ({ pa
   await release.scrollIntoViewIfNeeded()
   await release.hover()
   await release.getByRole('button', { name: 'Copy image' }).click()
-  await expect(release.getByRole('status')).toHaveText('Copied image')
+  await expect(release.getByRole('status')).toHaveText('Copied image', { timeout: 15_000 })
   const types = await page.evaluate(async () => (await navigator.clipboard.read()).flatMap((item) => item.types))
   expect(types).toContain('image/png')
   await release.getByRole('button', { name: 'Show source' }).click()

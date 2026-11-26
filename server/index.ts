@@ -1098,7 +1098,7 @@ async function main(): Promise<void> {
     replyResources: (items, cwd) => replyResources.attach(items, cwd),
     // HTML mock-ups and canvas boards use image syntax too, so they resolve with the images.
     replyImages: async (items, cwd) => replyEmbeds.attach(await replyImages.attach(items, cwd), cwd),
-    replyDiagrams: (items) => replyDiagrams.attach(items),
+    replyDiagrams: (items, cwd, wait) => replyDiagrams.attach(items, cwd, wait),
     onHandoffsChange: () => publishChatHandoffs(),
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
