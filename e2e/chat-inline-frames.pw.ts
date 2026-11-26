@@ -128,6 +128,11 @@ test('inline mock-ups go live on click, maximise over the chat and move to a til
     await timeline.evaluate((node) => { node.scrollTop = node.scrollHeight })
     await expect(chatPane.getByRole('button', { name: 'Jump to latest' })).toHaveCount(0)
   }
+  // A click is lost when the restored block still moves between press and release on a busy machine, so retry it.
+  const maximise = () => expect(async () => {
+    if (await block.getAttribute('data-maximised') === null) await block.getByRole('button', { name: 'Maximise' }).click()
+    await expect(block).toHaveAttribute('data-maximised', '', { timeout: 3000 })
+  }).toPass()
   await atLatest()
   if (screenshots) await chatPane.screenshot({ path: `${screenshots}/chat-inline-frame.png` })
 
@@ -147,8 +152,7 @@ test('inline mock-ups go live on click, maximise over the chat and move to a til
   await expect.poll(() => inner.evaluate(() => window.scrollY)).toBeGreaterThan(0)
 
   // Maximise covers the chat pane, composer included, with the same live page.
-  await block.getByRole('button', { name: 'Maximise' }).click()
-  await expect(block).toHaveAttribute('data-maximised', '')
+  await maximise()
   const pane = (await chatPane.boundingBox())!
   await expect.poll(async () => {
     const shown = (await block.boundingBox())!
@@ -164,11 +168,11 @@ test('inline mock-ups go live on click, maximise over the chat and move to a til
   await expect(frame.getByText('2 of 3 syncing')).toBeVisible()
 
   // Review opens a chromium tile; Move to tile the phase-1 resource tile.
-  await block.getByRole('button', { name: 'Maximise' }).click()
+  await maximise()
   await block.getByRole('button', { name: 'Review in a tile' }).click()
   await expect.poll(() => actions.at(-1)).toEqual({ path: mockup.path, action: 'tile', engine: 'chromium' })
   await expect(block).not.toHaveAttribute('data-maximised', '')
-  await block.getByRole('button', { name: 'Maximise' }).click()
+  await maximise()
   await block.getByRole('button', { name: 'Move to tile' }).click()
   await expect.poll(() => actions.at(-1)).toEqual({ path: mockup.path, action: 'tile' })
   await expect(block).not.toHaveAttribute('data-maximised', '')
