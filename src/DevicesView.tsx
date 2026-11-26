@@ -15,6 +15,8 @@ type Entry = Owner & {
 export type DevicesSnapshot = {
   resources: Resource[]; holders: Holder[]; queue: Entry[]; paused: string[]; now: number
   waitingFor: Record<string, string>; connections: Record<string, 'connected' | 'missing' | 'unknown' | 'no-serial'>; idleSince: Record<string, number>
+  /** Present when the locks run on device farms (Settings > Device farm). */
+  farms?: Array<{ name: string; url: string; connected: boolean; error?: string }>
 }
 /** Runs a Devices action; resolves when it settled (the view applies the newest answer). */
 type Run = (work: () => Promise<DevicesSnapshot>) => Promise<void>
@@ -116,7 +118,7 @@ function DeviceCard({ resource, snapshot, api, run, onOpenPane }: {
         {flags[index] ? <span className={flags[index]!.tone === 'red' ? 'idle' : 'ended'}>{flags[index]!.text}</span> : null}
       </div>
       <div className="sims-actions">
-        {onOpenPane ? <button type="button" onClick={() => onOpenPane(holder.paneId)}>Open pane</button> : null}
+        {onOpenPane && holder.paneId.startsWith('%') ? <button type="button" onClick={() => onOpenPane(holder.paneId)}>Open pane</button> : null}
         <button type="button" className="danger" disabled={busy} onClick={() => { if (window.confirm(`Release ${resource.name} from ${who(holder)}? They will be told to stop using it.`)) act(() => api.release(resource.id)) }}>Release</button>
       </div>
     </section>)}
@@ -128,7 +130,7 @@ function DeviceCard({ resource, snapshot, api, run, onOpenPane }: {
       <div className="sims-meta"><span className="ended">{offered.offer!.deliveredAt === undefined ? 'message not delivered yet · lapses in ' : 'must claim within '}
         {duration(Math.max(0, (offered.claimBy ?? now) - now) + 59_999)}</span></div>
       <div className="sims-actions">
-        {onOpenPane ? <button type="button" onClick={() => onOpenPane(offered.paneId)}>Open pane</button> : null}
+        {onOpenPane && offered.paneId.startsWith('%') ? <button type="button" onClick={() => onOpenPane(offered.paneId)}>Open pane</button> : null}
         <button type="button" disabled={busy} onClick={() => act(() => api.remove(offered.id))}>Skip to next</button>
       </div>
     </section> : null}
@@ -221,6 +223,9 @@ export function DevicesView({ token, onOpenPane, api: injected }: { token: strin
       </> : null}
     </header>
     {error ? <p className="sims-error" role="alert">{error}</p> : null}
+    {snapshot?.farms?.filter((farm) => !farm.connected).map((farm) => <p key={farm.name} className="sims-error" role="alert">
+      The {farm.name} device farm ({farm.url.replace(/^https?:\/\//, '')}) isn&apos;t answering{farm.error ? `: ${farm.error}` : ''}. Its devices may be missing or out of date here.
+    </p>)}
     {!snapshot && !error ? <p className="sims-empty" role="status">Loading devices…</p> : null}
     {snapshot && !snapshot.resources.length ? <p className="sims-empty">No device locks yet. An agent can add one with <code>commando-device.mjs resource add pixel --name "Pixel 5" --kind android --serial &lt;adb serial&gt;</code>.</p> : null}
     {snapshot ? <div className="devices-grid">{snapshot.resources.map((resource) => <DeviceCard key={resource.id} resource={resource} snapshot={snapshot} api={api} run={track} onOpenPane={onOpenPane} />)}</div> : null}

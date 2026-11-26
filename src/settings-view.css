@@ -42,3 +42,9 @@
 .settings-profile .settings-naming-note { color: var(--muted); }
 .settings-naming-wait { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-soft); }
 .settings-naming-wait input { width: 56px; padding: 4px 6px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; }
+
+.settings-farm-field { display: inline-flex; flex-basis: 100%; align-items: center; gap: 6px; color: var(--text-soft); }
+.settings-farm-field input { flex: 1 1 220px; max-width: 420px; padding: 4px 6px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; font-family: var(--mono); font-size: 11px; }
+.settings-farm-note { flex-basis: 100%; margin: 2px 0 0; }
+.settings-farm-remote { flex-basis: 100%; }
+.settings-farm-remote input { width: 200px; }
