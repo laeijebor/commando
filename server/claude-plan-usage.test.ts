@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatPlanUsage } from '../shared/agent-chat.js'
-import { ClaudePlanUsage, PLAN_USAGE_POLL_MS, claudeKeychainService, parseClaudeCredentials, toProviderUsage, type ClaudeCredentials } from './claude-plan-usage.js'
+import { ClaudePlanUsage, PLAN_USAGE_POLL_MS, claudeKeychainService, fileCredentials, parseClaudeCredentials, toProviderUsage, type ClaudeCredentials } from './claude-plan-usage.js'
 
 const MINUTE = 60_000
 const BODY = {
@@ -28,6 +31,8 @@ function harness(options: {
 }
 
 describe('claude plan usage', () => {
+  afterEach(() => { vi.useRealTimers() })
+
   it('names the Keychain item Claude Code keeps for each config dir', () => {
     expect(claudeKeychainService(undefined)).toBe('Claude Code-credentials')
     expect(claudeKeychainService('/home/me/.claudep')).toBe('Claude Code-credentials-7c090123')
@@ -38,6 +43,17 @@ describe('claude plan usage', () => {
     expect(parseClaudeCredentials({ claudeAiOauth: { accessToken: ' t ', expiresAt: 5, subscriptionType: 'max' } })).toEqual({ accessToken: 't', expiresAt: 5, plan: 'max' })
     expect(parseClaudeCredentials({ mcpOAuth: {} })).toBeNull()
     expect(parseClaudeCredentials({ claudeAiOauth: { accessToken: '' } })).toBeNull()
+  })
+
+  it("reads the login from the config dir's credentials file where there is no Keychain", async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-login-'))
+    try {
+      expect(await fileCredentials(dir)).toBeNull()
+      await writeFile(join(dir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'file-token', subscriptionType: 'pro' } }))
+      expect(await fileCredentials(dir)).toEqual({ accessToken: 'file-token', plan: 'pro' })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('fetches each login once per ten minutes and sends the reading to its chats', async () => {
@@ -54,8 +70,27 @@ describe('claude plan usage', () => {
     advance(1)
     logins.pop()
     await usage.tick()
+    // Only the login a chat is still open on.
     expect(fetch).toHaveBeenCalledTimes(3)
-    expect(usage.reading('/home/me/.claudew')).toBeUndefined()
+    expect(usage.reading('/home/me/.claudew')).toBeDefined()
+  })
+
+  it('keeps a back-off when the last chat on a login reconnects or is replaced', async () => {
+    vi.useFakeTimers()
+    const { usage, fetch, advance, logins } = harness({ respond: () => new Response('{}', { status: 429 }) })
+    await usage.tick()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    logins.pop()
+    advance(MINUTE)
+    await usage.tick()
+    logins.push('/home/me/.claudep')
+    usage.joined('/home/me/.claudep', undefined)
+    await vi.advanceTimersByTimeAsync(5_000)
+    await usage.tick()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    advance(4 * MINUTE)
+    await usage.tick()
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('backs off from refusals, longer each time, and obeys a longer retry-after', async () => {
@@ -113,13 +148,19 @@ describe('claude plan usage', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('fetches straight away for the first chat on a login, and only once while it runs', async () => {
-    const { usage, fetch } = harness()
+  it('fetches soon after the first chat on a login joins, once, unless another chat brings a fresh reading', async () => {
+    vi.useFakeTimers()
+    const { usage, fetch, now } = harness()
     expect(usage.joined('/home/me/.claudep', undefined)).toBeUndefined()
     usage.joined('/home/me/.claudep', undefined)
-    await usage.tick()
+    await vi.advanceTimersByTimeAsync(3_000)
     expect(fetch).toHaveBeenCalledTimes(1)
     expect(usage.reading('/home/me/.claudep')?.limits).toHaveLength(2)
+    // After a restart: a chat without a reading, then one holding a recent one.
+    usage.joined('/home/me/.claudew', undefined)
+    usage.joined('/home/me/.claudew', { limits: [{ kind: 'session', title: 'Current session', percent: 1, severity: 'normal' }], updatedAt: now() - MINUTE })
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
   it("keeps the Island's login polled while it keeps asking, without chats on it", async () => {
@@ -131,10 +172,10 @@ describe('claude plan usage', () => {
     const shown = usage.providerUsage(undefined)
     expect(shown).toMatchObject({ state: 'available', plan: 'max', windows: [{ label: '5h', usedPercent: 12 }, { label: '7d', usedPercent: 3 }] })
     expect(JSON.stringify(shown)).not.toContain('token')
-    // No one asks for four minutes: the lease runs out and the login is dropped.
-    advance(4 * MINUTE)
+    // No one asks for a while: the lease runs out, and the login isn't fetched when it falls due.
+    advance(PLAN_USAGE_POLL_MS)
     await usage.tick()
-    expect(usage.reading(undefined)).toBeUndefined()
+    expect(fetch).toHaveBeenCalledTimes(1)
     expect(logins).toEqual([])
   })
 

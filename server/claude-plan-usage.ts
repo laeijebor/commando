@@ -1,5 +1,8 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { ChatPlanUsage } from '../shared/agent-chat.js'
@@ -25,6 +28,11 @@ const MAX_RETRY_AFTER_MS = 60 * 60_000
 const NO_TOKEN_RETRY_MS = 60_000
 /** A login asked about by a reader (the Island) stays polled this long after the last ask. */
 const READER_LEASE_MS = 3 * 60_000
+/**
+ * How long a login's first fetch waits after a chat joins: after a daemon restart
+ * every chat reconnects at once, and one of them may hold a fresh reading.
+ */
+const JOIN_SETTLE_MS = 3_000
 const REQUEST_TIMEOUT_MS = 5_000
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 
@@ -42,6 +50,7 @@ type Login = {
   /** A token the endpoint rejected (401): it isn't sent again; Claude Code refreshes it on its next request. */
   rejectedToken?: string
   polling?: Promise<void>
+  settling?: NodeJS.Timeout
 }
 
 export type ClaudePlanUsageOptions = {
@@ -76,9 +85,7 @@ export function parseClaudeCredentials(value: unknown): ClaudeCredentials | null
   }
 }
 
-async function defaultReadCredentials(configDir: string | undefined): Promise<ClaudeCredentials | null> {
-  const environmentToken = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()
-  if (!configDir && environmentToken) return { accessToken: environmentToken }
+async function keychainCredentials(configDir: string | undefined): Promise<ClaudeCredentials | null> {
   if (process.platform !== 'darwin') return null
   try {
     const { stdout } = await execFileAsync(
@@ -90,6 +97,22 @@ async function defaultReadCredentials(configDir: string | undefined): Promise<Cl
   } catch {
     return null
   }
+}
+
+/** Where Claude Code keeps a login without a Keychain (Linux, or its fallback on macOS). */
+export async function fileCredentials(configDir: string | undefined): Promise<ClaudeCredentials | null> {
+  try {
+    const path = join(configDir ?? join(homedir(), '.claude'), '.credentials.json')
+    return parseClaudeCredentials(JSON.parse(await readFile(path, 'utf8')) as unknown)
+  } catch {
+    return null
+  }
+}
+
+async function defaultReadCredentials(configDir: string | undefined): Promise<ClaudeCredentials | null> {
+  const environmentToken = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()
+  if (!configDir && environmentToken) return { accessToken: environmentToken }
+  return await keychainCredentials(configDir) ?? await fileCredentials(configDir)
 }
 
 function retryAfterMs(response: Response): number {
@@ -107,6 +130,10 @@ const configDirOf = (loginKey: string) => loginKey || undefined
  * `plan_usage` no longer ask Claude themselves.
  */
 export class ClaudePlanUsage {
+  /**
+   * Every login seen, kept when no chat wants it any more so a chat that comes
+   * back can't reset its schedule, back-off or refused token. There are a few.
+   */
   private readonly logins = new Map<string, Login>()
   /** Logins a reader asked about, until when. */
   private readonly leases = new Map<string, number>()
@@ -130,6 +157,7 @@ export class ClaudePlanUsage {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
+    for (const login of this.logins.values()) clearTimeout(login.settling)
   }
 
   /** The last reading of a login, if any. */
@@ -153,7 +181,7 @@ export class ClaudePlanUsage {
       if (login.status === 'pending') login.status = 'ok'
       login.nextAt = Math.max(login.nextAt, held.updatedAt + PLAN_USAGE_POLL_MS)
     }
-    if (login.nextAt <= this.now()) void this.poll(key(configDir))
+    if (login.nextAt <= this.now()) this.pollSoon(key(configDir))
     return login.usage
   }
 
@@ -166,7 +194,7 @@ export class ClaudePlanUsage {
     return toProviderUsage(login, this.now())
   }
 
-  /** Fetches every due login; drops logins no chat or reader wants any more. */
+  /** Fetches every due login that a chat or reader wants. */
   async tick(): Promise<void> {
     const now = this.now()
     const wanted = new Set<string>()
@@ -174,9 +202,6 @@ export class ClaudePlanUsage {
     for (const [loginKey, until] of this.leases) {
       if (until > now) wanted.add(loginKey)
       else this.leases.delete(loginKey)
-    }
-    for (const loginKey of this.logins.keys()) {
-      if (!wanted.has(loginKey)) this.logins.delete(loginKey)
     }
     await Promise.all([...wanted].map((loginKey) => {
       const login = this.login(loginKey)
@@ -191,6 +216,17 @@ export class ClaudePlanUsage {
       this.logins.set(loginKey, login)
     }
     return login
+  }
+
+  /** A first fetch, a moment later, unless a reconnecting chat's reading makes it unneeded meanwhile. */
+  private pollSoon(loginKey: string): void {
+    const login = this.login(loginKey)
+    if (login.settling || login.polling) return
+    login.settling = setTimeout(() => {
+      login.settling = undefined
+      if (login.nextAt <= this.now()) void this.poll(loginKey)
+    }, JOIN_SETTLE_MS)
+    login.settling.unref()
   }
 
   private poll(loginKey: string): Promise<void> {
@@ -258,8 +294,7 @@ export class ClaudePlanUsage {
     login.failures = 0
     login.usage = usage
     this.setStatus(login, 'ok', label)
-    // A login no one wants any more was dropped while this ran.
-    if (this.logins.get(loginKey) === login) this.options.deliver(configDir, usage)
+    this.options.deliver(configDir, usage)
   }
 
   private backOff(login: Login, retryAfter: number, status: PlanUsageStatus, detail: string): void {
