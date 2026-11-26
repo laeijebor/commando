@@ -90,6 +90,7 @@ import { defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
+import { CursorCloudEnvironmentsApi } from './cursor-cloud-environments.js'
 import { CursorCloudAgentsApi } from './cursor-cloud-agents.js'
 import { createCloudConnections } from './cloud-connections.js'
 import { handleNotesApi } from './notes-api.js'
@@ -1826,6 +1827,7 @@ async function main(): Promise<void> {
     (creations) => broadcast({ type: 'session_creations', creations }),
   )
 
+  const cursorCloudEnvironmentsApi = new CursorCloudEnvironmentsApi()
   const cursorCloudAgentsApi = new CursorCloudAgentsApi({
     chatSessions: () => agentHosts.states().map((state) => state.session),
     snapshot: () => snapshot,
@@ -3261,6 +3263,7 @@ async function main(): Promise<void> {
           }
           if (await handleCloudTasksApi(request, response, url, cloudTasks)) return
         }
+        if (await cursorCloudEnvironmentsApi.handle(request, response, url)) return
         if (await cursorCloudAgentsApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
