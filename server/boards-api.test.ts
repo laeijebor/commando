@@ -47,6 +47,40 @@ async function request(path = '', method = 'GET', data?: unknown, auth = 'owner'
 }
 
 describe('BoardsApi', () => {
+  it('creates named groups for one-command artifact placement and evidence adds without moving existing groups', async () => {
+    const artifact = await request('/items', 'POST', { url: 'https://example.com/spec', kind: 'page' }, agentToken, true)
+    const placed = await request('/place', 'POST', { key: artifact.data.key, group: 'spec' }, agentToken, true)
+    expect(placed.status).toBe(200)
+    expect(placed.data.placements[artifact.data.key].group).toBe('spec')
+    const recording = join(root, 'demo.mp4'); writeFileSync(recording, 'recording')
+    const added = await request('/items', 'POST', { path: recording, group: 'evidence', near: 'spec', caption: 'Verified flow' }, agentToken, true)
+    expect(added.status).toBe(201)
+    const board = store.get(target), group = board.groups.find((g) => g.id === 'evidence')!
+    expect(group).toMatchObject({ x: 496, y: 0 })
+    expect(board.placements[added.data.key].group).toBe('evidence')
+    await request('/items', 'POST', { path: recording, group: 'evidence', near: 'spec' }, agentToken, true)
+    expect(store.get(target).groups.find((g) => g.id === 'evidence')?.x).toBe(group.x)
+  })
+  it('groups a published screenshot folder and recordings beside spec, respecting fixed placements', async () => {
+    store.group(target, 'spec', { title: 'Spec' }, 'agent', true)
+    const dir = join(root, 'shots'); mkdirSync(dir)
+    const image = join(dir, 'one.png'), video = join(dir, 'demo.mp4')
+    writeFileSync(image, 'image'); writeFileSync(video, 'video'); writeFileSync(join(dir, 'noise.txt'), 'noise')
+    store.captureFolder(target, dir, 123)
+    store.place(target, `file:${image}`, { x: 42, y: 50 }, 'user')
+    const result = await request('/folders', 'POST', { dir, group: 'evidence' }, agentToken, true)
+    expect(result.status).toBe(200)
+    expect(result.data.groups.find((g: { id: string }) => g.id === 'evidence')).toMatchObject({ x: 496, y: 0 })
+    expect(result.data.placements[`file:${video}`].group).toBe('evidence')
+    expect(result.data.placements[`file:${image}`]).toMatchObject({ x: 42, y: 50, fixed: true })
+    const rev = store.get(target).rev
+    await request('/folders', 'POST', { dir, group: 'evidence' }, agentToken, true)
+    expect(store.get(target).placements[`file:${video}`]).toEqual(result.data.placements[`file:${video}`])
+    expect(store.get(target).items).toHaveLength(2)
+    expect(store.get(target).rev).toBeGreaterThanOrEqual(rev)
+    expect((await request('/folders', 'POST', { dir: 'relative', group: 'evidence' }, agentToken, true)).status).toBe(400)
+    expect((await request('/folders', 'POST', { dir, group: '../bad' }, agentToken, true)).status).toBe(400)
+  })
   it('requires owner or hook auth, scopes hook requests to a pane and accepts owner detached reads', async () => {
     expect((await request('', 'GET', undefined, '')).status).toBe(401)
     expect((await http(`${base}/api/boards/${target}`, { headers: { Authorization: `Bearer ${agentToken}` } })).status).toBe(403)

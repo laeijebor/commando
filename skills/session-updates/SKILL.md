@@ -36,11 +36,14 @@ evidence. Run `--help` for all commands; the CLI uses the current pane and port.
 
 ```bash
 node "$HOME/.commando/hooks/commando-board.mjs" group evidence --title "Spec and evidence"
-node "$HOME/.commando/hooks/commando-board.mjs" add /tmp/demo.mp4 --group evidence
+node "$HOME/.commando/hooks/commando-board.mjs" add /tmp/demo.mp4 --group evidence --near spec --caption "Verified the updated flow"
 node "$HOME/.commando/hooks/commando-board.mjs" clip "Keep the existing token model" --tone decision --group evidence
 ```
 
 Use groups and optional `--near` relationships; never assign pixel positions.
+For dogfood recordings, use `add <path> --group evidence --near spec` with a
+one-line `--caption`. Missing groups are created by `add` and `place`; `--near`
+positions a new group beside the named existing group.
 
 ## Publish an update
 
@@ -150,8 +153,12 @@ Publish a screenshot round by naming its directory:
 
 ```bash
 $HOME/.commando/hooks/commando-session-update.mjs \
-  --screenshots "$PWD/.screenshots/<topic>"
+  --screenshots "$PWD/.screenshots/<topic>" --board-group evidence
 ```
+
+For dogfood screenshot folders, `--board-group evidence` also captures and groups
+the images and recordings on the Board, beside `spec` when that group exists.
+The option requires `--screenshots`; choose another group id when appropriate.
 
 The daemon creates the screenshots timeline event itself. Do not also pass
 `--update` for the same publish. The flag composes with headline, recap, state,
@@ -178,6 +185,13 @@ $HOME/.commando/hooks/commando-session-update.mjs --stdin <<'JSON'
 }
 JSON
 ```
+
+## Before you finish
+
+Name groups for the work with `commando-board group <id> --title "…"`.
+Give each evidence item a one-line caption (`add <path> --caption "…"`).
+Use `commando-board remove <key>` to remove noise links and stale evidence.
+Keep the spec and its evidence together with groups and `--near`, never pixels.
 
 ## Content rules
 

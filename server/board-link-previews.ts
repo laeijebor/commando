@@ -89,8 +89,8 @@ const pinnedFetch: PreviewFetch = (url, init, address) => new Promise((resolve, 
   })
   req.on('error', reject); req.end()
 })
-class PrivateUrl extends Error {}
-type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb'] }
+class PrivateUrl extends Error { constructor(readonly url: string) { super('Private preview URL') } }
+type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb']; capture?: 'public' | 'private'; shotExpires?: number }
 type Options = {
   store: BoardStore; thumbs: BoardThumbCache; statePath: string
   fetch?: PreviewFetch; resolve?: (host: string) => Promise<Address[]>; now?: () => number
@@ -114,6 +114,8 @@ export class BoardLinkPreviews {
         if (normalizeBoardUrl(url) !== url || !entry || !Number.isFinite(entry.expires) || entry.expires <= this.now()) continue
         if (entry.preview && (typeof entry.preview !== 'object' || Object.entries(entry.preview).some(([k, v]) => !['title', 'description', 'siteName', 'image', 'favicon'].includes(k) || typeof v !== 'string' || v.length > 2000 || (['image', 'favicon'].includes(k) && !/^[0-9a-f]{64}$/.test(v))))) continue
         if (entry.thumb && (!/^[0-9a-f]{64}$/.test(entry.thumb.hash) || ![entry.thumb.w, entry.thumb.h].every((n) => Number.isFinite(n) && n > 0 && n <= 16384))) continue
+        if (entry.capture !== undefined && !['public', 'private'].includes(entry.capture)) continue
+        if (entry.shotExpires !== undefined && !Number.isFinite(entry.shotExpires)) continue
         this.entries.set(url, entry)
       }
     } catch { /* No preview cache, or corrupt state: start empty. */ }
@@ -130,9 +132,9 @@ export class BoardLinkPreviews {
   }
   private async address(url: URL): Promise<Address> {
     const host = url.hostname.replace(/^\[|\]$/g, '')
-    if (isPrivatePreviewHost(host)) throw new PrivateUrl()
+    if (isPrivatePreviewHost(host)) throw new PrivateUrl(url.href)
     const answers = isIP(host) ? [{ address: host, family: isIP(host) }] : await (this.options.resolve ?? ((host) => lookup(host, { all: true })))(host)
-    if (!answers.length || answers.some((a) => !isIP(a.address) || isPrivatePreviewHost(a.address))) throw new PrivateUrl()
+    if (!answers.length || answers.some((a) => !isIP(a.address) || isPrivatePreviewHost(a.address))) throw new PrivateUrl(url.href)
     return answers[0]
   }
   private async download(url: string, limit: number, image: boolean): Promise<{ bytes: Buffer; url: string }> {
@@ -180,10 +182,16 @@ export class BoardLinkPreviews {
     if (item.kind !== 'link' || !item.ref.url) return
     let url: string
     try { url = normalizeBoardUrl(item.ref.url) } catch { return }
+    if (!this.options.thumbs.canCapture(url)) return
     await this.load()
     let entry = this.entries.get(url)
+    // Upgrade v1 cache entries so existing no-image links get shots immediately.
+    if (entry && !entry.capture) {
+      if (isPrivatePreviewHost(new URL(url).hostname)) entry.capture = 'private'
+      else if (entry.preview && !entry.preview.image) entry.capture = 'public'
+    }
     if (entry && entry.expires > this.now()) {
-      const hashes = new Set([entry.preview?.image, entry.preview?.favicon].filter((hash): hash is string => !!hash))
+      const hashes = new Set([entry.preview?.image, entry.preview?.favicon, entry.thumb?.hash].filter((hash): hash is string => !!hash))
       // Metadata outlives the LRU thumbnail cache; refetch when either asset was evicted.
       if ((await Promise.all([...hashes].map((hash) => this.options.thumbs.has(hash)))).some((exists) => !exists)) entry = undefined
     }
@@ -197,17 +205,22 @@ export class BoardLinkPreviews {
           if (!asset) continue
           try { const data = await this.download(asset, IMAGE_LIMIT, true); const hash = await this.options.thumbs.image(data.bytes); if (hash) preview[key] = hash } catch { /* Metadata is useful even when an image fails. */ }
         }
-        entry = { expires: this.now() + 7 * DAY, preview }
+        entry = { expires: this.now() + 7 * DAY, preview, ...(!image ? { capture: 'public' as const } : {}) }
       } catch (error) {
         entry = { expires: this.now() + 3600_000 }
-        if (error instanceof PrivateUrl && isPrivatePreviewHost(new URL(url).hostname)) {
-          // Only the managed engine may view private pages; it never receives user cookies.
-          const thumb = await this.options.thumbs.page(url)
-          if (thumb) entry.thumb = thumb
-        }
+        // A public URL redirecting into a private network is not a dev-server link.
+        if (error instanceof PrivateUrl && error.url === url) entry.capture = 'private'
       }
       this.entries.set(url, entry)
       await this.save().catch(() => {}) // State failures must not lose a successful preview.
+    }
+    if (entry.capture && (!entry.shotExpires || entry.shotExpires <= this.now())) {
+      const interval = entry.capture === 'private' ? 3600_000 : DAY
+      const thumb = entry.capture === 'private' && !isPrivatePreviewHost(new URL(url).hostname)
+        ? await this.options.thumbs.page(url, true) : await this.options.thumbs.page(url)
+      if (thumb) entry.thumb = thumb
+      entry.shotExpires = (Math.floor(this.now() / interval) + 1) * interval
+      await this.save().catch(() => {})
     }
     if (entry.preview || entry.thumb) this.apply(targetId, item, { ...(entry.preview ? { preview: entry.preview } : {}), ...(entry.thumb ? { thumb: entry.thumb } : {}) })
   }

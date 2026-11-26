@@ -63,6 +63,15 @@ export function isDaemonCaptureUrl(url: string): boolean {
   try { parsed = new URL(url) } catch { return false }
   return parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) && parsed.pathname.startsWith('/redline/')
 }
+/** Applied to the initial URL and every intercepted request (including redirects).
+ * Reserve daemon authentication paths on all hosts, including LAN/DNS aliases. */
+export function isBoardCaptureUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password
+      && !/^\/(?:api\/(?:auth|pairing)|auth|login|logout)(?:\/|$)/i.test(u.pathname)
+  } catch { return false }
+}
 const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
 const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
 const MAX_PENDING_SNAPSHOT_EXPRESSION_BYTES = 4 * 1024 * 1024
@@ -885,6 +894,62 @@ export class ChromiumEngine {
         await page.send('Runtime.evaluate', { expression: embed, awaitPromise: true }); check()
         const result = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); check()
         if (typeof result.data !== 'string') throw new WebPaneError(502, 'Chromium returned no PNG data')
+        return Buffer.from(result.data, 'base64')
+      } finally { cleanup() }
+    }
+    try { return await Promise.race([capture(), timeout]) }
+    finally { clearTimeout(timer); cleanup() }
+  }
+
+  /** Board previews use a fresh off-the-record context, never a tile or the default
+   * profile's cookies/storage. Context-scoped download policy leaves tiles alone. */
+  async screenshotPage(url: string, width: number, height: number,
+    connect: (url: string, timeoutMs: number) => Promise<ScreenshotCdp> = CdpConnection.open,
+  ): Promise<Buffer> {
+    if (!isBoardCaptureUrl(url)) throw new WebPaneError(400, 'Unsafe Board capture URL')
+    if (![width, height].every((n) => Number.isInteger(n) && n > 0 && n <= MAX_VIEWPORT_DIMENSION)) throw new WebPaneError(400, 'Invalid Board capture dimensions')
+    let browser: BrowserSession | undefined, contextId: string | undefined, targetId: string | undefined, page: ScreenshotCdp | undefined
+    let expired = false
+    const check = () => { if (expired) throw new WebPaneError(504, 'Board capture timed out after 10s') }
+    const cleanup = () => {
+      page?.close(); page = undefined
+      if (browser && targetId) { browser.cdp.sendAndForget('Target.closeTarget', { targetId }); targetId = undefined }
+      if (browser && contextId) { browser.cdp.sendAndForget('Target.disposeBrowserContext', { browserContextId: contextId }); contextId = undefined }
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { expired = true; cleanup(); reject(new WebPaneError(504, 'Board capture timed out after 10s')) }, 10_000)
+    })
+    const capture = async () => {
+      try {
+        browser = await this.ensureBrowser(); check()
+        const context = await browser.cdp.send('Target.createBrowserContext', { disposeOnDetach: true })
+        if (typeof context.browserContextId !== 'string') throw new WebPaneError(502, 'Chromium did not return a Board context')
+        contextId = context.browserContextId; check()
+        await browser.cdp.send('Browser.setDownloadBehavior', { behavior: 'deny', browserContextId: contextId }); check()
+        const target = await browser.cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId, background: true })
+        if (typeof target.targetId !== 'string') throw new WebPaneError(502, 'Chromium did not return a Board target')
+        targetId = target.targetId; check()
+        page = await connect(`ws://127.0.0.1:${browser.launch.port}/devtools/page/${targetId}`, 10_000); check()
+        const cdp = page
+        cdp.on('Page.javascriptDialogOpening', () => { void cdp.send('Page.handleJavaScriptDialog', { accept: false }).catch(() => {}) })
+        cdp.on('Fetch.requestPaused', (params) => {
+          const request = params.request as { url?: string } | undefined
+          void cdp.send(request?.url && isBoardCaptureUrl(request.url) ? 'Fetch.continueRequest' : 'Fetch.failRequest', {
+            requestId: params.requestId, ...(!(request?.url && isBoardCaptureUrl(request.url)) ? { errorReason: 'BlockedByClient' } : {}),
+          }).catch(() => {})
+        })
+        await cdp.send('Page.enable'); check()
+        await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }); check()
+        // Disallow popups before page scripts run; downloads are denied for the entire context.
+        await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.open = () => null' }); check()
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }); check()
+        const loaded = new Promise<void>((resolve) => cdp.on('Page.loadEventFired', () => resolve()))
+        const navigation = await cdp.send('Page.navigate', { url }); check()
+        if (navigation.errorText) throw new WebPaneError(502, `Board navigation failed: ${navigation.errorText}`)
+        await loaded; check()
+        const result = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); check()
+        if (typeof result.data !== 'string') throw new WebPaneError(502, 'Chromium returned no Board PNG')
         return Buffer.from(result.data, 'base64')
       } finally { cleanup() }
     }

@@ -36,7 +36,7 @@ describe('commando-board CLI', () => {
     expect(listed.stdout + listed.stderr).not.toContain('private-test-token')
   })
   it.each([
-    [['add', './file with spaces.png', '--title', 'Picture', '--caption', 'Look', '--group', 'evidence', '--pin'], '/items', 'POST', { path: resolve('./file with spaces.png'), title: 'Picture', caption: 'Look', group: 'evidence', pinned: true }],
+    [['add', './file with spaces.png', '--title', 'Picture', '--caption', 'Look', '--group', 'evidence', '--near', 'spec', '--pin'], '/items', 'POST', { path: resolve('./file with spaces.png'), title: 'Picture', caption: 'Look', group: 'evidence', near: 'spec', pinned: true }],
     [['add', 'https://github.com/Owner/Repo/pull/12'], '/items', 'POST', { url: 'https://github.com/Owner/Repo/pull/12', kind: 'pr' }],
     [['add', 'https://example.com/a?x=1'], '/items', 'POST', { url: 'https://example.com/a?x=1' }],
     [['clip', 'Decision with "quotes"\nand lines', '--tone', 'decision', '--group', 'g'], '/items', 'POST', { text: 'Decision with "quotes"\nand lines', tone: 'decision', group: 'g' }],
@@ -48,7 +48,7 @@ describe('commando-board CLI', () => {
     const result = await run([...args]); expect(result.code, result.stderr).toBe(0)
     expect(calls()[0]).toMatchObject({ url: `/api/boards/by-pane/%2512${path}`, method, ...(body === undefined ? {} : { body }) })
   })
-  it.each([[], ['group', 'g'], ['place', 'clip:one'], ['add', 'x', '--bogus'], ['clip', 'a', '--tone', 'bad'], ['list', '--title', 'a']])('rejects invalid arguments %j before HTTP', async (...input) => {
+  it.each([[], ['group', 'g'], ['place', 'clip:one'], ['add', 'x', '--bogus'], ['add', 'x', '--near', 'spec'], ['clip', 'a', '--tone', 'bad'], ['list', '--title', 'a']])('rejects invalid arguments %j before HTTP', async (...input) => {
     const args = input.flat() as string[]
     expect((await run(args)).code).toBe(2); expect(calls()).toHaveLength(0)
   })

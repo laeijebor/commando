@@ -32,6 +32,11 @@ scripts/commando-canvas .canvas/settings
 # Or: scripts/commando-canvas .canvas/settings --manifest board.json
 ```
 
+After opening, group the artifact for the work with one command (use its key
+from `commando-board list`):
+`node "$HOME/.commando/hooks/commando-board.mjs" place "<canvas-key>" --group spec`.
+Use a work-specific group name; never set Board pixel positions.
+
 The scripts live in the **Commando repo checkout**, not the artifact/project
 folder. Invoke `/absolute/path/to/commando/scripts/commando-canvas` and
 `/absolute/path/to/commando/scripts/commando-feedback` when working elsewhere.

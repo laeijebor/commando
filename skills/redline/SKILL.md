@@ -365,6 +365,11 @@ plan and mockup playbooks; a mockup comparison also requires comparison.
 Open the URL as a tab per show-in-commando with `"engine":"chromium"` —
 review mode is chromium-only. Save the `webPaneId`.
 
+After opening, group the artifact for the work with one command (use its key
+from `commando-board list`):
+`node "$HOME/.commando/hooks/commando-board.mjs" place "<redline-key>" --group review`.
+Use a work-specific group name; never set Board pixel positions.
+
 The tab activates if its anchor pane is focused; otherwise it is badged "new".
 Open a new tab for each new page or artifact; localhost needs no approval.
 Reopening a URL already open in your pane brings that tab forward and reloads

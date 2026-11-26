@@ -702,7 +702,7 @@ async function main(): Promise<void> {
     onRead: undefined as ((targetId: string) => void) | undefined,
   }
   const boards = new BoardStore(boardOptions)
-  const boardThumbCache = new BoardThumbCache({ root: defaultBoardThumbsPath(port), origin: `http://127.0.0.1:${port}`, capture: (url, w, h) => chromiumEngine.screenshot(url, w, h) })
+  const boardThumbCache = new BoardThumbCache({ root: defaultBoardThumbsPath(port), origin: `http://127.0.0.1:${port}`, capture: (url, w, h) => chromiumEngine.screenshot(url, w, h), capturePage: (url, w, h) => chromiumEngine.screenshotPage(url, w, h) })
   const boardPreviewQueue = new BoardPreviewQueue(boardOptions.onError)
   const boardLinkPreviews = new BoardLinkPreviews({ store: boards, thumbs: boardThumbCache, statePath: defaultBoardLinkPreviewsPath(port) })
   const boardThumbWorker = new BoardThumbWorker(boards, boardThumbCache, boardPreviewQueue, boardLinkPreviews)

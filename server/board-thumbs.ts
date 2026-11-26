@@ -8,6 +8,8 @@ import { parseCanvasSource } from '../shared/deck.js'
 import { canvasRelativePath, encodeCanvasPath } from '../shared/canvas-manifest.js'
 import type { BoardItem } from '../shared/board.js'
 import type { BoardStore } from './boards.js'
+import { isPrivatePreviewHost } from './board-link-previews.js'
+import { isBoardCaptureUrl } from './chromium-engine.js'
 
 export const BOARD_THUMB_HASH = /^[0-9a-f]{64}$/
 export const BOARD_THUMB_WIDTHS = [320, 960] as const
@@ -55,7 +57,7 @@ const runTool: Run = (command, args) => new Promise((resolve, reject) => {
 })
 type Capture = (url: string, w: number, h: number) => Promise<Buffer>
 type Options = {
-  root: string; origin: string; platform?: string; run?: Run; capture?: Capture
+  root: string; origin: string; platform?: string; run?: Run; capture?: Capture; capturePage?: Capture
   maxBytes?: number; now?: () => number
 }
 export function pngDimensions(bytes: Buffer): { w: number; h: number } | undefined {
@@ -95,6 +97,7 @@ export class BoardThumbCache {
   }
   async source(item: BoardItem): Promise<{ hash: string; path?: string; url?: string; w: number; h: number } | undefined> {
     if (['pr', 'clip', 'link'].includes(item.kind)) return
+    if (item.kind === 'page' && item.ref.url) return this.pageSource(item.ref.url)
     let path: string | undefined, signature: unknown[] = [], w = 1280, h = 800, url = item.ref.url
     if (item.ref.path) {
       path = await realpath(item.ref.path)
@@ -156,11 +159,12 @@ export class BoardThumbCache {
             if (!file) throw new Error('QuickLook returned no PNG')
             await this.publish(join(out, file), source.hash, width)
           }
-        } else if (this.options.capture && source.url && this.canCapture(source.url)) {
-          const bytes = await this.options.capture(source.url, source.w, source.h)
+        } else if (source.url && this.canCapture(source.url)) {
+          const capture = item.kind === 'page' ? this.options.capturePage : this.options.capture
+          if (!capture) return
+          const bytes = await capture(source.url, source.w, source.h)
           const input = join(dir, 'capture.png'); await writeFile(input, bytes); await this.resize(input, source.hash)
         }
-        // TODO: ChromiumEngine.screenshot rejects general page/private-link URLs. Do not repurpose live tiles.
       })
       const bytes = await this.read(source.hash, 960)
       if (bytes && await this.has(source.hash)) return { hash: source.hash, ...(pngDimensions(bytes) ?? { w: 960, h: 600 }) }
@@ -168,10 +172,15 @@ export class BoardThumbCache {
     return undefined
   }
   canCapture(url: string): boolean {
-    try { const u = new URL(url); return u.origin === this.options.origin && u.pathname.startsWith('/redline/') } catch { return false }
+    return isBoardCaptureUrl(url)
   }
-  async page(url: string): Promise<BoardItem['thumb']> {
-    return this.render({ kind: 'page' } as BoardItem, { hash: thumbHash(['page', url]), url, w: 1280, h: 800 })
+  private pageSource(url: string, privatePage = isPrivatePreviewHost(new URL(url).hostname)) {
+    const interval = privatePage ? 3600_000 : 86400_000
+    return { hash: thumbHash(['page', url, interval, Math.floor((this.options.now ?? Date.now)() / interval)]), url, w: 1280, h: 800 }
+  }
+  async page(url: string, privatePage?: boolean): Promise<BoardItem['thumb']> {
+    if (!this.canCapture(url)) return
+    return this.render({ kind: 'page' } as BoardItem, this.pageSource(url, privatePage))
   }
   private async withTemp<T>(job: (dir: string) => Promise<T>): Promise<T> {
     const dir = await mkdtemp(join(tmpdir(), 'commando-board-thumb-'))

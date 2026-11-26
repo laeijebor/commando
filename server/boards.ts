@@ -299,6 +299,12 @@ export class BoardStore {
     b.placements[key] = result.placement
     b.groups[b.groups.findIndex((g) => g.id === group)] = result.group
   }
+  /** CLI grouping creates a named group once and preserves existing layout. */
+  ensureGroup(targetId: string, id: string, by: BoardItemSource, near?: string): void {
+    if (this.get(targetId).groups.some((g) => g.id === id)) return
+    const anchor = near ?? (id === 'evidence' && this.get(targetId).groups.some((g) => g.id === 'spec') ? 'spec' : undefined)
+    this.group(targetId, id, { title: id, ...(anchor ? { near: anchor } : {}) }, by, true)
+  }
   place(targetId: string, key: string, p: Partial<BoardPlacement>, by: BoardItemSource): void {
     const b = this.get(targetId)
     if (!b.items.some((i) => i.key === key)) throw new BoardError(404, 'Board item does not exist')
@@ -430,9 +436,9 @@ export class BoardStore {
     }
     for (const folder of brief.screenshots ?? []) this.captureFolder(brief.targetId, folder.dir, folder.updatedAt, brief.agentSession)
   }
-  captureFolder(targetId: string, dir: string, stamp: number, agentSession?: AgentSessionRef): void {
+  captureFolder(targetId: string, dir: string, stamp: number, agentSession?: AgentSessionRef, group?: string): void {
     const scanKey = `${targetId}:${dir}`
-    if (this.folderScans.get(scanKey) === stamp) return
+    if (!group && this.folderScans.get(scanKey) === stamp) return
     this.folderScans.set(scanKey, stamp)
     try {
       const root = realpathSync(dir), entries = opendirSync(root)
@@ -444,6 +450,8 @@ export class BoardStore {
           const path = realpathSync(join(root, entry.name)), kind = inferBoardFileKind(path)
           if (!path.startsWith(root + sep) || (kind !== 'screenshot' && kind !== 'video') || statSync(path).size > 50 * 1024 * 1024) continue
           this.capture(targetId, { key: boardItemKeyForFile(path), kind, title: entry.name, ref: { path }, origin: { at: this.now(), agentSession } }, JSON.stringify([stamp, statSync(path).mtimeMs, agentSession]))
+          const key = boardItemKeyForFile(path), placement = this.get(targetId).placements[key]
+          if (group && this.get(targetId).items.some((i) => i.key === key) && !placement?.fixed && placement?.group !== group) this.place(targetId, key, { group }, 'agent')
           captured++
         }
       } finally { entries.closeSync() }

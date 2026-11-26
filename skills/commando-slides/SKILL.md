@@ -20,6 +20,11 @@ From the owning tmux pane:
 {{COMMANDO_REPO}}/scripts/commando-slides /absolute/deck-folder onepager.html
 ```
 
+After opening, group the artifact for the work with one command (use its key
+from `commando-board list`):
+`node "$HOME/.commando/hooks/commando-board.mjs" place "<slides-key>" --group show`.
+Use a work-specific group name; never set Board pixel positions.
+
 The script prints the webPaneId. Retain it for feedback and spotlight.
 Scripts live in the Commando repo checkout, not the deck folder.
 Auth uses the agent hook token at

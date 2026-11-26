@@ -20,7 +20,7 @@ const input = (path: string, kind: BoardItem['kind'] = 'screenshot') => ({ key: 
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'board-thumbs-test-')); run.mockClear() })
 afterEach(async () => { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) })
 function cache(extra: Partial<ConstructorParameters<typeof BoardThumbCache>[0]> = {}) {
-  return new BoardThumbCache({ root: join(root, 'cache'), origin, platform: 'darwin', run, ...extra })
+  return new BoardThumbCache({ root: join(root, 'cache'), origin, platform: 'darwin', run, capturePage: extra.capture, ...extra })
 }
 
 describe('BoardPreviewQueue', () => {
@@ -108,14 +108,32 @@ describe('Board thumbnails', () => {
     expect(await linux.render(item, { ...source, hash: 'b'.repeat(64) })).toBeUndefined(); expect(noNative).not.toHaveBeenCalled()
     expect(await c.source({ ...item, kind: 'pr' })).toBeUndefined(); expect(await c.source({ ...item, kind: 'clip' })).toBeUndefined()
   })
-  it('only captures daemon artifact pages and reuses content-addressed downloaded assets', async () => {
+  it('captures private pages in isolation and reuses content-addressed downloaded assets', async () => {
     const capture = vi.fn(async () => png()), c = cache({ capture })
-    expect(await c.page('http://192.168.1.2/private')).toBeUndefined(); expect(capture).not.toHaveBeenCalled()
+    expect(await c.page('http://192.168.1.2/private')).toBeDefined(); expect(capture).toHaveBeenCalledWith('http://192.168.1.2/private', 1280, 800)
+    run.mockClear()
     const hash = await c.image(png()); expect(hash).toMatch(/^[a-f0-9]{64}$/)
     await c.image(png()); expect(run).toHaveBeenCalledTimes(2)
     expect(await c.read('../escape', 960)).toBeUndefined(); expect(await c.read(hash!, 100)).toBeUndefined()
     expect(await c.read(hash!, 320)).toEqual(png(320, 200))
     expect(defaultBoardThumbsPath(4491)).toMatch(/board-thumbs-4491$/)
+  })
+  it('keys public pages by day and private pages by hour, shares page/link shots and rejects unsafe URLs', async () => {
+    let now = 0
+    const capturePage = vi.fn(async () => png()), c = cache({ capturePage, now: () => now })
+    const publicUrl = 'https://example.com/app', localUrl = 'http://localhost:5273/app'
+    const first = await c.page(publicUrl), local = await c.page(localUrl)
+    const source = await c.source({ kind: 'page', ref: { url: publicUrl } } as BoardItem)
+    expect(source?.hash).toBe(first?.hash)
+    await c.page(publicUrl); await c.page(localUrl); expect(capturePage).toHaveBeenCalledTimes(2)
+    now = 3600_000
+    expect((await c.page(publicUrl))?.hash).toBe(first?.hash)
+    expect((await c.page(localUrl))?.hash).not.toBe(local?.hash)
+    now = 86400_000
+    expect((await c.page(publicUrl))?.hash).not.toBe(first?.hash)
+    expect(capturePage).toHaveBeenCalledTimes(4)
+    for (const url of ['file:///tmp/x', 'https://u:p@example.com', `${origin}/api/auth/sign-in/email`, `${origin}/api/pairing/claim`]) expect(await c.page(url)).toBeUndefined()
+    expect(capturePage).toHaveBeenCalledTimes(4)
   })
   it('evicts old cache entries using recent reads and ignores unrelated files', async () => {
     const c = cache({ maxBytes: 80 })

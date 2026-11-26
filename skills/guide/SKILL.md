@@ -81,6 +81,11 @@ raw HTTP steps below.
 {{COMMANDO_REPO}}/scripts/commando-guide .guides/stripe-webhooks.md   # prints webPaneId
 ```
 
+After opening, group the artifact for the work with one command (use its key
+from `commando-board list`):
+`node "$HOME/.commando/hooks/commando-board.mjs" place "<guide-key>" --group rollout`.
+Use a work-specific group name; never set Board pixel positions.
+
 Running it again for the same file focuses the existing tab. Tell the user
 you opened it beside your pane.
 
