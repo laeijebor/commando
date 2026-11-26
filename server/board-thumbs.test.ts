@@ -20,7 +20,7 @@ const input = (path: string, kind: BoardItem['kind'] = 'screenshot') => ({ key: 
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'board-thumbs-test-')); run.mockClear() })
 afterEach(async () => { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) })
 function cache(extra: Partial<ConstructorParameters<typeof BoardThumbCache>[0]> = {}) {
-  return new BoardThumbCache({ root: join(root, 'cache'), origin, platform: 'darwin', run, capturePage: extra.capture, ...extra })
+  return new BoardThumbCache({ root: join(root, 'cache'), origin, platform: 'darwin', run, capturePage: extra.capture, resolve: async (host) => [{ address: host === 'localhost' ? '127.0.0.1' : '93.184.216.34', family: 4 }], ...extra })
 }
 
 describe('BoardPreviewQueue', () => {
@@ -81,7 +81,7 @@ describe('Board thumbnails', () => {
     worker.stop(); vi.useRealTimers()
     const capture = vi.fn(async () => { store.remove(target, 'page:local'); return png() })
     const otherCache = cache({ capture }), otherQueue = new BoardPreviewQueue(), other = new BoardThumbWorker(store, otherCache, otherQueue)
-    store.upsert(target, { key: 'page:local', kind: 'page', title: 'Page', ref: { url: `${origin}/redline/page.html` }, source: 'user' })
+    store.upsert(target, { key: 'page:local', kind: 'page', title: 'Page', ref: { url: 'http://localhost:5273/page.html' }, source: 'user' })
     other.enqueue(target); await otherQueue.idle(); expect(store.get(target).items.some((i) => i.key === 'page:local')).toBe(false); other.stop()
   })
   it('selects the lowest focus canvas frame and first slide and fingerprints nested asset edits', async () => {
@@ -110,7 +110,7 @@ describe('Board thumbnails', () => {
   })
   it('captures private pages in isolation and reuses content-addressed downloaded assets', async () => {
     const capture = vi.fn(async () => png()), c = cache({ capture })
-    expect(await c.page('http://192.168.1.2/private')).toBeDefined(); expect(capture).toHaveBeenCalledWith('http://192.168.1.2/private', 1280, 800)
+    expect(await c.page('http://192.168.1.2/private')).toBeDefined(); expect(capture).toHaveBeenCalledWith('http://192.168.1.2/private', 1280, 800, expect.objectContaining({ policy: 'private' }))
     run.mockClear()
     const hash = await c.image(png()); expect(hash).toMatch(/^[a-f0-9]{64}$/)
     await c.image(png()); expect(run).toHaveBeenCalledTimes(2)

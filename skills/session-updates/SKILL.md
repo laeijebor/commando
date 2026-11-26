@@ -35,7 +35,7 @@ saved in `/tmp`, clip a decision, or group related items such as a spec and its
 evidence. Run `--help` for all commands; the CLI uses the current pane and port.
 
 ```bash
-node "$HOME/.commando/hooks/commando-board.mjs" group evidence --title "Spec and evidence"
+node "$HOME/.commando/hooks/commando-board.mjs" group evidence --title "Evidence" --near spec
 node "$HOME/.commando/hooks/commando-board.mjs" add /tmp/demo.mp4 --group evidence --near spec --caption "Verified the updated flow"
 node "$HOME/.commando/hooks/commando-board.mjs" clip "Keep the existing token model" --tone decision --group evidence
 ```

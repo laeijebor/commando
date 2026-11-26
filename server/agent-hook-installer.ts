@@ -936,7 +936,9 @@ try {
         body: JSON.stringify({ dir: body.screenshots.dir, group: body.screenshots.boardGroup }),
         signal: AbortSignal.timeout(3_000),
       })
-      if (!grouped.ok) throw new Error('Screenshots published; Board grouping failed: ' + ((await grouped.json()).error ?? grouped.status))
+      const capture = await grouped.json()
+      if (!grouped.ok || (capture.captured === 0 && capture.errors?.length)) throw new Error('Screenshots published; Board grouping failed: ' + (capture.error ?? capture.errors?.join('; ') ?? grouped.status))
+      console.log(JSON.stringify({ captured: capture.captured, errors: capture.errors }))
     }
     console.log(JSON.stringify(result.brief))
   }

@@ -436,26 +436,37 @@ export class BoardStore {
     }
     for (const folder of brief.screenshots ?? []) this.captureFolder(brief.targetId, folder.dir, folder.updatedAt, brief.agentSession)
   }
-  captureFolder(targetId: string, dir: string, stamp: number, agentSession?: AgentSessionRef, group?: string): void {
+  captureFolder(targetId: string, dir: string, stamp: number, agentSession?: AgentSessionRef, group?: string): { captured: number; errors: string[] } {
+    const result = { captured: 0, errors: [] as string[] }
     const scanKey = `${targetId}:${dir}`
-    if (!group && this.folderScans.get(scanKey) === stamp) return
-    this.folderScans.set(scanKey, stamp)
+    if (!group && this.folderScans.get(scanKey) === stamp) return result
+    const report = (error: unknown) => {
+      result.errors.push(error instanceof Error ? error.message : String(error))
+      this.options.onError?.(error)
+    }
     try {
       const root = realpathSync(dir), entries = opendirSync(root)
-      let visited = 0, captured = 0
+      let visited = 0, eligible = 0
       try {
         let entry
-        while (visited++ < 500 && captured < 24 && (entry = entries.readSync())) {
+        while (visited++ < 500 && eligible < 24 && (entry = entries.readSync())) {
           if (!entry.isFile() || entry.name.startsWith('.')) continue
-          const path = realpathSync(join(root, entry.name)), kind = inferBoardFileKind(path)
-          if (!path.startsWith(root + sep) || (kind !== 'screenshot' && kind !== 'video') || statSync(path).size > 50 * 1024 * 1024) continue
-          this.capture(targetId, { key: boardItemKeyForFile(path), kind, title: entry.name, ref: { path }, origin: { at: this.now(), agentSession } }, JSON.stringify([stamp, statSync(path).mtimeMs, agentSession]))
-          const key = boardItemKeyForFile(path), placement = this.get(targetId).placements[key]
-          if (group && this.get(targetId).items.some((i) => i.key === key) && !placement?.fixed && placement?.group !== group) this.place(targetId, key, { group }, 'agent')
-          captured++
+          try {
+            const path = realpathSync(join(root, entry.name)), kind = inferBoardFileKind(path)
+            if (!path.startsWith(root + sep) || (kind !== 'screenshot' && kind !== 'video') || statSync(path).size > 50 * 1024 * 1024) continue
+            eligible++
+            const key = boardItemKeyForFile(path)
+            this.capture(targetId, { key, kind, title: entry.name, ref: { path }, origin: { at: this.now(), agentSession } }, JSON.stringify([stamp, statSync(path).mtimeMs, agentSession]))
+            const board = this.get(targetId), placement = board.placements[key]
+            if (!board.items.some((i) => i.key === key)) continue // Previously removed and unchanged.
+            if (group && !placement?.fixed && placement?.group !== group) this.place(targetId, key, { group }, 'agent')
+            result.captured++
+          } catch (error) { report(error) }
         }
       } finally { entries.closeSync() }
-    } catch (error) { this.options.onError?.(error) }
+      if (!result.errors.length) this.folderScans.set(scanKey, stamp)
+    } catch (error) { report(error) }
+    return result
   }
   capturePr(targetId: string, pr: { repo: string; number: number; title?: string; url?: string; updatedAt?: string; state?: string }, agentSession?: AgentSessionRef): void {
     if (!isPanePrRef(pr)) return

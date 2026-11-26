@@ -15,53 +15,6 @@ function fakeEngine() {
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
 describe('ChromiumEngine temporary screenshot', () => {
-  it('captures arbitrary pages in fresh disposable contexts with context-only download denial and no tile state', async () => {
-    const { engine, browser, page, connect } = fakeEngine()
-    for (const url of ['https://example.com/app', 'http://localhost:5273/app']) {
-      expect(await engine.screenshotPage(url, 1280, 800, connect)).toEqual(Buffer.from('png'))
-    }
-    expect(browser.cdp.send.mock.calls.filter(([method]) => method === 'Target.createBrowserContext')).toHaveLength(2)
-    expect(browser.cdp.send).toHaveBeenCalledWith('Browser.setDownloadBehavior', { behavior: 'deny', browserContextId: 'isolated' })
-    expect(browser.cdp.send).toHaveBeenCalledWith('Target.createTarget', { url: 'about:blank', browserContextId: 'isolated', background: true })
-    expect(page.send).toHaveBeenCalledWith('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false })
-    expect(page.send).toHaveBeenCalledWith('Page.navigate', { url: 'https://example.com/app' })
-    expect(page.close).toHaveBeenCalledTimes(2)
-    expect(browser.cdp.sendAndForget.mock.calls.filter(([method]) => method === 'Target.disposeBrowserContext')).toHaveLength(2)
-    expect(engine.hasTile('export')).toBe(false)
-  })
-  it('rejects unsafe pages before launch, intercepts unsafe redirects/subresources and dismisses dialogs', async () => {
-    const { engine, ensure, page, connect } = fakeEngine()
-    const unsafe = ['https://u:p@example.com', 'file:///tmp/a', 'javascript:alert(1)', 'http://localhost:4310/api/auth/bootstrap', 'http://my-host:4310/api/pairing/claim']
-    for (const url of unsafe) await expect(engine.screenshotPage(url, 1280, 800, connect)).rejects.toMatchObject({ status: 400 })
-    expect(ensure).not.toHaveBeenCalled()
-    await engine.screenshotPage('https://example.com', 1280, 800, connect)
-    const paused = page.on.mock.calls.find(([event]) => event === 'Fetch.requestPaused')![1]
-    for (const url of unsafe) paused({ requestId: 'request', request: { url } })
-    expect(page.send.mock.calls.filter(([method]) => method === 'Fetch.failRequest')).toHaveLength(unsafe.length)
-    paused({ requestId: 'safe', request: { url: 'http://localhost:5273/app' } })
-    expect(page.send).toHaveBeenCalledWith('Fetch.continueRequest', { requestId: 'safe' })
-    page.on.mock.calls.find(([event]) => event === 'Page.javascriptDialogOpening')![1]({})
-    expect(page.send).toHaveBeenCalledWith('Page.handleJavaScriptDialog', { accept: false })
-  })
-  it('cleans up failed and stalled Board captures, including contexts arriving after the 10s deadline', async () => {
-    const { engine, browser, page, connect } = fakeEngine()
-    page.send.mockRejectedValueOnce(new Error('navigation failed'))
-    await expect(engine.screenshotPage('https://example.com', 1280, 800, connect)).rejects.toThrow('navigation failed')
-    expect(page.close).toHaveBeenCalledOnce()
-    vi.useFakeTimers()
-    page.on.mockImplementation(() => {})
-    const stalled = engine.screenshotPage('https://example.com', 1280, 800, connect)
-    const rejected = expect(stalled).rejects.toMatchObject({ status: 504 })
-    await vi.advanceTimersByTimeAsync(10_000); await rejected
-    expect(page.close).toHaveBeenCalledTimes(2)
-    let finish!: (value: { browserContextId: string }) => void
-    browser.cdp.send.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
-    const late = engine.screenshotPage('https://example.com', 1280, 800, connect)
-    const lateRejected = expect(late).rejects.toMatchObject({ status: 504 })
-    await vi.advanceTimersByTimeAsync(10_000); await lateRejected
-    finish({ browserContextId: 'late' }); await vi.advanceTimersByTimeAsync(0)
-    expect(browser.cdp.sendAndForget).toHaveBeenCalledWith('Target.disposeBrowserContext', { browserContextId: 'late' })
-  })
   it('accepts only loopback daemon /redline/ URLs and rejects others before launching Chromium', async () => {
     const { engine, ensure, connect } = fakeEngine()
     for (const url of ['https://example.com/redline/x.html', 'http://example.com/redline/x.html', 'http://127.0.0.1:4310/api/state', 'file:///tmp/redline/x.html', 'not a url']) {

@@ -2768,6 +2768,25 @@ describe('generated chat CLI', () => {
 
 
 describe('generated session title CLI', () => {
+  it('fails a zero-capture grouping error and reports counts on partial success', async () => {
+    const home = await temporaryHome(), tokenPath = join(home, 'token')
+    await writeFile(tokenPath, 'fake-token')
+    vi.stubEnv('TMUX_PANE', '%42'); vi.stubEnv('COMMANDO_PORT', '4410')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const previous = process.exitCode
+    try {
+      for (const captured of [0, 1]) {
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/folders') ? { captured, errors: ['One image failed'] } : { brief: {} } })))
+        const source = generatedSessionBriefCli(tokenPath).replace('const args = process.argv.slice(2)', `const args = ["--screenshots", "/tmp/shots-${captured}", "--board-group", "evidence"]`)
+        process.exitCode = 0
+        await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+        expect(process.exitCode).toBe(captured ? 0 : 1)
+      }
+      expect(error).toHaveBeenCalledWith('Screenshots published; Board grouping failed: One image failed')
+      expect(log).toHaveBeenCalledWith(JSON.stringify({ captured: 1, errors: ['One image failed'] }))
+    } finally { process.exitCode = previous; error.mockRestore(); log.mockRestore() }
+  })
   it.each([
     ['--screenshots', '/tmp/board-shots', '--board-group', 'evidence'],
     ['--board-group', 'review', '--screenshots', '/tmp/board-shots'],

@@ -47,6 +47,31 @@ async function request(path = '', method = 'GET', data?: unknown, auth = 'owner'
 }
 
 describe('BoardsApi', () => {
+  it('returns explicit folder capture counts and per-file failures, including total failure', async () => {
+    const dir = join(root, 'evidence'); mkdirSync(dir)
+    writeFileSync(join(dir, 'one.png'), 'one'); writeFileSync(join(dir, 'two.png'), 'two')
+    const capture = store.capture.bind(store)
+    const spy = vi.spyOn(store, 'capture').mockImplementation((...args) => {
+      if (args[1].ref.path?.endsWith('two.png')) throw new Error('Board is full')
+      return capture(...args)
+    })
+    const partial = await request('/folders', 'POST', { dir, group: 'evidence' }, agentToken, true)
+    expect(partial.data).toMatchObject({ captured: 1, errors: ['Board is full'] })
+    spy.mockImplementation(() => { throw new Error('Capture failed') })
+    const failed = await request('/folders', 'POST', { dir, group: 'evidence' }, agentToken, true)
+    expect(failed.data).toMatchObject({ captured: 0, errors: ['Capture failed', 'Capture failed'] })
+    spy.mockRestore()
+    expect((await request('/folders', 'POST', { dir, group: 'evidence' }, agentToken, true)).data).toMatchObject({ captured: 2, errors: [] })
+  })
+  it('reports explicit add-path success and errors instead of claiming a failed capture was added', async () => {
+    const path = join(root, 'image.png'); writeFileSync(path, 'image')
+    expect((await request('/items', 'POST', { path }, agentToken, true)).data).toMatchObject({ captured: 1, errors: [] })
+    const spy = vi.spyOn(store, 'upsert').mockImplementation(() => { throw new Error('Board is full') })
+    const failed = await request('/items', 'POST', { path }, agentToken, true)
+    expect(failed.data).toMatchObject({ captured: 0, errors: ['Board is full'] })
+    spy.mockRestore()
+    expect((await request('/items', 'POST', { path: join(root, 'gone.png') }, agentToken, true)).data).toMatchObject({ captured: 0, errors: ['path must exist'] })
+  })
   it('creates named groups for one-command artifact placement and evidence adds without moving existing groups', async () => {
     const artifact = await request('/items', 'POST', { url: 'https://example.com/spec', kind: 'page' }, agentToken, true)
     const placed = await request('/place', 'POST', { key: artifact.data.key, group: 'spec' }, agentToken, true)

@@ -70,7 +70,7 @@ switch (command) {
 try {
   const response = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`, 'X-Commando-Pane': pane, ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined, signal: AbortSignal.timeout(15000) })
   const result = await response.json()
-  if (!response.ok) fail(`daemon responded ${response.status}: ${result.error ?? 'request failed'}`, 1)
+  if (!response.ok || (result.captured === 0 && result.errors?.length)) fail(`daemon responded ${response.status}: ${result.error ?? result.errors?.join('; ') ?? 'request failed'}`, 1)
   if (command === 'list' && !flags.json) {
     for (const item of result.items) console.log(`${item.key}\t${item.kind}\t${item.state}\t${item.title}`)
   } else console.log(JSON.stringify(result, null, 2))

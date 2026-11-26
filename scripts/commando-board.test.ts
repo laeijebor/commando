@@ -17,6 +17,7 @@ import fs from 'node:fs'
 const root = ${JSON.stringify(root)}
 globalThis.fetch = async (url, init) => {
   fs.appendFileSync(root + '/calls', JSON.stringify({url: new URL(url).pathname, method: init.method, authorization: init.headers.Authorization, body: init.body ? JSON.parse(init.body) : undefined}) + '\\n')
+  if (fs.existsSync(root + '/result')) return { ok: true, status: 200, json: async () => JSON.parse(fs.readFileSync(root + '/result', 'utf8')) }
   const status = Number(fs.readFileSync(root + '/status', 'utf8'))
   return {ok: status < 400, status, json: async () => status < 400 ? {items: [{key: 'url:https://example.com/a', kind: 'link', state: 'closed', title: 'Example'}]} : {error: 'Board is full'}}
 }
@@ -51,6 +52,18 @@ describe('commando-board CLI', () => {
   it.each([[], ['group', 'g'], ['place', 'clip:one'], ['add', 'x', '--bogus'], ['add', 'x', '--near', 'spec'], ['clip', 'a', '--tone', 'bad'], ['list', '--title', 'a']])('rejects invalid arguments %j before HTTP', async (...input) => {
     const args = input.flat() as string[]
     expect((await run(args)).code).toBe(2); expect(calls()).toHaveLength(0)
+  })
+  it('exits non-zero for an HTTP-success response with zero captures caused by an error', async () => {
+    writeFileSync(join(root, 'result'), JSON.stringify({ captured: 0, errors: ['Board is full'] }))
+    const failed = await run(['add', '/tmp/evidence.png', '--group', 'evidence'])
+    expect(failed.code).toBe(1); expect(failed.stderr).toContain('Board is full')
+    writeFileSync(join(root, 'result'), JSON.stringify({ captured: 1, errors: [] }))
+    const success = await run(['add', '/tmp/evidence.png', '--group', 'evidence'])
+    expect(success.code).toBe(0); expect(JSON.parse(success.stdout).captured).toBe(1)
+  })
+  it('documents the near relationship on group creation, before adding recordings', () => {
+    const skill = readFileSync(fileURLToPath(new URL('../skills/session-updates/SKILL.md', import.meta.url)), 'utf8')
+    expect(skill).toContain('group evidence --title "Evidence" --near spec')
   })
   it('reports missing pane/token and daemon errors without leaking credentials', async () => {
     expect((await run(['list'], { ...env, TMUX_PANE: '' })).code).toBe(1)
