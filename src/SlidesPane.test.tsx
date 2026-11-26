@@ -32,6 +32,17 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const mount = () => render(<SlidesPane artifactId={artifactId} manifest="deck.html" webPaneId="w-12345678" token="owner" />)
 describe('SlidesPane', () => {
+  it('reuses read-only snapshot tools for a saved Board deck', async () => {
+    render(<SlidesPane artifactId={artifactId} manifest="deck.html" webPaneId="w-12345678" readOnly snapshotSavedAt={10} />)
+    await screen.findByTitle('Opening')
+    expect(screen.getByText(/Read-only copy saved/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Comment tool' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Export' })).toBeDisabled()
+    expect(screen.queryByLabelText('History')).toBeNull()
+    expect(calls.some((call) => call.url.includes('/pending'))).toBe(false)
+    fireEvent.click(screen.getByLabelText('Theme'))
+    expect(screen.queryByLabelText('Brand source')).toBeNull()
+  })
   it('renders native slides, navigates with keys and filmstrip, and shows notes on request', async () => {
     const { container } = mount()
     const iframe = await screen.findByTitle('Opening')

@@ -1,3 +1,4 @@
+import { isReadOnlyWebPane } from '../shared/protocol.js'
 import { AgentChatsApi } from './agent-chats-api.js'
 import { HostRegistry } from './hosts.js'
 import { HostsApi } from './hosts-api.js'
@@ -709,7 +710,7 @@ async function main(): Promise<void> {
   const boardLinkHarvest = new BoardLinkHarvest(boards, port)
   boardOptions.onRead = (targetId) => boardThumbWorker.enqueue(targetId)
 
-  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port), retainedIds: [...boards.artifactIds(), ...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? [])] })
+  const redlineArtifacts = new RedlineArtifactRegistry({ readOnlyRoot: defaultBoardSnapshotsPath(port), statePath: defaultRedlineArtifactStatePath(port), retainedIds: [...boards.artifactIds(), ...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? [])] })
   boardOptions.artifacts = redlineArtifacts
   /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
   const retainTabArtifacts = (): void => {
@@ -2292,6 +2293,7 @@ async function main(): Promise<void> {
     liveTargets: () => new Set(snapshot.panes.map((pane) => pane.targetId)),
     adopt: (closedId, liveId) => canvasThreads.reassign(closedId, liveId),
   }
+  boards.backfillClosedTabs()
   canvasPush = new CanvasPush({
     sending: agentPushes,
     repoRoot: fileURLToPath(new URL('../', import.meta.url)),
@@ -2561,6 +2563,8 @@ async function main(): Promise<void> {
   })
   setTimeout(() => { void chatMessageIndex.triggerSync() }, 6_000).unref()
   const webPanesApi = new WebPanesApi({
+    restoreSnapshot: (id, destination) => boards.restoreSnapshot(id, destination),
+    readOnlyArtifact: (id) => redlineArtifacts.isReadOnly(id),
     service: webPanes,
     guides,
     feedback: webPaneFeedback,
@@ -2657,6 +2661,7 @@ async function main(): Promise<void> {
   canvasWatch.sync(webPanes.list())
   canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.retainedIds()]))
   const redlineApi = new RedlineApi({
+    readOnlyArtifact: (id) => redlineArtifacts.isReadOnly(id) || webPanes.list().some((pane) => isReadOnlyWebPane(pane) && pane.content?.kind !== 'simulator' && pane.content?.artifactId === id),
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     artifacts: redlineArtifacts,

@@ -75,6 +75,7 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
   const completed = tasks.filter((task) => task.status === 'completed').length
   const terms = (brief.references?.length ?? 0) + (local ? (brief.simulator ? 1 : 0) + (brief.devices?.length ?? 0) : 0)
   const items = useMemo(() => board?.items.filter((item) => boardMatches(item, query)) ?? [], [board, query])
+  const recentlyClosed = items.filter((item) => boardMatchesClosed(item, true) && (filter === null || boardType(item) === filter)).sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt)).slice(0, 6)
   const counts = useMemo(() => Object.fromEntries(BOARD_TYPES.map((type) => [type.id, items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).length])) as Record<BoardType, number>, [items, closedOnly])
   const cachedPrs = panePrs
   const prs = new Map<string, PanePrSummary>()
@@ -111,7 +112,7 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
           <button type="button" aria-pressed={filter === null} onClick={() => setFilter(null)}>All <b>{Object.values(counts).reduce((sum, count) => sum + count, 0)}</b></button>
           {BOARD_TYPES.map((type) => <button key={type.id} type="button" aria-pressed={filter === type.id} onClick={() => setFilter((current) => current === type.id ? null : type.id)}>{type.label} <b>{counts[type.id]}</b></button>)}
           <button type="button" aria-pressed={closedOnly} onClick={() => setClosedOnly((current) => !current)}>Closed tiles</button>
-        </div><div className="board-type-scroll">{BOARD_TYPES.filter((type) => filter === null || type.id === filter).map((type) => {
+        </div><div className="board-type-scroll">{recentlyClosed.length > 0 && <section className="board-type-row" aria-label="Recently closed"><h3>Recently closed</h3><div className="board-filmstrip">{recentlyClosed.map((item) => <button type="button" key={item.key} className="board-recently-closed" aria-label={`Open recently closed: ${item.title}`} onClick={(event) => open(item, event.currentTarget)}>{item.title}</button>)}</div></section>}{BOARD_TYPES.filter((type) => filter === null || type.id === filter).map((type) => {
           const entries = items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).sort((a, b) => b.addedAt - a.addedAt)
           return entries.length > 0 && <section className="board-type-row" key={type.id} aria-label={type.label}><h3>{type.label} <small>{entries.length}</small></h3><div className="board-type-cards">{entries.map((item) => card(item))}</div></section>
         })}{!BOARD_TYPES.some((type) => (filter === null || type.id === filter) && counts[type.id] > 0) && <p className="board-empty">{query || closedOnly || filter ? 'No matching items.' : 'Artifacts appear here as you work.'}</p>}</div></div>)}

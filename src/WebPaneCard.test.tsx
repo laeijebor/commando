@@ -517,3 +517,13 @@ describe('dock actions', () => {
     expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
   })
 })
+
+it('renders a redline saved copy as a static page with restore, then swaps to the editable pane', () => {
+  const pane: WebPane = { id: 'w-12345678', url: 'http://localhost/redline/artifacts/0123456789abcdef/index.html', engine: 'webkit', sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', openedBy: 'user', status: 'open', createdAt: 1, readOnly: true, snapshotSavedAt: 1 }
+  const view = render(<WebPaneCard webPane={pane} onClose={() => {}} onConfirm={() => {}} />)
+  expect(screen.getByTitle('Saved read-only page')).toHaveAttribute('sandbox', 'allow-same-origin')
+  expect(screen.getByRole('button', { name: 'Restore to folder…' })).toBeEnabled()
+  view.rerender(<WebPaneCard webPane={{ ...pane, url: 'http://localhost/redline/artifacts/fedcba9876543210/index.html', readOnly: undefined, snapshotSavedAt: undefined }} onClose={() => {}} onConfirm={() => {}} />)
+  expect(screen.queryByText(/Read-only copy saved/)).toBeNull()
+  expect(screen.queryByTitle('Saved read-only page')).toBeNull()
+})

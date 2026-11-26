@@ -1,3 +1,4 @@
+import { SnapshotCopyBanner } from './SnapshotCopyBanner'
 import { useCanvasReviewAdapter } from './useCanvasReviewAdapter'
 import { CanvasHistory, canvasSnapshotTime } from './CanvasHistory'
 import { CanvasFrameExport } from './CanvasFrameExport'
@@ -38,14 +39,14 @@ function CanvasCameraView({ store, children }: { store: CanvasCameraStore; child
   return children(useSyncExternalStore(store.subscribe, store.get))
 }
 
-export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose, webPaneId, token = '' }: {
-  webPaneId?: string; token?: string; artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
+export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose, webPaneId, token = '', readOnly: savedCopy = false, snapshotSavedAt }: {
+  readOnly?: boolean; snapshotSavedAt?: number; webPaneId?: string; token?: string; artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
 }) {
   const [result, setResult] = useState<CanvasManifestResult>(EMPTY)
   const [snapshot, setSnapshot] = useState<CanvasSnapshot | null>(null)
   const liveView = useRef<{ result: CanvasManifestResult; camera: CanvasCamera; page: string | null; cameras: Map<string, CanvasCamera> } | null>(null)
   const restoringCamera = useRef(false)
-  const readOnly = snapshot !== null
+  const readOnly = savedCopy || snapshot !== null
   const [loaded, setLoaded] = useState(false)
   const [cameraStore] = useState(() => createCanvasCameraStore({ x: 0, y: 0, scale: 1 }))
   const setCamera = cameraStore.set
@@ -104,7 +105,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const apiUrl = `/api/redline/artifacts/${artifactId}/canvas`
   const questionsPage = canvasQuestionsPage(resourceUrl(`/redline/artifacts/${artifactId}/`), manifestPath)
 
-  const comments = useCanvasComments(webPaneId, token, result.manifest.frames, result.manifest.sections, webPaneId ? questionsPage : undefined)
+  const comments = useCanvasComments(readOnly ? undefined : webPaneId, token, result.manifest.frames, result.manifest.sections, webPaneId ? questionsPage : undefined)
   const layout = useCanvasLayout(artifactId, manifestPath, token, setResult, {
     baseUrl, readOnly, frames: result.manifest.frames, onTitle, setLoaded, setRevisions,
     onReset: () => {
@@ -368,10 +369,11 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       <span className="canvas-toolbar-separator" />
       <button type="button" aria-label="Notes" title="Notes" aria-pressed={notesVisible} onClick={() => setNotesVisible((visible) => !visible)}>▤</button>
       <button type="button" aria-label="Comment tool" title="Comment tool" aria-pressed={commentMode} disabled={readOnly || !webPaneId || feedbackBusy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}>💬</button>
-      <CanvasHistory apiUrl={`${apiUrl}/snapshots`} token={token} selected={snapshot} disabled={feedbackBusy} onSelect={selectSnapshot} />
+      {!savedCopy && <CanvasHistory apiUrl={`${apiUrl}/snapshots`} token={token} selected={snapshot} disabled={savedCopy || feedbackBusy} onSelect={selectSnapshot} />}
       <span className="canvas-toolbar-title" title={title}>{title || 'Canvas'}</span>
       {onClose && <button type="button" aria-label="Close canvas tab" onClick={onClose}>×</button>}
     </div>
+    {savedCopy && <SnapshotCopyBanner webPaneId={webPaneId} savedAt={snapshotSavedAt} token={token} />}
     {snapshot && <div className="canvas-snapshot-banner" role="status">Viewing snapshot from {canvasSnapshotTime(snapshot.createdAt)} — <button type="button" onClick={() => selectSnapshot(null)}>Back to live</button>{snapshot.partial && <span> · Partial snapshot</span>}</div>}
     {loaded && result.errors.length > 0 && <div className="canvas-errors" role="alert"><strong>Canvas errors</strong><ul>{result.errors.map((error, i) => <li key={i}>{error}</li>)}</ul></div>}
     {comments.error && <div className="canvas-errors" role="alert">{comments.error}</div>}

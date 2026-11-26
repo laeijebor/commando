@@ -1,3 +1,4 @@
+import { SnapshotCopyBanner } from './SnapshotCopyBanner'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type IframeHTMLAttributes } from 'react'
 import { ChevronLeft, ChevronRight, Download, Grid2X2, MessageCircle, NotebookText, Palette, Play, Presentation } from 'lucide-react'
 import { encodeCanvasPath, type CanvasFrame, type CanvasManifestResult } from '../shared/canvas-manifest'
@@ -47,8 +48,8 @@ function StageFrame({ url, frameRef, ...props }: { url: string; frameRef: (node:
   return <iframe {...props} src={first} data-src={url} ref={(element) => { node.current = element; frameRef(element) }} />
 }
 
-export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose, webPaneId, token = '' }: {
-  webPaneId?: string; token?: string; artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
+export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose, webPaneId, token = '', readOnly: savedCopy = false, snapshotSavedAt }: {
+  readOnly?: boolean; snapshotSavedAt?: number; webPaneId?: string; token?: string; artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
 }) {
   const [result, setResult] = useState(EMPTY), [snapshot, setSnapshot] = useState<CanvasSnapshot | null>(null)
   const [loaded, setLoaded] = useState(false), [revisions, setRevisions] = useState<Record<string, number>>({})
@@ -58,7 +59,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [presenting, setPresenting] = useState(false)
   const [spotlight, setSpotlight] = useState<CanvasSpotlightRequest | null>(null), [selected, setSelected] = useState<CanvasLabelRef | null>(null)
   const pane = useRef<HTMLDivElement>(null), stage = useRef<HTMLDivElement>(null), screen = useRef<HTMLDivElement>(null)
-  const hitSequence = useRef(0), readOnly = !!snapshot
+  const hitSequence = useRef(0), readOnly = savedCopy || !!snapshot
   const themeKey = `commando:slides-theme:${artifactId}:${manifestPath}`
   const [themeChoice, setThemeChoice] = useState(() => { try { return localStorage.getItem(themeKey) ?? '' } catch { return '' } })
   const theme = (themes === null || themes.includes(themeChoice) ? themeChoice : '') || result.deck?.theme || 'ink'
@@ -74,7 +75,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const { frames, annotations } = result.manifest
   const index = Math.max(0, frames.findIndex((frame) => frame.id === choice)), frame = frames[index]
   const current = useMemo(() => frame ? [frame] : [], [frame])
-  const comments = useCanvasComments(webPaneId, token, frames, result.manifest.sections, webPaneId ? questionsPage : undefined)
+  const comments = useCanvasComments(readOnly ? undefined : webPaneId, token, frames, result.manifest.sections, webPaneId ? questionsPage : undefined)
   const layout = useCanvasLayout(artifactId, manifestPath, token, setResult, { baseUrl, readOnly, frames, onTitle, setLoaded, setRevisions, onReset: () => { setSelected(null); setSpotlight(null) } })
   const themeParams = useMemo(() => ({ theme }), [theme])
   const { reports, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(current, baseUrl, revisions, readOnly ? undefined : comments.relay, undefined, themeParams)
@@ -173,11 +174,12 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
       <button type="button" aria-label="Theme" aria-expanded={menu === 'theme'} onClick={() => { setError(''); setMenu(menu === 'theme' ? null : 'theme') }}><Palette size={14} /><span>{theme}</span></button>
       <button type="button" aria-label="Notes" aria-pressed={notes} onClick={() => setNotes(!notes)}><NotebookText size={14} /><span>Notes</span></button>
       <button type="button" aria-label="Comment tool" aria-pressed={commentMode} disabled={readOnly || !webPaneId || comments.busy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}><MessageCircle size={14} /></button>
-      <CanvasHistory apiUrl={`${apiUrl}/canvas/snapshots`} token={token} selected={snapshot} disabled={comments.busy} onSelect={selectSnapshot} />
+      {!savedCopy && <CanvasHistory apiUrl={`${apiUrl}/canvas/snapshots`} token={token} selected={snapshot} disabled={savedCopy || comments.busy} onSelect={selectSnapshot} />}
       <button type="button" aria-label="Present" disabled={!frame} onClick={() => { setGrid(false); setMenu(null); comments.close(); setCommentMode(false); const overlay = () => { setPresenting(true); pane.current?.focus() }; if (!pane.current?.requestFullscreen) { overlay(); return } void pane.current.requestFullscreen().then(() => pane.current?.focus()).catch(overlay) }}><Play size={14} /><span>Present</span></button>
       <button type="button" aria-label="Export" disabled={readOnly} aria-expanded={menu === 'export'} onClick={() => { setError(''); setMenu(menu === 'export' ? null : 'export') }}><Download size={14} /><span>Export</span></button>
       {onClose && <button type="button" aria-label="Close slides tab" onClick={onClose}>×</button>}
     </div>
+    {savedCopy && <SnapshotCopyBanner webPaneId={webPaneId} savedAt={snapshotSavedAt} token={token} />}
     {snapshot && <div className="canvas-snapshot-banner">Viewing snapshot from {canvasSnapshotTime(snapshot.createdAt)} — <button type="button" onClick={() => selectSnapshot(null)}>Back to live</button>{snapshot.partial && ' · Partial snapshot'}</div>}
     {loaded && result.errors.length > 0 && <div className="canvas-errors" role="alert">{result.errors.join(' · ')}</div>}
     {loaded && !!result.warnings?.length && <details className="slides-warnings"><summary>Deck warnings ({result.warnings.length})</summary>{result.warnings.map((warning, i) => <div key={i}>{warning}</div>)}</details>}

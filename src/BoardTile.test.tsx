@@ -49,6 +49,25 @@ beforeEach(() => {
 afterEach(() => { cleanup(); localStorage.clear(); sessionStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('BoardTile', () => {
+  it('shows the newest six closed tiles above the type rows and opens them through Board quick look', async () => {
+    const { props, api } = setup({ ...fixture, items: [...fixture.items.slice(1), ...Array.from({ length: 8 }, (_, i) => ({ ...fixture.items[0], key: `canvas:${i}`, title: `Closed ${i}`, closedAt: i, updatedAt: 100 - i }))] })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); showByType()
+    const recent = screen.getByRole('region', { name: 'Recently closed' })
+    expect(within(recent).getAllByRole('button').map((node) => node.textContent)).toEqual(['Closed 7', 'Closed 6', 'Closed 5', 'Closed 4', 'Closed 3', 'Closed 2'])
+    expect(recent.parentElement?.firstElementChild).toBe(recent)
+    fireEvent.click(within(recent).getByRole('button', { name: 'Open recently closed: Closed 7' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen in a tile' }))
+    await waitFor(() => expect(api.revive).toHaveBeenCalledWith(brief.targetId, 'canvas:7', brief.paneId))
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
+    expect(document.querySelector('.pane-worklog-closed-tabs')).toBeNull()
+  })
+  it('omits Recently closed when there are no closed tiles', async () => {
+    const { props } = setup({ ...fixture, items: fixture.items.slice(1) })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); showByType()
+    expect(screen.queryByLabelText('Recently closed')).toBeNull()
+  })
   it('shows the brief, tasks, default Board view and groups without embedding live frames', async () => {
     const { props, api } = setup()
     const { container } = render(<BoardTile {...props} />)

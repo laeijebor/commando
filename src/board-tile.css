@@ -164,3 +164,5 @@
 .board-inbox .board-favicon span { display: none; }
 .board-inbox .board-clip-text, .board-filmstrip .board-clip-text { padding: 7px 8px; }
 .board-filmstrip .board-clip-text blockquote { font-size: 10px; }
+
+.board-recently-closed { flex: 0 0 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }

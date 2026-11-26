@@ -240,3 +240,26 @@ describe('canvas pending/feedback/thread routes without sockets', () => {
     expect(threads.list(id)).toHaveLength(1)
   })
 })
+
+it('rejects saved-copy feedback, pending notes, thread/status and guide mutations for owner and agent', async () => {
+  const pane = service.get(id)!
+  service.replaceArtifact(id, { url: pane.url, content: { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'canvas.json', readOnly: true } })
+  for (const auth of ['owner', 'agent'] as const) for (const action of ['feedback', 'pending', 'pending/response', 'pending/send', 'threads/thread-1/replies', 'threads/thread-1/status', 'guide/steps', 'guide/reset', 'guide/update', 'spotlight']) {
+    expect((await request(action, {}, auth)).status, `${auth} ${action}`).toBe(409)
+  }
+  expect((await request('threads')).status).toBe(200)
+  expect(pending.snapshot(id).notes).toEqual([])
+  expect(onFeedbackSent).not.toHaveBeenCalled()
+})
+
+it('allows only the owner to restore and publishes the replacement', async () => {
+  const restoreSnapshot = vi.fn(() => service.get(id)!)
+  const onChange = vi.fn()
+  api = new WebPanesApi({ service, agentToken: token, ownerAuthorized: async (req) => req.headers['x-owner'] === 'yes', paneForId: () => undefined, onChange, restoreSnapshot, pending, feedback, attachmentStore: {} as never, agentRequests: {} as never })
+  expect((await request('restore', { destination: '/tmp/new' }, 'agent')).status).toBe(403)
+  expect(restoreSnapshot).not.toHaveBeenCalled()
+  expect((await request('restore', {})).status).toBe(400)
+  expect((await request('restore', { destination: '/tmp/new' })).status).toBe(200)
+  expect(restoreSnapshot).toHaveBeenCalledWith(id, '/tmp/new')
+  expect(onChange).toHaveBeenCalledOnce()
+})

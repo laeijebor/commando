@@ -1,3 +1,4 @@
+import { SnapshotCopyBanner } from './SnapshotCopyBanner'
 import { Check, Copy, Flag, MessageSquare, RotateCcw, Send, X } from 'lucide-react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
@@ -25,6 +26,7 @@ type StepView = GuideStep & { checked: boolean; note?: string }
 type GuideContextValue = {
   byOffset: Map<number, StepView>
   checkpoints: StepView[]
+  readOnly: boolean
   busy: ReadonlySet<string>
   toggle: (step: StepView) => void
   saveNote: (step: StepView, note: string) => void
@@ -84,6 +86,7 @@ function StepNote({ step }: { step: StepView }) {
   const [draft, setDraft] = useState(step.note ?? '')
   useEffect(() => { if (!editing) setDraft(step.note ?? '') }, [editing, step.note])
   const save = () => { setEditing(false); if (draft.trim() !== (step.note ?? '')) guide.saveNote(step, draft) }
+  if (guide.readOnly) return step.note ? <span className="guide-note">{step.note}</span> : null
   if (editing) return (
     <textarea className="guide-note-input" autoFocus value={draft} rows={2} maxLength={2_000}
       aria-label={`Note for ${step.label}`} placeholder="What happened? (sent with the next update)"
@@ -101,7 +104,7 @@ function StepNote({ step }: { step: StepView }) {
 function StepBox({ step }: { step: StepView }) {
   const guide = useContext(GuideContext)!
   return (
-    <input type="checkbox" className="guide-box" checked={step.checked} disabled={guide.busy.has(step.id)}
+    <input type="checkbox" className="guide-box" checked={step.checked} disabled={guide.readOnly || guide.busy.has(step.id)}
       aria-label={step.label} onChange={() => guide.toggle(step)} />
   )
 }
@@ -162,8 +165,8 @@ const ago = (at: number, now: number) => {
   return `${Math.round(seconds / 86_400)}d ago`
 }
 
-export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl, onTitle }: {
-  webPaneId: string; token?: string; artifactId: string; file: string; artifactUrl?: string; onTitle?: (title: string) => void
+export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl, onTitle, readOnly = false, snapshotSavedAt }: {
+  readOnly?: boolean; snapshotSavedAt?: number; webPaneId: string; token?: string; artifactId: string; file: string; artifactUrl?: string; onTitle?: (title: string) => void
 }) {
   const api = useMemo(() => createGuideApi(token), [token])
   const [markdown, setMarkdown] = useState<string | null>(null)
@@ -213,20 +216,22 @@ export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl
   }), [outline, snapshot])
 
   const run = useCallback(async (id: string, change: () => Promise<GuideSnapshot>) => {
+    if (readOnly) return
     setBusy((current) => new Set(current).add(id))
     try { accept(await change()) } catch (reason) { setError(String((reason as Error).message)) }
     finally { setBusy((current) => { const next = new Set(current); next.delete(id); return next }) }
-  }, [accept])
+  }, [accept, readOnly])
   const context = useMemo<GuideContextValue>(() => ({
     byOffset: new Map(steps.filter((step) => !step.checkpoint).map((step) => [step.offset, step])),
     checkpoints: steps.filter((step) => step.checkpoint),
-    busy,
+    busy, readOnly,
     toggle: (step) => {
+      if (readOnly) return
       setSnapshot((current) => current && { ...current, marks: { ...current.marks, [step.id]: { ...current.marks[step.id], checked: !step.checked, at: Date.now() } } })
       void run(step.id, () => api.mark(webPaneId, { id: step.id, checked: !step.checked }))
     },
     saveNote: (step, note) => { void run(step.id, () => api.mark(webPaneId, { id: step.id, note })) },
-  }), [api, busy, run, steps, webPaneId])
+  }), [api, busy, readOnly, run, steps, webPaneId])
 
   const components = useMemo(() => ({
     li: TaskItem,
@@ -251,11 +256,13 @@ export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl
   const changes = snapshot?.changes.length ?? 0
   const waiting = snapshot?.waiting ?? false
   const update = async () => {
+    if (readOnly) return
     setSending(true)
     try { accept(await (waiting ? api.cancelUpdate(webPaneId) : api.update(webPaneId))) } catch (reason) { setError(String((reason as Error).message)) }
     finally { setSending(false) }
   }
   const reset = async () => {
+    if (readOnly) return
     if (!window.confirm('Clear your ticks and notes on this guide?')) return
     try { accept(await api.reset(webPaneId)) } catch (reason) { setError(String((reason as Error).message)) }
   }
@@ -270,11 +277,12 @@ export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl
         <span className="guide-delivery">
           {waiting ? 'Sends when the agent is idle…' : changes ? `${changes} unsent change${changes === 1 ? '' : 's'}` : snapshot?.deliveredAt ? `Agent updated ${ago(snapshot.deliveredAt, now)}` : ''}
         </span>
-        <button type="button" className="guide-tool" onClick={() => { void reset() }} title="Clear my ticks and notes" aria-label="Clear my ticks and notes"><RotateCcw aria-hidden="true" /></button>
-        <button type="button" className={`guide-update${changes && !waiting ? ' is-ready' : ''}`} disabled={sending || (!changes && !waiting)} onClick={() => { void update() }}>
+        <button type="button" className="guide-tool" disabled={readOnly} onClick={() => { void reset() }} title="Clear my ticks and notes" aria-label="Clear my ticks and notes"><RotateCcw aria-hidden="true" /></button>
+        <button type="button" className={`guide-update${changes && !waiting ? ' is-ready' : ''}`} disabled={readOnly || sending || (!changes && !waiting)} onClick={() => { void update() }}>
           {waiting ? <><X aria-hidden="true" /> Cancel</> : <><Send aria-hidden="true" /> Update agent{changes ? ` (${changes})` : ''}</>}
         </button>
       </header>
+      {readOnly && <SnapshotCopyBanner webPaneId={webPaneId} savedAt={snapshotSavedAt} token={token} />}
       {error || loadError ? <div className="guide-error" role="alert">{loadError || error}</div> : null}
       <div className="guide-scroll">
         {markdown === null ? (loadError ? null : <div className="guide-loading">Loading guide…</div>) : (

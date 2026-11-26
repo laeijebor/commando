@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_WEB_PANES, MAX_WEB_PANE_TITLE_LENGTH, type AgentSessionRef, type WebPane } from '../shared/protocol.js'
 import {
   buildWebPanesMessage,
+  parseWebPaneContent,
   WebPaneError,
   WebPaneService,
   classifyWebPaneUrl,
@@ -1865,4 +1866,21 @@ it('builds the web_panes broadcast with stored selection, dismissals and the rem
     type: 'web_panes', webPanes: service.list(), activeTabs: { '%12': pane.id },
     dismissedPrTabs: { '%12': { 'pr:acme:widgets:12': 'old' } }, closedTabs: {}, ...state,
   })
+})
+
+it('validates and persists canvas/guide read-only content without silently dropping protection', async () => {
+  const path = await temporaryStatePath()
+  const service = track(new WebPaneService(path))
+  for (const content of [
+    { kind: 'canvas' as const, artifactId: '0123456789abcdef', manifest: 'canvas.json', readOnly: true as const },
+    { kind: 'guide' as const, artifactId: '0123456789abcdef', file: 'guide.md', readOnly: true as const },
+  ]) {
+    expect(parseWebPaneContent(content)).toEqual(content)
+    for (const readOnly of [false, 'true', 1, null]) expect(parseWebPaneContent({ ...content, readOnly })).toBeNull()
+    service.open({ ...anchor, url: 'http://localhost/copy', content })
+  }
+  await service.flush()
+  const loaded = track(new WebPaneService(path))
+  await loaded.load()
+  expect(loaded.list().map((p) => p.content)).toEqual(service.list().map((p) => p.content))
 })

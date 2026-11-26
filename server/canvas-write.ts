@@ -42,6 +42,7 @@ function rewriteJson(text: string, updates: Map<string, unknown>): string {
 /** Synchronous compare/write avoids interleaving daemon writes; rename publishes a complete file. */
 export function writeCanvas(artifacts: RedlineArtifactRegistry, artifactId: string, body: Record<string, unknown>, kind: 'frames' | 'annotations' | 'sections'): CanvasWriteResult {
   const fail = (status: number, message: string): never => { throw new RedlineArtifactError(status, message) }
+  if (artifacts.isReadOnly(artifactId)) return fail(409, 'This saved copy is read-only; restore it to a folder before editing')
   const manifest = canvasRelativePath(body.manifest)
   if (isDeckPath(manifest)) return fail(400, 'Deck layout and section status are read-only; edit the deck HTML instead')
   if (!manifest || !manifest.endsWith('.json')) return fail(400, 'manifest must be a relative JSON path inside the canvas folder')

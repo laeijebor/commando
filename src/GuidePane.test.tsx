@@ -62,6 +62,20 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 const renderGuide = (onTitle = vi.fn()) => render(<GuidePane webPaneId="w-12345678" token="t" artifactId={artifactId} file="guide.md" artifactUrl={`http://127.0.0.1:4410/redline/artifacts/${artifactId}/`} onTitle={onTitle} />)
 
 describe('GuidePane', () => {
+  it('disables saved-copy ticks, notes, reset and delivery while keeping the guide readable', async () => {
+    marks = { reveal: { note: 'Saved observation', at: 1 } }
+    render(<GuidePane webPaneId="w-12345678" token="t" artifactId={artifactId} file="guide.md" readOnly snapshotSavedAt={1} />)
+    await screen.findByRole('checkbox', { name: 'Reveal and copy the signing secret' })
+    for (const box of screen.getAllByRole('checkbox')) expect(box).toBeDisabled()
+    expect(screen.getByText('Saved observation')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add a note/ })).toBeNull()
+    expect(screen.queryByTitle('Edit note')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clear my ticks and notes' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Update agent/ })).toBeDisabled()
+    expect(screen.getByText(/Read-only copy saved/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Reveal and copy the signing secret' }))
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
   it('renders steps, checkpoints, callouts and copyable code without running scripts', async () => {
     const onTitle = vi.fn()
     const { container } = renderGuide(onTitle)

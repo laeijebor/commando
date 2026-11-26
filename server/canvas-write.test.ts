@@ -129,3 +129,18 @@ describe('canvas writer and owner-only API without sockets', () => {
     expect(() => writeCanvas(artifacts, id, { manifest: 'canvas.json', expectedHash: canvasContentHash(fixed.replace('"fixed": true', '"fixed": false')), moves: [{ id: 'a', x: 1, y: 1 }] }, 'annotations')).toThrow('Unknown canvas id')
   })
 })
+
+it('rejects all layout/status writes to registered read-only copies, including direct writer calls', async () => {
+  artifacts.register(dir, true)
+  for (const kind of ['frames', 'annotations', 'sections'] as const) {
+    expect(() => writeCanvas(artifacts, id, move(), kind)).toThrow('read-only')
+    expect((await request(`/api/redline/artifacts/${id}/canvas/${kind}`, move())).status).toBe(409)
+  }
+  expect(await readFile(join(dir, 'canvas.json'), 'utf8')).toBe(original)
+})
+
+it('rejects layout writes when a read-only pane protects an otherwise writable registration', async () => {
+  api = new RedlineApi({ artifacts, baseUrl: 'http://localhost', agentToken: token, ownerAuthorized: async () => true, readOnlyArtifact: (candidate) => candidate === id })
+  expect((await request(`/api/redline/artifacts/${id}/canvas/frames`, move())).status).toBe(409)
+  expect(await readFile(join(dir, 'canvas.json'), 'utf8')).toBe(original)
+})
