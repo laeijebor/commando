@@ -1,8 +1,12 @@
 import { create } from 'zustand'
 
-import { mergeChatItems, type ChatState, type ExternalAgentRun } from '@commando/agent-chat'
+import { mergeChatItems, parseAsideKey, type ChatState, type ExternalAgentRun } from '@commando/agent-chat'
 import type { ChatCardEvent } from '@commando/chat-tile-events'
 import type { ServerMessage } from '@commando/protocol'
+
+export function isAsideChat(key: string, chat?: ChatState): boolean {
+  return Boolean(parseAsideKey(key) || chat?.session.aside)
+}
 
 /** One host's chat panes by pane id, as the daemon relays them. */
 export type HostChats = Record<string, ChatState>
@@ -32,6 +36,10 @@ export function applyChatMessage(chats: HostChats, message: ServerMessage): Host
         return { ...chats, [message.paneId]: { ...rest, items: mergeChatItems([], message.items) } }
       }
       return { ...chats, [message.paneId]: { ...chat, items: mergeChatItems(chat.items, message.items) } }
+    }
+    case 'chat_asides': {
+      const chat = chats[message.paneId]
+      return chat ? { ...chats, [message.paneId]: { ...chat, asides: message.asides, asidesError: message.error } } : chats
     }
     case 'chat_commands': {
       const chat = chats[message.paneId]
@@ -128,7 +136,7 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
 
 /** The chat a pane hosts, or undefined for a terminal pane (or one handed to Claude Code). */
 export function useChat(hostId: string | undefined, paneId: string | undefined): ChatState | undefined {
-  return useChatStore((state) => (hostId && paneId ? state.byHost[hostId]?.[paneId] : undefined))
+  return useChatStore((state) => (hostId && paneId && !isAsideChat(paneId, state.byHost[hostId]?.[paneId]) ? state.byHost[hostId]?.[paneId] : undefined))
 }
 
 /** The external runs a chat pane launched, as the daemon last listed them. */

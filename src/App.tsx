@@ -1,3 +1,4 @@
+import { chatMessageSummary } from '../shared/agent-chat'
 import { HostProvider, HostWorkspace, useHost } from './HostContext'
 import { HostSwitcher, HostsSettings } from './HostSwitcher'
 import { commanderInbox, commanderRepoOptions, keepNeedsYouOrder, type NeedsYouOrder } from './commanderInbox'
@@ -584,6 +585,7 @@ export function TerminalPaneCard({
   const bodyRef = useRef<HTMLDivElement>(null)
   useChatPaneMeasurement(bodyRef, showChat && resizeOwner, measurementKey, `${pane.width}x${pane.height}`, onResize)
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
+  const taskHeadline = brief?.headline ? chatMessageSummary(brief.headline) : pane.command || pane.path
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
@@ -728,7 +730,7 @@ export function TerminalPaneCard({
               />
             </form>
           ) : <strong>{paneLabel}</strong>}
-          <small title={brief?.headline || pane.command || pane.path}>{brief?.headline || pane.command || pane.path}</small>
+          <small title={taskHeadline}>{taskHeadline}</small>
         </span>
         {panelTrigger ?? (paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
           {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
@@ -2970,6 +2972,7 @@ function HostApp() {
       const finish = (result: ChatAsideResult) => {
         window.clearTimeout(timer)
         chatAsideReplies.current.delete(id)
+        if (result.ok && result.promotedPaneId) setPendingPaneFocus({ paneId: result.promotedPaneId, waitForCreation: true })
         resolve(result)
       }
       const timer = window.setTimeout(() => finish({ ok: false, error: 'The aside operation timed out and may still be in progress' }), 125_000)

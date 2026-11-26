@@ -1,9 +1,9 @@
-import { createContext, memo, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, memo, use, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, isChatVideoId, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
+import { parseAsideReports, type AsideReport, PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, isChatVideoId, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
 import {
   canCollapsePlan,
   collapsedPlanPreview,
@@ -42,6 +42,7 @@ const TimelineContext = createContext<{
   cwd: string
   provider: string
   onOpenTile?: ((webPaneId: string) => void) | undefined
+  onOpenReport?: ((report: AsideReport) => void) | undefined
   openTileIds?: ReadonlySet<string> | undefined
 }>({ baseUrl: '', cwd: '', provider: 'Agent' })
 
@@ -67,7 +68,8 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
  * follows the newest turn on open/send and while already near the bottom.
  * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled, onOpenTile, openTileIds }: {
+export function ChatTimeline({ active = true, items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled, onOpenTile, openTileIds, onOpenReport }: {
+  active?: boolean
   sendVersion?: number
   /** Older items the daemon left on the Mac (a bounded replay), and how to fetch them. */
   omittedItems?: number
@@ -89,6 +91,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   controlsDisabled?: boolean | undefined
   /** Opens a redline or canvas tile from its chat card; only tiles in `openTileIds` still exist. */
   onOpenTile?: ((webPaneId: string) => void) | undefined
+  onOpenReport?: ((report: AsideReport) => void) | undefined
   openTileIds?: ReadonlySet<string> | undefined
 }): React.JSX.Element {
   const theme = useTheme()
@@ -101,7 +104,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
     const entries: Entry[] = rows.slice()
     return working && !streaming && !liveWork ? [...entries, { kind: 'working', id: 'working' }] : entries
   }, [rows, working, streaming, liveWork])
-  const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name, onOpenTile, openTileIds }), [baseUrl, cwd, provider, onOpenTile, openTileIds])
+  const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name, onOpenTile, openTileIds, onOpenReport }), [baseUrl, cwd, provider, onOpenTile, openTileIds, onOpenReport])
   const now = useNow(rows.some((row) => row.kind === 'subagents' && row.live))
   const subagents = useMemo(() => ({ items, now, provider: context.provider, onOpenSubagent, onTask, controlsDisabled }), [items, now, context.provider, onOpenSubagent, onTask, controlsDisabled])
   const list = useRef<FlatList<Entry>>(null)
@@ -111,7 +114,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   const frame = useRef<number | null>(null)
   const previousSend = useRef(sendVersion)
   const follow = useCallback((reason: TimelineScrollReason) => {
-    if (!shouldFollowTimeline(reason, following.current, userScrolling.current)) return
+    if (!active || !shouldFollowTimeline(reason, following.current, userScrolling.current)) return
     following.current = true
     userScrolling.current = false
     setScrolledBack(false)
@@ -121,10 +124,12 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
       frame.current = null
       list.current?.scrollToEnd({ animated: false })
     })
-  }, [])
-  useEffect(() => {
-    follow('open')
-    return () => { if (frame.current !== null) cancelAnimationFrame(frame.current) }
+  }, [active])
+  const opened = useRef(false)
+  useLayoutEffect(() => {
+    if (active && !opened.current) { opened.current = true; follow('open') }
+    // Cancel before a frame can scroll a thread that has just been hidden.
+    return () => { if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null } }
   }, [follow])
   useLayoutEffect(() => {
     if (sendVersion === previousSend.current) return
@@ -132,11 +137,13 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
     follow('send')
   }, [sendVersion, follow])
   const trackPosition = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!active) return
     following.current = isNearTimelineEnd(event.nativeEvent)
     setScrolledBack(!following.current)
   }
 
   const beginUserScroll = () => {
+    if (!active) return
     userScrolling.current = true
     following.current = false
     if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null }
@@ -144,7 +151,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   const endUserScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     // iOS also ends a programmatic scrollToEnd with onMomentumScrollEnd; following it
     // would scroll again every frame and swallow taps on the rows.
-    if (!userScrolling.current) return
+    if (!active || !userScrolling.current) return
     trackPosition(event)
     userScrolling.current = false
     follow('content')
@@ -251,7 +258,8 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
 
 function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }): React.JSX.Element {
   const theme = useTheme()
-  const { provider, onOpenTile, openTileIds } = use(TimelineContext)
+  const { provider, onOpenTile, openTileIds, onOpenReport } = use(TimelineContext)
+  const segments = parseAsideReports(item.text)
   // A message Commando sent for a redline, canvas or auto-fix is its card, not the prompt it typed.
   if (item.tileEvents?.length) {
     return (
@@ -277,11 +285,21 @@ function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }
         </View>
       ) : null}
       {item.images?.length ? <ImageStrip images={item.images} /> : null}
-      {item.text ? (
-        <View style={[styles.bubble, { backgroundColor: theme.surfaceSoft, borderColor: theme.border }]}>
-          <UserText text={item.text} />
+      {segments.map((segment, index) => (
+        <View key={index} testID={segment.kind === 'report' ? 'aside-report-bubble' : undefined} style={[styles.bubble,
+          segment.kind === 'report' ? [styles.reportBubble, { backgroundColor: withAlpha(theme.cyan, 0.08), borderColor: withAlpha(theme.cyan, 0.3) }] : { backgroundColor: theme.surfaceSoft }]}>
+          {segment.kind === 'report' ? <>
+            <View testID="aside-report-header" style={styles.reportHeader}>
+              <View style={styles.reportHeading}>
+                <Text style={[styles.reportTag, { color: theme.cyan, backgroundColor: withAlpha(theme.cyan, 0.12) }]}>From aside</Text>
+                <Text numberOfLines={2} style={[styles.reportTitle, { color: theme.textSoft }]}>{segment.title}</Text>
+              </View>
+              {onOpenReport ? <Pressable accessibilityRole="button" accessibilityLabel={`Open aside ${segment.title}`} onPress={() => onOpenReport(segment)} style={styles.reportLink}><Text style={{ color: theme.cyan }}>Open aside</Text></Pressable> : null}
+            </View>
+            <View testID="aside-report-body" style={styles.reportBody}><Markdown text={segment.body} /></View>
+          </> : <UserText text={segment.text} />}
         </View>
-      ) : null}
+      ))}
     </View>
   )
 }
@@ -585,6 +603,13 @@ const styles = StyleSheet.create({
   userTag: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '85%' },
   userTagText: { fontSize: 11.5 },
   bubble: { maxWidth: '88%', borderWidth: 0, borderRadius: 18, borderBottomRightRadius: 5, paddingHorizontal: 12, paddingVertical: 8 },
+  reportBubble: { width: '88%', borderWidth: 1, gap: 8, flexShrink: 0 },
+  reportHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  reportHeading: { flex: 1, minWidth: 0, gap: 4 },
+  reportTag: { alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, fontSize: 10.5, fontWeight: '700' },
+  reportTitle: { fontSize: 12.5, fontWeight: '600' },
+  reportLink: { flexShrink: 0, paddingVertical: 4 },
+  reportBody: { alignSelf: 'stretch', flexShrink: 0, minWidth: 0 },
   userText: { fontSize: 15, lineHeight: 21 },
   planText: { fontSize: 13.5, lineHeight: 19, marginTop: 6 },
   imagesScroll: { flexGrow: 0, maxWidth: '85%' },

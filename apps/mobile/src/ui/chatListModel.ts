@@ -1,4 +1,5 @@
 import type { AgentStatus, PaneMark, TmuxPane } from '@commando/protocol'
+import { chatMessageSummary } from '@commando/agent-chat'
 import { sessionIdentityForName, type SessionIdentities } from '@commando/session-identity'
 import type { SessionCreation } from '@commando/tmux-create'
 import type { HostDaemonState } from '../daemon/state'
@@ -88,7 +89,7 @@ export function buildChatGroups(state: HostDaemonState, chats: Record<string, Li
     const identity = sessionIdentityForName(identities, node.session.name)
     return { ...node, identity, indicator, agents, openPaneId: agents.length === 1 ? agents[0]!.id : agents.length === 0 ? (panes.find((pane) => pane.windowId === node.session.activeWindowId && pane.active) ?? panes.find((pane) => pane.windowId === node.session.activeWindowId) ?? panes.find((pane) => pane.active) ?? panes[0])?.id : undefined,
       provider: latest ? chats[latest.id]?.session.provider ?? status?.provider : undefined,
-      subtitle: (latest ? state.briefs[latest.id]?.headline : undefined) || status?.details?.currentActivity?.label || status?.summary || (latest ? chats[latest.id]?.session.title : undefined) || identity.codename,
+      subtitle: chatMessageSummary((latest ? state.briefs[latest.id]?.headline : undefined) || status?.details?.currentActivity?.label || status?.summary || (latest ? chats[latest.id]?.session.title : undefined) || identity.codename),
       updatedAt: latest ? state.briefs[latest.id]?.updatedAt ?? status?.updatedAt ?? rowUpdatedAt(chats[latest.id]) : undefined,
       pending: agents.some((pane) => state.agentStatuses[pane.id]?.details?.requests?.length || rowPending(chats[pane.id])),
     }

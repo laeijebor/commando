@@ -329,7 +329,7 @@ export class AgentHostHub {
           // Requests in the replaced timeline can no longer be answered.
           if (message.replace) this.closeRequests(message.paneId, entry)
           this.syncInteractions(message.paneId, entry, items)
-          if (startsTurn) this.reportStatus(message.paneId, entry)
+          if (startsTurn || items.some((item) => item.kind === 'user_message' && !item.parentToolUseId)) this.reportStatus(message.paneId, entry)
         }
         return
       }
@@ -773,7 +773,7 @@ export class AgentHostHub {
 
   private reportStatus(paneId: string, entry: ChatEntry, restored = false): void {
     if (parseAsideKey(paneId)) return
-    this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn), restored)
+    this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn, entry.state.items), restored)
   }
 
   private toHost(paneId: string, message: DaemonToHostMessage): boolean {

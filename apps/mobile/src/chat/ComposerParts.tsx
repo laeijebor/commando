@@ -4,6 +4,7 @@ import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
 import {
+  chatMessageSummary,
   hostTakesSettings,
   selectedModelOption,
   type ChatCommand,
@@ -25,7 +26,8 @@ import { withAlpha } from '../ui/primitives'
  * Messages the host holds until Claude's turn ends (the web's QueuedMessages):
  * edit, remove, or steer one in now.
  */
-export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider }: {
+export function QueueList({ active = true, queue, disabled, onChange, onEditOrphaned, provider }: {
+  active?: boolean
   provider?: string
   queue: ChatQueuedMessage[]
   disabled: boolean
@@ -35,6 +37,8 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
 }): React.JSX.Element {
   const theme = useTheme()
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const input = useRef<TextInput>(null)
+  useEffect(() => { if (!active) input.current?.blur() }, [active])
   const latest = useRef({ editing, onEditOrphaned })
   latest.current = { editing, onEditOrphaned }
   useEffect(() => {
@@ -58,9 +62,11 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
               <View style={styles.queuedEdit}>
                 <TextInput
                   accessibilityLabel="Edit queued message"
-                  autoFocus
+                  autoFocus={active}
+                  editable={active}
                   multiline
                   onChangeText={(text) => setEditing({ id: queued.id, text })}
+                  ref={input}
                   style={[styles.queuedInput, { color: theme.text, borderColor: theme.borderMid, backgroundColor: theme.surface }]}
                   value={editing.text}
                 />
@@ -80,7 +86,7 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
             ) : (
               <>
                 <Text numberOfLines={2} style={[styles.queuedText, { color: theme.textSoft }]}>
-                  {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{queued.text || '(images only)'}
+                  {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{chatMessageSummary(queued.text) || '(images only)'}
                 </Text>
                 <IconButton disabled={disabled || !queued.text} icon="edit-2" label="Edit queued message" onPress={() => setEditing({ id: queued.id, text: queued.text })} />
                 <SmallButton disabled={disabled} icon="zap" label="Steer" onPress={() => onChange({ action: 'steer', id: queued.id })} />
@@ -172,6 +178,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   modelSheet: number
   onModelSheetShown: () => void
 }): React.JSX.Element {
+  const theme = useTheme()
   const modelRef = useRef<View>(null)
   const effortRef = useRef<View>(null)
   const permissionRef = useRef<View>(null)
@@ -223,7 +230,11 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
           ref={effortRef}
         />
       ) : null}
-      {presentation.showPermission && session.permissionMode ? (
+      {session.aside?.mode === 'read-only' ? (
+        <View accessible accessibilityLabel={session.aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'} style={[styles.pill, { borderColor: theme.cyan }]}>
+          <Text numberOfLines={1} style={[styles.pillText, { color: theme.cyan }]}>{session.aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'}</Text>
+        </View>
+      ) : presentation.showPermission && session.permissionMode ? (
         <Pill
           a11y="Permissions"
           disabled={disabled || !modes.length}
@@ -237,7 +248,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
 }
 
 /** A settings pill; `on` marks a toggle that is switched on (fast mode). */
-export function Pill({ label, a11y, disabled, onPress, ref, on }: { label: string; a11y: string; disabled: boolean; onPress: () => void; ref?: React.Ref<View>; on?: boolean }): React.JSX.Element {
+export function Pill({ label, a11y, disabled, onPress, ref, on, compact = false, tone = 'accent' }: { compact?: boolean; tone?: 'accent' | 'cyan'; label: string; a11y: string; disabled: boolean; onPress: () => void; ref?: React.Ref<View>; on?: boolean }): React.JSX.Element {
   const theme = useTheme()
   return (
     <Pressable
@@ -250,9 +261,9 @@ export function Pill({ label, a11y, disabled, onPress, ref, on }: { label: strin
         onPress()
       }}
       ref={ref}
-      style={[styles.pill, { borderColor: on ? theme.accent : theme.border, opacity: disabled ? 0.6 : 1 }]}
+      style={[styles.pill, compact && styles.compactPill, { borderColor: on ? theme[tone] : theme.border, opacity: disabled ? 0.6 : 1 }]}
     >
-      <Text numberOfLines={1} style={[styles.pillText, { color: on ? theme.text : theme.muted }]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.pillText, { color: on ? theme[tone] : theme.muted }]}>{label}</Text>
     </Pressable>
   )
 }
@@ -336,6 +347,7 @@ const styles = StyleSheet.create({
   menuTag: { fontSize: 10.5, borderWidth: 1, borderRadius: 999, paddingHorizontal: 6, paddingVertical: 1, overflow: 'hidden' },
   menuStatus: { fontSize: 12.5, paddingHorizontal: 14, paddingVertical: 8 },
   pill: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 170 },
+  compactPill: { flexShrink: 1, minWidth: 0, alignSelf: 'flex-start' },
   pillText: { fontSize: 12.5 },
   meter: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   meterTrack: { width: 22, height: 4, borderRadius: 2, overflow: 'hidden' },

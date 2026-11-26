@@ -19,6 +19,7 @@ import { ChatTimeline } from './ChatTimeline'
 import { Markdown } from './Markdown'
 import { RequestCard } from './RequestCard'
 import { useExternalRuns, useTileEvents } from './store'
+import { AsideThreads, type ThreadOptions } from './AsideThreads'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
@@ -54,7 +55,14 @@ export function chatStatusWord(status: ChatSessionStatus): string {
  * request, and the composer. The phone's pane screen and the iPad cockpit's
  * centre column both show it, through `PaneView`.
  */
-export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }: {
+export function ChatView(props: React.ComponentProps<typeof ChatThread>): React.JSX.Element {
+  return <AsideThreads key={`${props.host.id}:${props.chat.paneId}`} host={props.host} main={props.chat} client={props.client} phase={props.phase}
+    renderThread={(chat, options) => <ChatThread {...props} chat={chat} threadOptions={options}
+      onOpenTile={chat.session.aside ? undefined : props.onOpenTile} openTileIds={chat.session.aside ? undefined : props.openTileIds} />} />
+}
+
+function ChatThread({ host, chat, client, phase, onOpenTile, openTileIds, threadOptions }: {
+  threadOptions?: ThreadOptions
   host: Host
   chat: ChatState
   client: DaemonClient | undefined
@@ -65,12 +73,15 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
   openTileIds?: ReadonlySet<string> | undefined
 }): React.JSX.Element {
   const theme = useTheme()
+  const active = threadOptions?.active ?? true
   const [sendVersion, setSendVersion] = useState(0)
   const { channel, sendError, dismissSendError, actionError, dismissActionError } = useChatChannel(client, chat.paneId)
-  const externalRuns = useExternalRuns(host.id, chat.paneId)
+  // The new-aside composer uses Main's channel, with an empty timeline of its own.
+  const timelineKey = threadOptions?.newAside ? undefined : chat.paneId
+  const externalRuns = useExternalRuns(host.id, timelineKey)
   // External runs (`codex exec`, `claude -p`) join the turn that launched them, as on the web.
   const items = useMemo(() => (externalRuns.length ? withExternalAgentRuns(chat.items, externalRuns) : chat.items), [chat.items, externalRuns])
-  const tileEvents = useTileEvents(host.id, chat.paneId)
+  const tileEvents = useTileEvents(host.id, timelineKey)
   // Cards only join the main timeline; requests and subagents read the conversation itself.
   const timelineItems = useMemo(() => {
     const shown = loadedTileEvents(items, tileEvents, chat.omittedItems ?? 0)
@@ -109,6 +120,7 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
             provider={provider}
           />
           <SubagentTimeline
+            active={active}
             agent={agent}
             baseUrl={host.baseUrl}
             cwd={chat.session.cwd}
@@ -122,6 +134,7 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
         </>
       ) : (
         <ChatTimeline
+          active={active}
           baseUrl={host.baseUrl}
           omittedItems={chat.omittedItems}
           onLoadEarlier={channel ? () => channel.loadHistory() : undefined}
@@ -129,6 +142,7 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
           cwd={chat.session.cwd}
           items={timelineItems}
           onOpenSubagent={view.turnFlow ? view.select : undefined}
+          onOpenReport={threadOptions?.onOpenReport}
           onOpenTile={onOpenTile}
           onTask={view.task}
           openTileIds={openTileIds}
@@ -170,6 +184,12 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
       ) : null}
       {channel ? (
         <View testID="chat-composer-dock" style={styles.composerDock}><ChatComposer
+          active={active}
+          newAside={threadOptions?.newAside}
+          composerDisabled={threadOptions?.composerDisabled}
+          onStartAside={threadOptions?.onStartAside}
+          reportDraft={threadOptions?.reportDraft}
+          onReportDraftTaken={threadOptions?.onReportDraftTaken}
           actionError={actionError}
           carried={chat.carried}
           channel={channel}
@@ -275,7 +295,8 @@ function useSubagentView(items: readonly ChatItem[], channel: ChatChannel | null
  * One subagent's own turns: live from items tagged with its Agent call, or
  * from its saved transcript when none are in the chat (after a resume).
  */
-function SubagentTimeline({ agent, items, transcript, provider, cwd, baseUrl, onOpenSubagent, onRetry }: {
+function SubagentTimeline({ active, agent, items, transcript, provider, cwd, baseUrl, onOpenSubagent, onRetry }: {
+  active: boolean
   agent: SubagentItem
   items: readonly ChatItem[]
   transcript: TranscriptState | undefined
@@ -320,6 +341,7 @@ function SubagentTimeline({ agent, items, transcript, provider, cwd, baseUrl, on
     ) : null
   return (
     <ChatTimeline
+      active={active}
       baseUrl={baseUrl}
       cwd={cwd}
       emptyText={error ? '' : loading ? "Loading the subagent's transcript…" : agent.state === 'running' ? 'The subagent is starting…' : 'This subagent left no transcript.'}

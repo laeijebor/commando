@@ -31,7 +31,7 @@ import { providerPresentation } from '../ui/providerPresentation'
 import { withAlpha } from '../ui/primitives'
 import { useTheme } from '../theme'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
-import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
+import { ContextMeter, IconButton, Pill, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
 import { spliceDictation, useDictation } from './dictation'
 import { chatImageUri } from './images'
@@ -78,13 +78,14 @@ function menuFor(
   session: ChatSessionInfo,
   commands: readonly ChatCommand[] | undefined,
   files: { result: ChatFileSearchResult | null; loading: boolean },
+  configureAllowed: boolean,
 ): { label: string; items: MenuItem[]; status: string | null } {
   if (trigger.kind === 'slash') {
     const query = trigger.query.toLowerCase()
     const natives: MenuItem[] = [
-      ...(modelMenuAvailable(session) ? [{ key: 'native:model', type: 'native' as const, name: 'model' as const, description: 'Choose the model' }] : []),
+      ...(configureAllowed && modelMenuAvailable(session) ? [{ key: 'native:model', type: 'native' as const, name: 'model' as const, description: 'Choose the model' }] : []),
       // Muse has no plan mode.
-      ...(hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
+      ...(configureAllowed && session.aside?.mode !== 'read-only' && hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
         ? [{ key: 'native:plan', type: 'native' as const, name: 'plan' as const, description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
         : []),
     ].filter((item) => item.type === 'native' && item.name.includes(query))
@@ -112,7 +113,13 @@ function menuFor(
  * queue while Claude works), Steer and Stop, the queue, images, the `/` and
  * `@` menus and the settings pills. Open requests sit above it.
  */
-export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay }: {
+export function ChatComposer({ active = true, host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay, onStartAside, newAside = false, composerDisabled = false, reportDraft, onReportDraftTaken }: {
+  active?: boolean
+  onStartAside?: (text: string, images: ChatImageRef[]) => Promise<boolean>
+  newAside?: boolean
+  composerDisabled?: boolean
+  reportDraft?: { id: number; text: string }
+  onReportDraftTaken?: () => void
   onSend?: () => void
   /** Messages go to this subagent, relayed through main Claude's SendMessage. */
   relayTarget?: { agentId: string; label: string } | undefined
@@ -130,16 +137,22 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   onDismissActionError: () => void
 }): React.JSX.Element {
   const theme = useTheme()
-  const draftKey = `${host.id}:${session.paneId}`
+  const draftKey = `${host.id}:${channel.paneId}${newAside ? ':new-aside' : ''}`
   const [text, setText] = useState(() => drafts.get(draftKey)?.text ?? '')
+  const [sendAsAside, setSendAsAside] = useState(false)
+  const [openingAside, setOpeningAside] = useState(false)
   const [attachError, setAttachError] = useState<string | null>(null)
   const { attachments, setAttachments, add: addImages, remove: removeAttachment, uploading } = useAttachmentUploads(host, setAttachError, () => drafts.get(draftKey)?.attachments ?? [])
+  // Aside creation can outlast further edits; its completion must read the latest draft.
+  const currentDraft = useRef<Draft>({ text, attachments })
+  currentDraft.current = { text, attachments }
   const [selection, setSelection] = useState({ start: text.length, end: text.length })
   /** Set for one render after a pick rewrites the text, to move the caret. */
   const [forcedSelection, setForcedSelection] = useState<{ start: number; end: number } | undefined>()
   const [dismissed, setDismissed] = useState<ComposerTrigger | null>(null)
   const [modelSheet, setModelSheet] = useState(0)
   const input = useRef<TextInput>(null)
+  useEffect(() => { if (!active) input.current?.blur() }, [active])
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
 
@@ -152,7 +165,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const closed = session.status === 'closed' || session.status === 'error'
   // A switch to Claude Code takes the draft as it is; answers and Stop still work.
   const switching = Boolean(session.claudeCodeSwitch)
-  const disabled = !hostConnected || closed || switching
+  const disabled = composerDisabled || !hostConnected || closed || switching || openingAside
   const richInput = hostTakesInput(session)
   const turnFlow = hostTakesTurnFlow(session)
   const queue = turnFlow ? session.queue ?? [] : []
@@ -164,9 +177,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     // A dismissed menu stays closed until the caret leaves its token.
     if (dismissed && !blocked) setDismissed(null)
   }, [dismissed, blocked])
-  const trigger = !disabled && candidate && !blocked && (candidate.kind === 'slash' || (candidate.kind === 'mention' && richInput)) ? candidate : null
+  const trigger = active && !disabled && candidate && !blocked && (candidate.kind === 'slash' || (candidate.kind === 'mention' && richInput)) ? candidate : null
   const files = useFileSearch(trigger?.kind === 'mention' ? trigger.query : null, channel)
-  const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files) : null), [trigger, session, commands, files])
+  const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files, !newAside) : null), [trigger, session, commands, files, newAside])
 
   // The draft as of the latest change, ahead of the render it causes (a dictation can start in between).
   const draftNow = useRef({ text, selection })
@@ -184,6 +197,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     void Haptics.selectionAsync()
     switch (item.type) {
       case 'native':
+        if (newAside) return
         applyText(replaceRange(text, trigger.rangeStart, trigger.rangeEnd, ''))
         if (item.name === 'model') setModelSheet((count) => count + 1)
         else channel.configure({ permissionMode: session.permissionMode === 'plan' ? 'default' : 'plan' })
@@ -227,7 +241,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   }
 
   // The clipboard's image is offered while it holds one; a paste uses it up until the clipboard changes.
-  const clipboardImage = useClipboardImage(richInput && !disabled)
+  const clipboardImage = useClipboardImage(active && richInput && !disabled)
   const pasteImage = (data: ClipboardImageData) => {
     // Kept on offer when there's no room, so it can come in once an image is removed.
     if (!roomForImages()) return
@@ -271,13 +285,21 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     const at = marked.indexOf(DICTATION_MARK)
     if (at >= 0) dictationBase.current = { text: marked.replace(DICTATION_MARK, ''), selection: { start: at, end: at } }
   }
-  const canDictate = dictation.available && !closed && !switching
+  const takenReport = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (!reportDraft || takenReport.current === reportDraft.id) return
+    takenReport.current = reportDraft.id
+    rewriteDraft((current) => [current.trim(), reportDraft.text].filter(Boolean).join('\n\n'))
+    onReportDraftTaken?.()
+  }, [reportDraft])
+  const canDictate = active && dictation.available && !closed && !switching
   // The mic leaves mid-hold when the session ends or switches; its release would never come.
   useEffect(() => {
     if (!canDictate) dictation.cancel()
   }, [canDictate, dictation.cancel])
 
   const clearDraft = () => {
+    drafts.set(draftKey, { text: '', attachments: [] })
     // A take still finishing would put the sent words back when its last result lands.
     dictation.cancel()
     setAttachments([])
@@ -329,14 +351,29 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   }, [carried?.id, attachments.length, switching])
 
   /** While relaying, nothing queues or steers: main Claude forwards it now. */
-  const queueing = running && turnFlow && !relayTarget
+  const queueing = running && turnFlow && !relayTarget && !sendAsAside
   /** Enter (the send button) queues while Claude works; Steer sends now. A relay always goes now. */
-  const submit = (steer = false) => {
+  const submit = async (steer = false) => {
     if (!canSend) return
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
     const options: ChatSendOptions = relayTarget ? { relayTo: relayTarget } : queueing ? { delivery: steer ? 'steer' : 'queue' } : {}
     const sent = text.trim()
+    const prefix = /^\/aside(?:\s|$)/.test(sent)
+    if (onStartAside && !relayTarget && (newAside || sendAsAside || prefix)) {
+      const question = prefix ? sent.replace(/^\/aside\s*/, '') : sent
+      if (!question && !images.length) { setAttachError('Write a question for the aside'); return }
+      setOpeningAside(true)
+      try {
+        if (await onStartAside(question, images)) {
+          const current = currentDraft.current
+          if (current.text === text && current.attachments.length === attachments.length && current.attachments.every((attachment, index) => attachment === attachments[index])) clearDraft()
+          setSendAsAside(false)
+        }
+      } catch (error) { setAttachError(error instanceof Error ? error.message : String(error)) }
+      finally { setOpeningAside(false) }
+      return
+    }
     const requestId = channel.send(sent, images, options)
     onSend?.()
     const now = Date.now()
@@ -389,7 +426,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       <View style={[styles.box, { backgroundColor: theme.surface, borderColor: theme.borderMid }]} testID="chat-composer">
         {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} provider={providerPresentation(session.provider).name} /> : null}
         {queue.length ? (
-          <QueueList provider={session.provider}
+          <QueueList active={active} provider={session.provider}
             disabled={!hostConnected}
             onChange={(change) => channel.queue(change)}
             onEditOrphaned={(edit) => {
@@ -427,9 +464,10 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
         <TextInput
           accessibilityLabel={`Message ${providerPresentation(session.provider).name}`}
           autoCapitalize="sentences"
+          autoFocus={active && newAside}
           // A dropped connection only stops sending: making the field read-only
           // would resign it, so a reconnect would close the keyboard mid-sentence.
-          editable={!closed && !switching}
+          editable={active && !closed && !switching}
           multiline
           onChangeText={(next) => {
             // Typing wins over a take still finishing, whose last result would overwrite it.
@@ -450,19 +488,23 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           testID="chat-input"
           value={text}
         />
-        <View style={styles.bar}>
-          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} ref={attachButton} /> : null}
+        <View style={styles.settingsBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pills} style={styles.pillsScroll} keyboardShouldPersistTaps="always">
-            {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
-            <SettingsPills
+            {!newAside ? <SettingsPills
               disabled={disabled || session.status === 'starting'}
               modelSheet={modelSheet}
-              onConfigure={(change) => channel.configure(change)}
+              onConfigure={(change) => { if (!newAside) channel.configure(change) }}
               onModelSheetShown={() => input.current?.blur()}
               session={session}
-            />
+            /> : null}
             {session.contextUsage ? <ContextMeter usage={session.contextUsage} /> : null}
           </ScrollView>
+        </View>
+        <View testID="chat-composer-controls" style={styles.bar}>
+          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} ref={attachButton} /> : null}
+          <View style={styles.asideToggle}>
+            {onStartAside && !newAside && !relayTarget ? <Pill compact a11y="Send as aside" label="Send as aside" on={sendAsAside} tone="cyan" disabled={disabled} onPress={() => setSendAsAside((value) => !value)} /> : null}
+          </View>
           {running ? (
             <Pressable
               accessibilityLabel="Stop"
@@ -505,7 +547,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             </Pressable>
           ) : null}
           <Pressable
-            accessibilityLabel={queueing ? 'Queue' : 'Send'}
+            accessibilityLabel={newAside || sendAsAside ? 'Send aside' : queueing ? 'Queue' : 'Send'}
             accessibilityRole="button"
             accessibilityState={{ disabled: !canSend }}
             disabled={!canSend}
@@ -529,9 +571,11 @@ const styles = StyleSheet.create({
   hint: { fontSize: 12.5, lineHeight: 17, paddingHorizontal: 14, paddingTop: 8 },
   field: { fontSize: 15, lineHeight: 20, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4, minHeight: 40, maxHeight: 140 },
   bar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 6, paddingRight: 8, paddingBottom: 8 },
-  pillsScroll: { flex: 1 },
+  settingsBar: { paddingHorizontal: 12, paddingBottom: 6 },
+  asideToggle: { flex: 1, minWidth: 0 },
+  pillsScroll: { flexGrow: 0, minWidth: 0 },
   pills: { alignItems: 'center', gap: 6, paddingRight: 4 },
-  round: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  round: { flexShrink: 0, width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   stop: { borderWidth: 1 },
   stopGlyph: { width: 11, height: 11, borderRadius: 2 },
 })

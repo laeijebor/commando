@@ -1,3 +1,4 @@
+import { parseAsideKey } from '@commando/agent-chat'
 import type { AgentInteractionAnswer } from '@commando/protocol'
 import { routeParams } from '../layout/routeParams'
 
@@ -40,7 +41,7 @@ export function parseNotificationData(raw: unknown): PushNotificationData | null
   if (typeof raw !== 'object' || raw === null) return null
   const record = raw as Record<string, unknown>
   const paneId = optionalString(record.paneId)
-  if (!paneId) return null
+  if (!paneId || parseAsideKey(paneId)) return null
   const kind = record.kind
   const requestKind = record.requestKind
   return {
@@ -73,7 +74,7 @@ export function notificationRoute(
   hostId: string | undefined,
   actionIdentifier?: string,
 ): NotificationRoute | null {
-  if (!hostId) return null
+  if (!hostId || parseAsideKey(data.paneId)) return null
   if (!data.paneId) return { pathname: '/(host)/[hostId]/sessions', params: { hostId } }
   const wantsPane = actionIdentifier === PUSH_ACTIONS.openPane
   if (!wantsPane && data.kind === 'needs_input' && data.interactionId) {

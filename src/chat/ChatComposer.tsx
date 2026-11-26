@@ -1,7 +1,9 @@
 import { useHost } from '../HostContext'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Rabbit } from 'lucide-react'
 import {
+  asideReportText,
+  type AsideReport,
   CHAT_IMAGE_TYPES,
   CHAT_VIDEO_TYPES,
   MAX_CHAT_VIDEO_BYTES,
@@ -55,7 +57,8 @@ import { useNow } from './Subagents'
 import { shortPath, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
-import { loadDraft, saveDraft } from './draftStore'
+import { CHAT_SEND_REFUSAL_MS, loadDraft, saveDraft } from './draftStore'
+import type { AsideReportDraft } from './AsideReport'
 
 /** What the composer asks of the app for `@`, `#` and images. */
 export interface ChatInputServices {
@@ -76,7 +79,7 @@ export interface ChatSendError {
 }
 
 /** How long the app matches a refusal to its send; the composer keeps a sent draft as long. */
-export const CHAT_SEND_REFUSAL_MS = 30_000
+export { CHAT_SEND_REFUSAL_MS } from './draftStore'
 
 type RequestItem = Extract<ChatItem, { kind: 'request' }>
 type TodoItem = Extract<ChatItem, { kind: 'todo_list' }>
@@ -280,7 +283,7 @@ function menuGroups(
   if (trigger.kind === 'slash') {
     const query = trigger.query.toLowerCase()
     const natives = [
-      ...(asides ? [{ name: 'aside', description: "Ask in a side thread with this chat’s context" }] : []),
+      ...(asides ? [{ name: 'aside', description: "Ask in a side thread with this chat’s context" }, ...(!newAside ? [{ name: 'btw', description: 'Quick answer, no tools, nothing saved' }] : [])] : []),
       ...(!newAside && modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
       ...(!newAside && fastModeAvailable(session) ? [{ name: 'fast', description: fastModeOn(session) ? 'Turn fast mode off' : 'Turn fast mode on' }] : []),
       // Muse has no plan mode.
@@ -358,8 +361,24 @@ export function ChatComposer({
   onUploadingChange,
   insert,
   onOpenAside,
+  onQuickAside,
+  quickAside,
   newAside = false,
+  reportSheet,
+  reportDraft,
+  onReportDraftTaken,
+  reportReferences = [],
+  onRemoveReportReference,
+  onReportsSent,
 }: {
+  quickAside?: ReactNode
+  onQuickAside?: (text?: string, images?: ChatImageRef[]) => Promise<boolean>
+  reportSheet?: ReactNode
+  reportDraft?: AsideReportDraft
+  onReportDraftTaken?: () => void
+  reportReferences?: AsideReport[]
+  onRemoveReportReference?: (index: number) => void
+  onReportsSent?: (requestId: string | void, text: string) => void
   onOpenAside?: (text: string, images?: ChatImageRef[]) => Promise<boolean>
   newAside?: boolean
   session: ChatSessionInfo
@@ -439,6 +458,16 @@ export function ChatComposer({
     return () => window.clearTimeout(timeout)
   }, [session.sessionId, draft, images])
   const textarea = useRef<HTMLTextAreaElement>(null)
+  const takenReportDraft = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (!reportDraft || takenReportDraft.current === reportDraft.id) return
+    takenReportDraft.current = reportDraft.id
+    const text = draft === reportDraft.savedText ? draft : [draft, reportDraft.text].filter(Boolean).join('\n\n')
+    storedDraft.text = text
+    saveDraft(hostDraftId, text, storedDraft.images)
+    setDraft(text)
+    onReportDraftTaken?.()
+  }, [reportDraft, onReportDraftTaken])
   const fileInput = useRef<HTMLInputElement>(null)
   const pendingCaret = useRef<number | null>(null)
   const menuId = useId()
@@ -533,8 +562,8 @@ export function ChatComposer({
     if (!trigger) return
     switch (item.type) {
       case 'native':
-        if (item.name === 'aside') {
-          applyText(moveCommandToStart(draft, trigger, 'aside'))
+        if (item.name === 'aside' || item.name === 'btw') {
+          applyText(moveCommandToStart(draft, trigger, item.name))
           return
         }
         applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, ''))
@@ -779,27 +808,41 @@ export function ChatComposer({
     } finally { setOpeningAside(false) }
   }
   const submit = (steer = false) => {
+    if (onQuickAside && /^\/btw(?:\s|$)/.test(draft.trim())) {
+      if (!hostConnected || openingAside || attachments.some((attachment) => !attachment.ref)) return
+      setOpeningAside(true)
+      const images = attachments.flatMap((attachment) => attachment.ref ? [attachment.ref] : [])
+      void onQuickAside(draft.trim().replace(/^\/btw(?:\s+|$)/, ''), images.length ? images : undefined).then((ok) => { if (ok) clearDraft() }).finally(() => setOpeningAside(false))
+      return
+    }
     if (onOpenAside && (newAside || /^\/aside(?:\s|$)/.test(draft.trim()))) { void submitAside(); return }
 
     if (!canSend) return
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
-    const text = draft.trim()
+    const typedText = draft.trim()
+    const text = [...reportReferences.map(asideReportText), typedText].filter(Boolean).join('\n\n')
     const reply = replyingTo.current
     replyingTo.current = null
-    const answersAsk = reply && !relayTarget && text.startsWith(reply.prefix) ? { answersAsk: reply.key } : {}
+    const answersAsk = reply && !relayTarget && typedText.startsWith(reply.prefix) ? { answersAsk: reply.key } : {}
     const options: ChatSendOptions = relayTarget
       ? { relayTo: relayTarget }
       : { ...(running && turnFlow ? { delivery: steer ? 'steer' as const : 'queue' as const } : {}), ...answersAsk }
     const requestId = Object.keys(options).length ? onSend(text, images, options) : images.length ? onSend(text, images) : onSend(text)
     if (requestId) {
-      sentDrafts.current.set(requestId, { text, images })
+      sentDrafts.current.set(requestId, { text: reportReferences.length && onReportsSent ? '' : text, images })
       window.setTimeout(() => sentDrafts.current.delete(requestId), CHAT_SEND_REFUSAL_MS)
     }
     clearDraft()
+    if (reportReferences.length) onReportsSent?.(requestId, text)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
+    if (onQuickAside && event.key === '/' && !event.shiftKey && !event.altKey && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey)) {
+      event.preventDefault()
+      void onQuickAside()
+      return
+    }
     if (onOpenAside && event.key === 'Enter' && event.shiftKey && !event.altKey && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey)) {
       event.preventDefault()
       void submitAside()
@@ -820,7 +863,7 @@ export function ChatComposer({
         return
       }
       // A fully typed command sends on Enter, as in the TUI; Tab still completes it.
-      const exact = (active?.type === 'command' && active.runsHere && active.command.name === trigger.query) || (active?.type === 'native' && active.name === 'aside' && trigger.query === 'aside')
+      const exact = (active?.type === 'command' && active.runsHere && active.command.name === trigger.query) || (active?.type === 'native' && (active.name === 'aside' || active.name === 'btw') && trigger.query === active.name)
       if (active && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !exact))) {
         event.preventDefault()
         pick(active)
@@ -898,7 +941,10 @@ export function ChatComposer({
   const planUsage = usePlanUsage(session)
   return (
     <div className="px-4 pb-3 pt-2">
+      {quickAside}
+      {reportSheet}
       <div
+        hidden={Boolean(reportSheet)}
         className={cn(
           'mx-auto w-full max-w-[var(--chat-content-max-width)] overflow-hidden rounded-xl border border-input bg-card shadow-sm focus-within:border-primary/60',
           dragging && 'border-primary ring-2 ring-primary/30',
@@ -908,6 +954,11 @@ export function ChatComposer({
         onDrop={onDrop}
         data-testid="chat-composer"
       >
+        {reportReferences.length ? <div className="chat-aside-references" aria-label="Aside references">
+          {reportReferences.map((report, index) => <span key={`${report.asideId}-${index}`} className="chat-aside-reference">
+            From aside {report.title}<button type="button" aria-label={`Remove reference ${report.title}`} onClick={() => onRemoveReportReference?.(index)}>✕</button>
+          </span>)}
+        </div> : null}
         {relayTarget && onClearRelay ? <RelayChip provider={provider} label={relayTarget.label} onClear={onClearRelay} /> : null}
         {planFollowUp ? <PlanReadyBanner provider={provider} session={session} title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
         {queue.length && onQueue ? (

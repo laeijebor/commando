@@ -39,7 +39,7 @@ import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
 import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { commanderAllowedTools } from '../commander-tools.js'
-import { asideEnv, asideInstructions } from './aside-brief.js'
+import { asideEnv, asideInstructions, QUICK_ANSWER_INTERACTION_DENIED } from './aside-brief.js'
 import { AsideTimeline, countTimelineMessages } from './aside-timeline.js'
 import { DEEPSEEK_MODELS, DEEPSEEK_RUNTIME_ENV } from './deepseek.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
@@ -349,6 +349,7 @@ export class AgentSession implements ChatProviderSession {
     endSwitch: (notice) => this.endSwitch(notice),
   }
   private lastAssistant?: string
+  private lastAssistantTurn?: string
   private finishedAssistant?: string
   private readonly mapper: ClaudeItemMapper
   private readonly asideTimeline: AsideTimeline
@@ -452,8 +453,13 @@ export class AgentSession implements ChatProviderSession {
     return this.spec.paneId
   }
 
-  forkPoint(): ChatForkPoint | null {
-    return this.info.sessionId && this.finishedAssistant ? { sessionId: this.info.sessionId, at: this.finishedAssistant } : null
+  forkPoint(itemId?: string): ChatForkPoint | null {
+    const items = this.mapper.list()
+    const item = itemId ? items.find((entry) => entry.id === itemId) : undefined
+    const at = itemId ? item && this.mapper.forkPoints.get(item.turnId) : this.finishedAssistant
+    const turn = item?.turnId ?? [...this.mapper.forkPoints].reverse().find(([, uuid]) => uuid === at)?.[0]
+    const anchor = itemId ?? items.filter((entry) => entry.turnId === turn && !entry.parentToolUseId).at(-1)?.id
+    return this.info.sessionId && at ? { sessionId: this.info.sessionId, at, ...(anchor ? { itemId: anchor } : {}) } : null
   }
 
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } {
@@ -486,7 +492,7 @@ export class AgentSession implements ChatProviderSession {
       try {
         const history = await this.store.messages(historySession, this.spec.cwd)
         if (this.spec.resume) {
-          const last = [...history].reverse().find((entry) => entry.type === 'assistant' && entry.uuid && (entry.message as { stop_reason?: string })?.stop_reason === 'end_turn')
+          const last = [...history].reverse().find((entry) => entry.type === 'assistant' && !entry.parent_tool_use_id && entry.uuid && (entry.message as { stop_reason?: string })?.stop_reason === 'end_turn')
           this.finishedAssistant = last?.uuid
         }
         const visible = this.asideTimeline.cut(history, (entry) => entry.uuid,
@@ -533,17 +539,21 @@ export class AgentSession implements ChatProviderSession {
         thinking: { type: 'adaptive', display: 'summarized' },
         // Read-only blocks edit tools and drops bypass/acceptEdits to default; Bash still follows the user's permission rules and prompts.
         permissionMode: this.spec.readOnly && this.spec.permissionMode !== 'plan' ? 'default' : this.spec.permissionMode,
-        ...(this.spec.readOnly ? { disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] } : {}),
+        ...(this.spec.readOnly || this.spec.aside?.ephemeral ? { disallowedTools: [
+          ...(this.spec.readOnly ? ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] : []),
+          ...(this.spec.aside?.ephemeral ? ['Bash', 'Agent', 'Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'] : []),
+        ] } : {}),
         // Commander may run its own CLI without asking; nothing else is pre-approved.
-        ...(commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
+        ...(!this.spec.aside?.ephemeral && commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
         ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
         // Load the same settings, skills, CLAUDE.md and hooks the TUI would.
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', ...(this.spec.aside ? { append: asideInstructions(this.spec.aside.mode) } : {}) },
+        systemPrompt: { type: 'preset', preset: 'claude_code', ...(this.spec.aside ? { append: asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral) } : {}) },
         includePartialMessages: true,
         // Subagents' own text and thinking, so a subagent's transcript can be shown live.
         forwardSubagentText: true,
         canUseTool,
+        ...(this.spec.aside?.ephemeral ? { onElicitation: async () => ({ action: 'decline' as const }) } : {}),
       },
     })
     this.setStatus('idle')
@@ -837,7 +847,8 @@ export class AgentSession implements ChatProviderSession {
       this.emitItems(this.mapper.notice('error', `This session has ended, so your message wasn't sent. Start commando-agent again in this pane to continue it.${text ? ` Your message was: "${quote(text)}"` : ''}`))
       return
     }
-    this.emitItems(this.mapper.startTurn(text, images, { ...(steer ? { steered: true } : {}), ...(relayTo ? { relayTo } : {}) }))
+    const uuid = randomUUID()
+    this.emitItems(this.mapper.startTurn(text, images, { ...(steer ? { steered: true } : {}), ...(relayTo ? { relayTo } : {}) }, uuid))
     if (steer) this.steersPending += 1
     this.turnOpen = true
     this.unseenDelivery = true
@@ -847,7 +858,7 @@ export class AgentSession implements ChatProviderSession {
     const prompt = relayTo ? relayPrompt(text, relayTo) : text
     const withNotes = [prompt, ...notes].filter(Boolean).join('\n\n')
     this.input.push({
-      type: 'user',
+      type: 'user', uuid,
       // Images first: a /command in a text block after them still expands.
       message: { role: 'user', content: blocks.length ? [...blocks, ...(withNotes ? [{ type: 'text', text: withNotes }] : [])] : withNotes },
       parent_tool_use_id: null,
@@ -1233,6 +1244,7 @@ export class AgentSession implements ChatProviderSession {
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
+    if (this.spec.aside?.ephemeral) return Promise.resolve({ behavior: 'deny', message: QUICK_ANSWER_INTERACTION_DENIED })
     const requestId = options.requestId || options.toolUseID
     if (toolName === 'ExitPlanMode' && !options.agentID) {
       // The plan becomes a card with Implement and Refine; without a plan, the generic approval below.
@@ -1297,7 +1309,9 @@ export class AgentSession implements ChatProviderSession {
   private handleMessage(message: SDKMessage): void {
     if ('session_id' in message && typeof message.session_id === 'string' && message.session_id && message.session_id !== this.info.sessionId) {
       this.finishedAssistant = undefined
+      if (this.info.sessionId) this.mapper.forkPoints.clear()
       this.lastAssistant = undefined
+      this.lastAssistantTurn = undefined
       this.info = { ...this.info, sessionId: message.session_id }
       this.emitSession()
     }
@@ -1312,6 +1326,9 @@ export class AgentSession implements ChatProviderSession {
       return
     }
     if (message.type === 'conversation_reset') {
+      this.finishedAssistant = undefined
+      this.lastAssistant = undefined
+      this.lastAssistantTurn = undefined
       // /clear starts a new conversation, which gets its own title and an empty timeline.
       if (this.info.title) {
         const { title: _previous, ...rest } = this.info
@@ -1335,7 +1352,9 @@ export class AgentSession implements ChatProviderSession {
     if (message.type === 'assistant' && !message.parent_tool_use_id) this.lastAssistant = message.uuid
     if (message.type === 'result') {
       if (message.subtype === 'success' && this.lastAssistant && !this.interruptRequested && !ABORTED_REASONS.has(message.terminal_reason ?? '')) this.finishedAssistant = this.lastAssistant
+      if (this.finishedAssistant && this.lastAssistant === this.finishedAssistant) this.mapper.forkPoints.set(this.lastAssistantTurn ?? this.mapper.currentTurnId, this.finishedAssistant)
       this.lastAssistant = undefined
+      this.lastAssistantTurn = undefined
       const interrupted = this.interruptRequested
       this.interruptRequested = false
       this.reportFastMode(message.fast_mode_state, message.fast_mode_disabled_reason)
@@ -1385,7 +1404,9 @@ export class AgentSession implements ChatProviderSession {
       // A turn Claude started itself (a background task finished) holds the queue too.
       this.turnOpen = true
     }
-    this.emitItems(this.mapper.handle(message))
+    const changed = this.mapper.handle(message)
+    if (message.type === 'assistant' && !message.parent_tool_use_id) this.lastAssistantTurn = changed.find((item) => !item.parentToolUseId)?.turnId ?? this.mapper.currentTurnId
+    this.emitItems(changed)
   }
 
   /** Claude names conversations after a turn or two; pick that up for the pane title. */
