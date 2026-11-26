@@ -41,6 +41,9 @@ export function markdownImageSources(text: string): string[] {
   return [...new Set(sources)]
 }
 
+/** HTML mock-ups and canvas manifests: embeds (chat-reply-embeds.ts) own them, so they are never read as images. */
+export const isEmbedAddress = (path: string): boolean => /\.(?:html?|json)$/i.test(path)
+
 /** The file an image address names on this machine, or null for a web address or anything else. */
 export function localImagePath(src: string, cwd: string, home = homedir()): string | null {
   if (/^file:\/\//i.test(src)) {
@@ -85,8 +88,7 @@ export class ChatReplyImages {
     const images: ChatReplyImage[] = []
     for (const src of markdownImageSources(item.text).slice(0, MAX_IMAGES_PER_REPLY)) {
       const path = localImagePath(src, cwd, this.home)
-      // HTML mock-ups and canvas manifests are embeds (chat-reply-embeds.ts), never read as images.
-      if (!path || /\.(?:html?|json)$/i.test(path)) continue
+      if (!path || isEmbedAddress(path)) continue
       const resolved = await this.resolve(path)
       // A relative or ~/ address: the notice says where the daemon looked. A stored
       // image names its file, so the renderer can reveal it or open it as a tile.

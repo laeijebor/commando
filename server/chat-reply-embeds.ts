@@ -5,7 +5,7 @@ import { basename, dirname, join, relative, sep } from 'node:path'
 import { MAX_REPLY_EMBEDS, type ChatItem, type ChatReplyEmbed } from '../shared/agent-chat.js'
 import { canvasRelativePath, encodeCanvasPath, parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { servableArtifactFolder } from './artifact-folders.js'
-import { localImagePath, markdownImageSources } from './chat-reply-images.js'
+import { isEmbedAddress, localImagePath, markdownImageSources } from './chat-reply-images.js'
 import type { RedlineArtifactRegistry } from './redline-artifacts.js'
 
 /**
@@ -22,8 +22,6 @@ const MAX_FRAMES = 50
 const MAX_REMEMBERED = 500
 const IMAGE_EXTENSION = /\.(?:svg|png|jpe?g|gif|webp|avif|heic|bmp|ico|tiff?|pdf)$/i
 
-/** Addresses the embed resolver owns, so the image store never reads them. */
-export const isEmbedAddress = (path: string): boolean => /\.(?:html?|json)$/i.test(path)
 
 type Resolved = Omit<ChatReplyEmbed, 'src'>
 /** What a resolution depended on: the page or manifest's stamp, and the registration it made. */
