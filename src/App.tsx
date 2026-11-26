@@ -128,6 +128,7 @@ import { SessionTree, type SessionActions } from './SessionTree'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
 import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
 import type { AgentChatRequest } from '../shared/agent-chats'
+import type { IdeFilePosition } from '../shared/ide-position'
 import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
 import { createAgentChatsApi } from './agentChatsApi'
@@ -2266,7 +2267,7 @@ function HostApp() {
   const sessionHistory = useSessionHistory(local ? 'local' : activeHost, snapshot?.sessions, selectedSessionId, selectSession)
 
   /** Opens (attaching if needed) the session's IDE; `file` is shown in it once loaded. */
-  const openSessionIde = async (sessionId: string, options: { paneId?: string; file?: string } = {}) => {
+  const openSessionIde = async (sessionId: string, options: { paneId?: string; file?: string; position?: IdeFilePosition } = {}) => {
     if (!local) return
     setSelectedSessionId(sessionId)
     setArea('ide')
@@ -2284,8 +2285,8 @@ function HostApp() {
       setSessionIdes((current) => current.some((item) => item.id === ide.id)
         ? current.map((item) => item.id === ide.id && item.generation === ide.generation ? { ...item, url: ide.url } : item)
         : [...current, ide])
-      if (options.file && openedIdeFrames.has(ideFrameKey(ide))) await openFileInLoadedIde(sessionId, ide, options.file)
-      else if (options.file) setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: options.file!, revision: 0 } }))
+      if (options.file && openedIdeFrames.has(ideFrameKey(ide))) await openFileInLoadedIde(sessionId, ide, options.file, options.position)
+      else if (options.file) setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: options.file!, position: options.position, revision: 0 } }))
       setOpenedIdeFrames((current) => new Set([...current, ideFrameKey(ide)]))
     } catch (error) {
       setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open IDE' }))
@@ -2296,20 +2297,20 @@ function HostApp() {
   }
 
   /** Opens `file` in the loaded window, reloading it on the file when the daemon cannot target it. */
-  const openFileInLoadedIde = async (sessionId: string, ide: SessionIde, file: string) => {
-    if (await createSessionIdesApi(token, daemonFetch).openFile(sessionId, file) !== 'reload') return
-    setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: file, revision: (current[ideFrameKey(ide)]?.revision ?? 0) + 1 } }))
+  const openFileInLoadedIde = async (sessionId: string, ide: SessionIde, file: string, position?: IdeFilePosition) => {
+    if (await createSessionIdesApi(token, daemonFetch).openFile(sessionId, file, position) !== 'reload') return
+    setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: file, position, revision: (current[ideFrameKey(ide)]?.revision ?? 0) + 1 } }))
   }
 
-  /** From a diff: reuse the loaded IDE window, or start the IDE on this file. */
-  const openFileInSessionIde = (sessionId: string, paneId: string, file: string) => {
+  /** From a diff: reuse the loaded IDE window, or start the IDE on this file (at `position`, when given). */
+  const openFileInSessionIde = (sessionId: string, paneId: string, file: string, position?: IdeFilePosition) => {
     const ide = sessionIdes.find((item) => item.sessionIds.includes(sessionId))
-    if (ide?.state !== 'ready' || !openedIdeFrames.has(ideFrameKey(ide))) { void openSessionIde(sessionId, { paneId, file }); return }
+    if (ide?.state !== 'ready' || !openedIdeFrames.has(ideFrameKey(ide))) { void openSessionIde(sessionId, { paneId, file, position }); return }
     setSelectedSessionId(sessionId)
     setArea('ide')
     setLeftPanelOpen(false)
     setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
-    openFileInLoadedIde(sessionId, ide, file).catch((error: unknown) => {
+    openFileInLoadedIde(sessionId, ide, file, position).catch((error: unknown) => {
       setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open file in IDE' }))
     })
   }
@@ -4100,7 +4101,7 @@ function HostApp() {
   const renderBuiltinPanelTab = (tab: BuiltinPanelTab, visible: boolean, data: PanePanelData) => {
     const pane = paneMap.get(tab.anchorPaneId)
     if (!pane) return null
-    const onOpenInIde = local ? (file: string) => openFileInSessionIde(pane.sessionId, pane.id, file) : undefined
+    const onOpenInIde = local ? (file: string, position?: IdeFilePosition) => openFileInSessionIde(pane.sessionId, pane.id, file, position) : undefined
     if (tab.key === 'terminal') {
       const shell = snapshot?.shells?.find((candidate) => candidate.anchorPaneId === pane.id)?.pane
       return <PaneShellTab key={pane.targetId} shell={shell} visible={visible} connected={connected}

@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, onTestFinished, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient, GitDiffSummary, GitFileContents } from './gitApi'
+import type { CodeNavResult } from '../shared/code-nav'
 import { pierreRenders } from './pierreReactMock'
 import { applyDiffFiltersChange, DEFAULT_DIFF_FILTERS, type DiffFiltersChange } from '../shared/diff-filters'
 import { currentDiffFilters, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
@@ -43,6 +44,8 @@ function fakeApi(nextSummary: GitDiffSummary = summary): GitDiffApiClient {
     fileDiff: vi.fn(async (_paneId: string, file: string) => ({ file, diff: 'DIFF' })),
     fileContents: vi.fn(async (_paneId: string, file: string) => ({ file, old: null, new: null })),
     blame: vi.fn(async (_paneId: string, file: string, rev: string) => ({ file, rev, commits: {}, lines: [] })),
+    navigate: vi.fn().mockResolvedValue({ kind: "definition", source: "text", rev: "worktree", locations: [], truncated: false }),
+    fileAt: vi.fn().mockResolvedValue({ file: "", rev: "worktree", contents: null, unavailable: "missing" }),
     search: vi.fn(async (_paneId: string, query: string) => ({
       query,
       matches: [],
@@ -1000,5 +1003,213 @@ describe('GitDiffView rich engine', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Blame unavailable: no such path')
     expect(api.blame).toHaveBeenCalledExactlyOnceWith('%1', 'a.ts', 'head-sha')
     expect(screen.getByTestId('pierre-diff')).toBeInTheDocument()
+  })
+})
+
+describe('GitDiffView code navigation', () => {
+  beforeEach(() => { window.localStorage.removeItem('commando-diff-engine') })
+
+  const navSummary: GitDiffSummary = {
+    ...summary,
+    files: [
+      { path: 'a.ts', status: 'M', additions: 1, deletions: 1, binary: false },
+      { path: 'b.ts', status: 'M', additions: 2, deletions: 0, binary: false },
+    ],
+  }
+  const sides: Record<string, GitFileContents> = {
+    'a.ts': {
+      file: 'a.ts',
+      old: { path: 'a.ts', contents: 'const needle = 1\nkeep\n', rev: 'base-sha' },
+      new: { path: 'a.ts', contents: 'const needle = 2\nkeep\nuse(needle)\n', rev: 'worktree' },
+    },
+    'b.ts': {
+      file: 'b.ts',
+      old: { path: 'b.ts', contents: 'one\n', rev: 'base-sha' },
+      new: { path: 'b.ts', contents: 'one\ntwo\nexport function needle() {}\n', rev: 'worktree' },
+    },
+  }
+  const definition: CodeNavResult = {
+    kind: 'definition',
+    source: 'language-server',
+    rev: 'worktree',
+    locations: [{ file: 'b.ts', line: 3, character: 16, preview: 'export function needle() {}' }],
+    truncated: false,
+  }
+
+  function navApi(result: CodeNavResult = definition) {
+    const api = fakeApi(navSummary)
+    vi.mocked(api.fileContents).mockImplementation(async (_paneId, file) => sides[file])
+    vi.mocked(api.navigate).mockResolvedValue(result)
+    vi.mocked(api.fileAt).mockImplementation(async (_paneId, file, rev) => ({ file, rev, contents: sides[file]?.new?.contents ?? null }))
+    return api
+  }
+
+  function clickToken(side: 'deletions' | 'additions', lineNumber: number, start: number, text: string, modifiers: MouseEventInit = { metaKey: true }) {
+    act(() => {
+      pierreRenders.at(-1)!.options!.onTokenClick!({
+        type: 'token', side, lineNumber, lineCharStart: start, lineCharEnd: start + text.length, tokenText: text,
+        tokenElement: document.createElement('span'),
+      }, new MouseEvent('click', modifiers))
+    })
+  }
+
+  async function renderNav(api = navApi(), onOpenInIde?: (path: string, position?: { line: number; column?: number }) => void) {
+    render(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} onOpenInIde={onOpenInIde} />)
+    await screen.findByTestId('pierre-diff')
+    return api
+  }
+
+  it.each([
+    ['additions', 'worktree', { metaKey: true }],
+    ['deletions', 'base-sha', { ctrlKey: true }],
+  ] as const)('Cmd/Ctrl-click on the %s side asks for the definition in that side’s file', async (side, rev, modifiers) => {
+    const api = await renderNav()
+    clickToken(side, 1, 5, ' needle', modifiers)
+    expect(await screen.findByRole('region', { name: 'Navigation for needle' })).toBeInTheDocument()
+    expect(api.navigate).toHaveBeenCalledExactlyOnceWith('%1', { kind: 'definition', file: 'a.ts', rev, line: 1, character: 6, symbol: 'needle' })
+  })
+
+  it('leaves plain clicks and punctuation to text selection', async () => {
+    const api = await renderNav()
+    clickToken('additions', 1, 6, 'needle', {})
+    clickToken('additions', 1, 13, ' = ')
+    expect(api.navigate).not.toHaveBeenCalled()
+    expect(screen.queryByRole('region', { name: /Navigation for/ })).not.toBeInTheDocument()
+  })
+
+  it('shows a location in the diff, selecting its file and revealing the line on the new side', async () => {
+    const api = await renderNav()
+    clickToken('additions', 3, 4, 'needle')
+    expect(await screen.findByRole('button', { name: /Show in diff/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Show in diff/ }))
+    await waitFor(() => expect(api.fileContents).toHaveBeenLastCalledWith('%1', 'b.ts', { target: undefined }))
+    await waitFor(() => expect(screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')).toHaveTextContent('export function needle() {}'))
+    expect(screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')!.closest('code')).toHaveAttribute('data-additions')
+    expect(screen.getByRole('treeitem', { name: /b\.ts/ }).querySelector('.git-diff-file')).toHaveClass('selected')
+    // The peek stays open on the new file.
+    expect(screen.getByRole('region', { name: 'Navigation for needle' })).toBeInTheDocument()
+  })
+
+  it('offers Show in diff only for changed files at the rev the diff shows', async () => {
+    await renderNav(navApi({ ...definition, locations: [{ file: 'lib/other.ts', line: 2, character: 0, preview: 'needle' }] }))
+    clickToken('additions', 3, 4, 'needle')
+    expect(await screen.findByText('lib/other.ts:2')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Show in diff/ })).not.toBeInTheDocument()
+    cleanup()
+    await renderNav(navApi({ ...definition, rev: 'f'.repeat(40) }))
+    clickToken('additions', 3, 4, 'needle')
+    expect(await screen.findByText('b.ts:3')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Show in diff/ })).not.toBeInTheDocument()
+  })
+
+  it('opens the selected location in the IDE at its line and column', async () => {
+    const onOpenInIde = vi.fn()
+    await renderNav(navApi(), onOpenInIde)
+    clickToken('additions', 3, 4, 'needle')
+    const peek = await screen.findByRole('region', { name: 'Navigation for needle' })
+    fireEvent.click(await within(peek).findByRole('button', { name: /Open in IDE/ }))
+    expect(onOpenInIde).toHaveBeenLastCalledWith('/repo/b.ts', { line: 3, column: 17 })
+    // The file's own Open in IDE button still opens it without a line.
+    fireEvent.click(screen.getByRole('button', { name: 'Open a.ts in IDE' }))
+    expect(onOpenInIde).toHaveBeenLastCalledWith('/repo/a.ts')
+  })
+
+  it('ignores the answer to an earlier click that lands after a later one', async () => {
+    const api = navApi()
+    let finishFirst!: (result: CodeNavResult) => void
+    vi.mocked(api.navigate)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve }))
+      .mockResolvedValueOnce({ ...definition, locations: [{ file: 'a.ts', line: 3, character: 4, preview: 'use(other)' }] })
+    await renderNav(api)
+    clickToken('additions', 1, 6, 'needle')
+    clickToken('additions', 3, 4, 'other')
+    expect(await screen.findByRole('region', { name: 'Navigation for other' })).toBeInTheDocument()
+    expect(await screen.findByText('a.ts:3')).toBeInTheDocument()
+    await act(async () => { finishFirst(definition) })
+    expect(screen.queryByText('b.ts:3')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
+  })
+
+  it('forgets Show in diff when another file is selected before the target renders', async () => {
+    const api = navApi()
+    let finishB!: (contents: GitFileContents) => void
+    await renderNav(api)
+    clickToken('additions', 3, 4, 'needle')
+    vi.mocked(api.fileContents).mockImplementationOnce(() => new Promise((resolve) => { finishB = resolve }))
+    fireEvent.click(await screen.findByRole('button', { name: /Show in diff/ }))
+    fireEvent.click(screen.getByRole('treeitem', { name: /a\.ts/ }).querySelector('.git-diff-file')!)
+    await act(async () => { finishB(sides['b.ts']) })
+    await waitFor(() => expect(screen.getByTestId('pierre-diff')).toHaveTextContent('use(needle)'))
+    fireEvent.click(screen.getByRole('treeitem', { name: /b\.ts/ }).querySelector('.git-diff-file')!)
+    await waitFor(() => expect(screen.getByTestId('pierre-diff')).toHaveTextContent('export function needle() {}'))
+    expect(screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')).toBeNull()
+  })
+
+  it('forgets Show in diff when the target file has no rich view', async () => {
+    const api = navApi()
+    vi.mocked(api.fileContents).mockImplementation(async (_paneId, file) => (
+      file === 'b.ts' ? { file, old: null, new: null, unavailable: 'binary' } : sides[file]
+    ))
+    const props = { paneId: '%1', panePath: '/repo', api, initialSummary: navSummary }
+    const { rerender } = render(<GitDiffView {...props} />)
+    await screen.findByTestId('pierre-diff')
+    clickToken('additions', 3, 4, 'needle')
+    fireEvent.click(await screen.findByRole('button', { name: /Show in diff/ }))
+    expect(await screen.findByText(/Binary file: showing difftastic/)).toBeInTheDocument()
+    // Later the same file becomes showable: showing the diff again refreshes it with new stats.
+    vi.mocked(api.fileContents).mockImplementation(async (_paneId, file) => sides[file])
+    vi.mocked(api.summary).mockResolvedValue({ ...navSummary, files: [navSummary.files![0], { ...navSummary.files![1], additions: 5 }] })
+    rerender(<GitDiffView {...props} visible={false} />)
+    rerender(<GitDiffView {...props} visible />)
+    await waitFor(() => expect(screen.getByTestId('pierre-diff')).toHaveTextContent('export function needle() {}'))
+    expect(screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')).toBeNull()
+  })
+
+  it('drops the peek when the diff it was opened on changes', async () => {
+    const api = navApi()
+    const comparison = { base: 'base-oid', head: 'head-1', baseLabel: 'main', headLabel: 'feature' }
+    const { rerender } = render(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} comparison={comparison} />)
+    await screen.findByTestId('pierre-diff')
+    clickToken('additions', 3, 4, 'needle')
+    await screen.findByRole('region', { name: 'Navigation for needle' })
+    rerender(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} comparison={{ ...comparison, head: 'head-2' }} />)
+    expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
+
+    // A new target or another repository drops it too.
+    cleanup()
+    const live = navApi()
+    const view = render(<GitDiffView paneId="%1" panePath="/repo" api={live} initialSummary={navSummary} />)
+    await screen.findByTestId('pierre-diff')
+    clickToken('additions', 3, 4, 'needle')
+    await screen.findByRole('region', { name: 'Navigation for needle' })
+    const target = screen.getByRole('combobox', { name: 'Diff target branch' })
+    fireEvent.change(target, { target: { value: 'origin/main' } })
+    fireEvent.blur(target)
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument())
+    clickToken('additions', 3, 4, 'needle')
+    await screen.findByRole('region', { name: 'Navigation for needle' })
+    vi.mocked(live.summary).mockResolvedValue({ ...navSummary, root: '/other-repo' })
+    view.rerender(<GitDiffView paneId="%1" panePath="/other-repo" api={live} initialSummary={{ ...navSummary, root: '/other-repo' }} />)
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument())
+  })
+
+  it('closes on Esc and unmounts with the rich view while hidden', async () => {
+    const api = navApi()
+    const { rerender } = render(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} />)
+    await screen.findByTestId('pierre-diff')
+    clickToken('additions', 3, 4, 'needle')
+    const peek = await screen.findByRole('region', { name: 'Navigation for needle' })
+    await waitFor(() => expect(peek).toContainElement(document.activeElement as HTMLElement))
+    rerender(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} visible={false} />)
+    expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
+    rerender(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} visible />)
+    fireEvent.keyDown(await screen.findByRole('region', { name: 'Navigation for needle' }), { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
+    // Esc with focus back on the page closes it too.
+    clickToken('additions', 3, 4, 'needle')
+    await screen.findByRole('region', { name: 'Navigation for needle' })
+    act(() => { (document.activeElement as HTMLElement | null)?.blur() })
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
   })
 })

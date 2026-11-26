@@ -31,12 +31,14 @@ import {
   type ReactNode,
 } from 'react'
 import { generatedMatcher, isTestPath, repoGeneratedPatterns } from '../shared/diff-filters'
+import type { IdeFilePosition } from '../shared/ide-position'
 import { parseAnsi } from './ansi'
 import { updateDiffFilters, useDiffFilters } from './diffFilters'
 import { AnsiText, findTextMatches } from './AnsiText'
 export { AnsiText } from './AnsiText'
+import { CodeNavPeek, type CodeNavOrigin } from './CodeNavPeek'
 import { useGitBlame } from './gitBlame'
-import { PierreDiffView, PierreWorkerPool } from './PierreDiffView'
+import { PierreDiffView, PierreWorkerPool, type PierreRevealRequest, type PierreTokenClick } from './PierreDiffView'
 import type {
   DiffDisplay,
   DiffEngine,
@@ -55,8 +57,8 @@ type Props = {
   comparison?: GitDiffComparison
   visible?: boolean
   errorHint?: ReactNode
-  /** Opens an absolute file path in the session's IDE; omitted where there is none. */
-  onOpenInIde?: (path: string) => void
+  /** Opens an absolute file path in the session's IDE, optionally at a line; omitted where there is none. */
+  onOpenInIde?: (path: string, position?: IdeFilePosition) => void
 }
 
 export type GitDiffComparison = {
@@ -83,6 +85,12 @@ const MIN_DIFF_OUTPUT_WIDTH = 320
 /** 'rich' renders both file versions client-side with @pierre/diffs; the others are daemon-rendered ANSI. */
 type ViewEngine = DiffEngine | 'rich'
 type RichResult = { key: string; contents: GitFileContents }
+/**
+ * An open navigation peek, with the revs the diff showed when the symbol was clicked and the
+ * diff it was opened on (`context`): another repo, target or comparison makes it meaningless.
+ */
+type CodeNav = { id: number; context: string; origin: CodeNavOrigin; revs: { old?: string; new?: string } }
+type DiffReveal = PierreRevealRequest & { file: string; context: string }
 type FileView = 'tree' | 'list'
 type SearchScope = 'file' | 'all'
 
@@ -648,6 +656,61 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   }, [currentDiffMatch, diffMatches.length, showingPierre])
 
   const blame = useGitBlame(api, paneId, showingPierre ? richContents : null, engine === 'rich' && blameOn)
+
+  // Cmd/Ctrl-click in the rich view peeks at the symbol's definition, references and callers.
+  const [storedCodeNav, setCodeNav] = useState<CodeNav | null>(null)
+  const [storedDiffReveal, setDiffReveal] = useState<DiffReveal | null>(null)
+  const navCounter = useRef(0)
+  const navContext = JSON.stringify([paneId, panePath, summary?.root, selectedTarget, comparison?.base, comparison?.head])
+  // Ignored at once on a context change (so nothing queries or opens in the new repo), then cleared.
+  const codeNav = storedCodeNav?.context === navContext ? storedCodeNav : null
+  const diffReveal = storedDiffReveal?.context === navContext ? storedDiffReveal : null
+  useEffect(() => {
+    setCodeNav((current) => (current && current.context !== navContext ? null : current))
+    setDiffReveal((current) => (current && current.context !== navContext ? null : current))
+  }, [navContext])
+  const navigateFromToken = (token: PierreTokenClick) => {
+    if (!richContents) return
+    const side = token.side === 'deletions' ? richContents.old : richContents.new
+    if (!side) return
+    const leading = token.text.length - token.text.trimStart().length
+    setCodeNav({
+      id: ++navCounter.current,
+      context: navContext,
+      origin: { file: side.path, rev: side.rev, line: token.lineNumber, character: token.start + leading, symbol: token.text.trim() },
+      // Every file in one diff shares its sides' revs; an added or deleted file only knows one.
+      revs: {
+        old: richContents.old?.rev ?? summary?.baseCommit,
+        new: richContents.new?.rev ?? (comparison ? undefined : 'worktree'),
+      },
+    })
+  }
+  const changedFiles = useMemo(() => new Map(files.map((file) => [file.path, file])), [files])
+  const changedPaths = useMemo(() => new Set(changedFiles.keys()), [changedFiles])
+  const codeNavRevs = codeNav?.revs
+  const diffSideFor = useCallback((path: string, rev: string): 'deletions' | 'additions' | null => {
+    const file = changedFiles.get(path)
+    if (!file || !codeNavRevs) return null
+    if (rev === codeNavRevs.new && file.status[0] !== 'D') return 'additions'
+    if (rev === codeNavRevs.old && file.status[0] !== 'A' && file.status[0] !== 'U') return 'deletions'
+    return null
+  }, [changedFiles, codeNavRevs])
+  const showInDiff = (path: string, side: 'deletions' | 'additions', line: number) => {
+    setSelectedFile(path)
+    setDiffReveal({ id: ++navCounter.current, context: navContext, file: path, side, line })
+  }
+  const onRevealed = useCallback((id: number) => setDiffReveal((current) => (current?.id === id ? null : current)), [])
+  // A reveal waits for its file's rows. It is dropped once it can't happen: another file is selected,
+  // the engine changes, or the file's contents arrive without a rich view (difftastic fallback,
+  // no content changes), so it never scrolls a file that is selected again later.
+  const revealSettled = diffReveal !== null && (
+    selectedFile !== diffReveal.file || engine !== 'rich' ||
+    (richContents?.file === diffReveal.file && !richLoading && !showingPierre)
+  )
+  useEffect(() => { if (revealSettled) setDiffReveal(null) }, [revealSettled])
+  const openNavInIde = onOpenInIde && summary?.root
+    ? (path: string, line: number, column: number) => onOpenInIde(`${summary.root}/${path}`, { line, column })
+    : undefined
 
   const chooseEngine = (next: ViewEngine) => {
     setEngine(next)
@@ -1282,6 +1345,9 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                       activeMatch={currentDiffMatch}
                       onMatchCountChange={setRichMatchCount}
                       blame={blameOn ? blame : null}
+                      onNavigate={navigateFromToken}
+                      reveal={diffReveal?.file === richContents.file ? diffReveal : null}
+                      onRevealed={onRevealed}
                       onRendered={restoreRichScrollAfterRender}
                       // Coming back into view returns to where the reader was, not the current match.
                       skipInitialReveal={pendingRichScroll.current !== null}
@@ -1290,6 +1356,22 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                 </PierreWorkerPool>
               ) : null) : ansiOutput}
             </div>
+            {/* Inside the rich subtree like the diff: hidden, it unmounts and frees its Pierre file. */}
+            {engine === 'rich' && visible && codeNav ? (
+              <PierreWorkerPool>
+                <CodeNavPeek
+                  key={codeNav.id}
+                  paneId={paneId}
+                  api={api}
+                  origin={codeNav.origin}
+                  changedFiles={changedPaths}
+                  diffSide={diffSideFor}
+                  onShowInDiff={showInDiff}
+                  onOpenInIde={openNavInIde}
+                  onClose={() => setCodeNav(null)}
+                />
+              </PierreWorkerPool>
+            ) : null}
           </div>
         </div>
       </section>

@@ -117,6 +117,8 @@ import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion, typ
 import { sessionRepo } from '../shared/session-repositories.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
+import { CodeNavService } from './code-nav.js'
+import { TypeScriptNavProvider } from './code-nav-tsserver.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { SessionCreations } from './session-creations.js'
@@ -1994,10 +1996,16 @@ async function main(): Promise<void> {
     isAuxiliary: (sessionId) => auxiliarySessionIds(snapshot.sessions, snapshot.panes).has(sessionId),
     archive: (sessionId) => sessionManagement.archiveSession(sessionId),
   })
+  const gitDiffInspector = new GitDiffInspector(githubOffReason
+    ? (file, args, options) => file === 'gh' ? Promise.reject(new Error(githubOffReason)) : defaultGitProcessExecutor(file, args, options)
+    : defaultGitProcessExecutor, process.env, Date.now, undefined, prs.githubGate)
+  // Language-server providers (tsserver, ...) are appended here; without one, navigation uses git grep.
+  // Precise answers for TypeScript/JavaScript: a tsserver per worktree, started on the first
+  // lookup, stopped after 10 idle minutes, at most two alive (~0.8 GB each on this repo).
+  const codeNav = new CodeNavService(gitDiffInspector, [new TypeScriptNavProvider()])
   const gitDiffApi = new GitDiffApi({
-    inspector: new GitDiffInspector(githubOffReason
-      ? (file, args, options) => file === 'gh' ? Promise.reject(new Error(githubOffReason)) : defaultGitProcessExecutor(file, args, options)
-      : defaultGitProcessExecutor, process.env, Date.now, undefined, prs.githubGate),
+    inspector: gitDiffInspector,
+    codeNav,
     panePath: (paneId) => paneForId(paneId)?.path,
     repoInfo: (directory) => gitWorktrees.probe(directory),
     panePullRequestEvidence: async (paneId) => {
@@ -3621,6 +3629,7 @@ async function main(): Promise<void> {
     canvasWatch.close()
     webTileRelay.close()
     chromiumEngine.dispose()
+    void codeNav.dispose().catch((error: unknown) => console.error('[commando] Code navigation cleanup failed', error))
     void sessionIdes.close().catch((error: unknown) => console.error('[commando] IDE cleanup failed', error))
     sessionIdeApi.close()
     void tmux.releaseAllPaneResizes().finally(() => {

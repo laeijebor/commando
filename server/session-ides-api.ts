@@ -1,6 +1,7 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
+import { parseIdeFilePosition } from '../shared/ide-position.js'
 import type { TmuxPane } from '../shared/protocol.js'
 import { IdeWindowAmbiguousError, SessionIdeService } from './session-ides.js'
 
@@ -123,8 +124,13 @@ export class SessionIdeApi {
         const body = await readObject(request, response)
         if (!body) return true
         if (typeof body.path !== 'string' || !body.path) { json(response, 400, { error: 'path is required' }); return true }
+        const position = parseIdeFilePosition(body.line, body.column)
+        if ((body.line !== undefined && !position) || (body.column !== undefined && position?.column === undefined)) {
+          json(response, 400, { error: 'line and column must be positive integers, and a column needs a line' })
+          return true
+        }
         try {
-          await this.dependencies.service.openFile(sessionId, body.path)
+          await this.dependencies.service.openFile(sessionId, body.path, position)
         } catch (error) {
           if (!(error instanceof IdeWindowAmbiguousError)) throw error
           json(response, 409, { error: error.message, reload: true })
