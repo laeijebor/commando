@@ -644,7 +644,8 @@ describe('resource actions', () => {
   it('always serves a copy without hidden files, refreshed on each Present, and refuses hidden folders', async () => {
     const { mkdir, readdir, realpath } = await import('node:fs/promises')
     const root = await mkdtemp(join(tmpdir(), 'deck-snapshots-'))
-    const { dir, home, cwd, request, register, openResourceTile } = await setup({ resourceTileRoot: root })
+    const onDeckReplaced = vi.fn()
+    const { dir, home, cwd, request, register, openResourceTile } = await setup({ resourceTileRoot: root, onDeckReplaced })
     try {
       const page = '<main class="deck"><section class="slide" id="intro"><h1>Hi</h1></section></main>'
       // A repo root holding a deck, secrets and its git folder.
@@ -663,10 +664,12 @@ describe('resource actions', () => {
       expect((await readdir(snapshot)).sort()).toEqual(['assets', 'deck.html'])
       expect(await readdir(join(snapshot, 'assets'))).toEqual(['chart.svg'])
       expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', expect.objectContaining({ manifest: 'deck.html' }))
-      // Presenting again replaces the copy in place.
+      // Presenting again replaces the copy in place, and says so, so an open tab rebinds and reloads.
+      expect(onDeckReplaced).toHaveBeenLastCalledWith('0123456789abcdef')
       await writeFile(join(repo, 'notes.md'), 'new')
       await request({ path: repo, action: 'slides' })
       expect(register.mock.lastCall![0]).toBe(snapshot)
+      expect(onDeckReplaced).toHaveBeenCalledTimes(2)
       expect((await readdir(snapshot)).sort()).toEqual(['assets', 'deck.html', 'notes.md'])
 
       // A plain deck folder is copied too, so a secret added after Present never becomes reachable.

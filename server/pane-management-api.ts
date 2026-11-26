@@ -39,6 +39,8 @@ type PaneManagementDependencies = {
   resourceHome?: string
   resourceTempRoots?: readonly string[]
   resourceTileRoot?: string
+  /** A presented deck's copy was replaced; an open tab watching it must rebind and reload. */
+  onDeckReplaced?: (artifactId: string) => void
   /** Most a deck snapshot copies before Present falls back to Open. */
   deckSnapshotLimits?: { files: number; bytes: number }
   resourceNow?: () => number
@@ -293,6 +295,8 @@ export class PaneManagementApi {
     const { id } = this.dependencies.artifacts.register(snapshot)
     try {
       const webPaneId = this.dependencies.openResourceTile(paneId, `/redline/artifacts/${id}/`, { kind: 'canvas', artifactId: id, manifest })
+      // A tab already showing this deck is reused as it is, still watching the copy that was just replaced.
+      this.dependencies.onDeckReplaced?.(id)
       return { ok: true, performed: 'slides', webPaneId }
     } catch (error) {
       const status = (error as { status?: number }).status
