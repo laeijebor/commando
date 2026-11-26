@@ -598,6 +598,54 @@ describe('resource actions', () => {
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
+  it('opens HTML for review in a chromium tile and rejects an engine elsewhere', async () => {
+    const { dir, cwd, request, openResourceTile } = await setup()
+    try {
+      const page = join(cwd, '.redline', 'page.html')
+      await mkdir(join(page, '..'))
+      await writeFile(page, '<h1>Review me</h1>')
+      expect(await (await request({ path: page, action: 'tile', engine: 'chromium' })).json()).toMatchObject({ performed: 'tile' })
+      expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/page.html', 'chromium')
+      expect((await request({ path: page, action: 'tile', engine: 'gecko' })).status).toBe(400)
+      expect((await request({ path: page, action: 'open', engine: 'chromium' })).status).toBe(400)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('opens a canvas folder or its manifest as a canvas tile, under the same folder rules', async () => {
+    const openCanvasTile = vi.fn().mockReturnValue('w-87654321')
+    let paneCwd: string | undefined
+    const { dir, home, cwd, request, register, execute } = await setup({ openCanvasTile, panePath: () => paneCwd })
+    try {
+      paneCwd = cwd
+      const canvas = join(cwd, '.canvas', 'settings')
+      await mkdir(canvas, { recursive: true })
+      await writeFile(join(canvas, 'canvas.json'), '{"title":"Settings","frames":[]}')
+      await writeFile(join(canvas, 'board.json'), '{"title":"Board","frames":[]}')
+      expect(await (await request({ path: canvas, action: 'tile' })).json()).toEqual({ ok: true, performed: 'tile', webPaneId: 'w-87654321' })
+      expect(register).toHaveBeenLastCalledWith(await realpath(canvas))
+      expect(openCanvasTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', '0123456789abcdef', 'canvas.json')
+      expect(await (await request({ path: join(canvas, 'board.json'), action: 'tile' })).json()).toMatchObject({ performed: 'tile' })
+      expect(openCanvasTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', '0123456789abcdef', 'board.json')
+      // A folder without a manifest is not a canvas.
+      const plain = join(cwd, '.canvas', 'empty')
+      await mkdir(plain)
+      expect((await request({ path: plain, action: 'tile' })).status).toBe(400)
+      // Outside an artifact folder, or outside the pane cwd: opened in Finder, never registered.
+      const loose = join(cwd, 'boards')
+      await mkdir(loose)
+      await writeFile(join(loose, 'canvas.json'), '{"title":"Loose","frames":[]}')
+      register.mockClear()
+      openCanvasTile.mockClear()
+      expect(await (await request({ path: loose, action: 'tile' })).json()).toEqual({ ok: true, performed: 'open' })
+      expect(execute).toHaveBeenLastCalledWith('/usr/bin/open', [await realpath(loose)], expect.anything())
+      const homeCanvas = join(home, '.canvas', 'other')
+      await mkdir(homeCanvas, { recursive: true })
+      await writeFile(join(homeCanvas, 'canvas.json'), '{"title":"Other","frames":[]}')
+      expect(await (await request({ path: homeCanvas, action: 'tile' })).json()).toEqual({ ok: true, performed: 'open' })
+      expect(register).not.toHaveBeenCalled()
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
   it('rejects Markdown tiles without registering their folder', async () => {
     const { dir, home, request, register, openResourceTile } = await setup()
     try {

@@ -13,7 +13,9 @@ import { openFolderInFinder, revealInFinder, openResource, openResourceInEditor,
 import type { PaneScreenshotRegistry } from './pane-screenshots.js'
 import { runCommand, validateRunCommand } from './run-command.js'
 import { validatePaneMarkInput, type PaneMarkInput } from './pane-marks.js'
-import type { PaneMark } from '../shared/protocol.js'
+import type { PaneMark, WebPaneEngine } from '../shared/protocol.js'
+import { canvasRelativePath } from '../shared/canvas-manifest.js'
+import { broadDirectoryRealpaths, containsPath, daemonStateDirectory, servableArtifactFolder } from './artifact-folders.js'
 
 const API_ROOT = '/api/pane-management'
 const MAX_REQUEST_BYTES = 16 * 1024
@@ -36,7 +38,10 @@ type PaneManagementDependencies = {
   resourceTileRoot?: string
   resourceNow?: () => number
   artifacts?: Pick<RedlineArtifactRegistry, 'register' | 'hasDirectory'>
-  openResourceTile?: (paneId: string, url: string) => string
+  /** Opens a registered artifact URL as a tile; `engine` chromium is for redline review. */
+  openResourceTile?: (paneId: string, url: string, engine?: WebPaneEngine) => string
+  /** Opens a registered canvas folder as a canvas tile, as `scripts/commando-canvas` does. */
+  openCanvasTile?: (paneId: string, url: string, artifactId: string, manifest: string) => string
   screenshots?: PaneScreenshotRegistry
   runCommand?: (command: string, cwd: string) => Promise<void>
   beforePaneDeleted?: (paneId: string) => void | Promise<void>
@@ -91,11 +96,6 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
     throw new HttpError(400, 'Request body must be a JSON object')
   }
   return value as Record<string, unknown>
-}
-
-function containsPath(root: string, path: string): boolean {
-  const fromRoot = relative(root, path)
-  return fromRoot === '' || (!isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`))
 }
 
 type PaneAction = 'resource' | 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'shell' | 'mark' | 'acknowledge-mark' | 'capture'
@@ -157,10 +157,22 @@ export class PaneManagementApi {
     try { await this.resourcePruning } finally { this.resourcePruning = undefined }
   }
 
+  /** Opens a tile, turning a web-pane HTTP error into this API's. */
+  private openTile(open: () => string): string {
+    try {
+      return open()
+    } catch (error) {
+      const status = (error as { status?: number }).status
+      if (status && status >= 400 && status <= 599) throw new HttpError(status, error instanceof Error ? error.message : 'Unable to open resource tile')
+      throw error
+    }
+  }
+
   private async resource(paneId: string, body: Record<string, unknown>) {
     if (!validResourcePath(body.path)) throw new HttpError(400, 'path must be absolute, at most 4096 bytes, and contain no control characters')
     if (!['open', 'reveal', 'editor', 'tile'].includes(body.action as string)) throw new HttpError(400, 'Invalid resource action')
     if (body.line !== undefined && (typeof body.line !== 'number' || !Number.isSafeInteger(body.line) || body.line < 1)) throw new HttpError(400, 'line must be a positive integer')
+    if (body.engine !== undefined && (body.action !== 'tile' || (body.engine !== 'webkit' && body.engine !== 'chromium'))) throw new HttpError(400, 'engine must be webkit or chromium, for a tile')
     const platform = this.dependencies.platform ?? process.platform
     if (platform !== 'darwin') throw new HttpError(501, 'Resource actions are only available on macOS')
     let path: string
@@ -184,33 +196,37 @@ export class PaneManagementApi {
       await openResourceInEditor(path, body.line as number | undefined, execute, platform)
     }
     if (body.action === 'tile') {
+      const home = this.dependencies.resourceHome ?? homedir()
+      const tempRoots = this.dependencies.resourceTempRoots
+      const engine = body.engine as WebPaneEngine | undefined
+      // A canvas folder, or its manifest, opens as the canvas tile `scripts/commando-canvas` opens.
+      if (stats.isDirectory() || /\.json$/i.test(path)) {
+        const canvas = stats.isDirectory() ? path : await realpath(dirname(path))
+        const manifest = stats.isDirectory() ? 'canvas.json' : basename(path)
+        if (canvasRelativePath(manifest) !== manifest) throw new HttpError(400, 'This canvas manifest name is not supported')
+        if (stats.isDirectory() && !await stat(join(canvas, manifest)).then((manifestStats) => manifestStats.isFile(), () => false)) {
+          throw new HttpError(400, 'This folder is not a canvas (it has no canvas.json)')
+        }
+        if (!await servableArtifactFolder(canvas, { cwd: this.dependencies.panePath(paneId), home, tempRoots })) {
+          return { ok: true, performed: await openResource(path, execute, platform) }
+        }
+        if (!this.dependencies.artifacts || !this.dependencies.openCanvasTile) throw new HttpError(503, 'Canvas tiles are unavailable')
+        const { id } = this.dependencies.artifacts.register(canvas)
+        return { ok: true, performed: 'tile', webPaneId: this.openTile(() => this.dependencies.openCanvasTile!(paneId, `/redline/artifacts/${id}/`, id, manifest)) }
+      }
       if (!stats.isFile() || !/\.(?:html?|svg|png|jpe?g|gif|webp|pdf)$/i.test(extname(path))) throw new HttpError(400, 'This resource cannot be opened as a tile')
       const parent = await realpath(dirname(path))
-      const home = await realpath(this.dependencies.resourceHome ?? homedir()).catch(() => undefined)
-      const broadDirectories = [home, home ? dirname(home) : undefined, '/', '/Users', '/Volumes',
-        tmpdir(), '/tmp', '/private/tmp', ...(this.dependencies.resourceTempRoots ?? [])]
-      const broadRealpaths = await Promise.all(broadDirectories.map(async (directory) =>
-        directory ? realpath(directory).catch(() => undefined) : undefined))
+      const broadRealpaths = await broadDirectoryRealpaths(home, tempRoots)
       if (broadRealpaths.includes(parent)) return { ok: true, performed: await openResource(path, execute, platform) }
-      const root = this.dependencies.resourceTileRoot ?? join(this.dependencies.resourceHome ?? homedir(), '.commando', 'resource-tiles')
-      const statePath = join(this.dependencies.resourceHome ?? homedir(), '.commando')
-      const stateDirectory = await realpath(statePath).catch(() => home ? join(home, '.commando') : statePath)
+      const root = this.dependencies.resourceTileRoot ?? join(home, '.commando', 'resource-tiles')
+      const stateDirectory = await daemonStateDirectory(home)
       let directory = parent
       let snapshotDirectory: string | undefined
       const html = /\.html?$/i.test(path)
       if (html) {
-        const artifactFolders = new Set(['.redline', '.canvas', '.pr'])
-        while (!artifactFolders.has(basename(directory))) {
-          const ancestor = dirname(directory)
-          if (ancestor === directory) return { ok: true, performed: await openResource(path, execute, platform) }
-          directory = ancestor
-        }
-        directory = await realpath(directory)
-        const paneCwd = this.dependencies.panePath(paneId)
-        const cwd = paneCwd ? await realpath(paneCwd).catch(() => undefined) : undefined
-        if (!cwd || !containsPath(cwd, directory) || containsPath(stateDirectory, directory) || broadRealpaths.includes(directory)) {
-          return { ok: true, performed: await openResource(path, execute, platform) }
-        }
+        const folder = await servableArtifactFolder(parent, { cwd: this.dependencies.panePath(paneId), home, tempRoots })
+        if (!folder) return { ok: true, performed: await openResource(path, execute, platform) }
+        directory = folder
       }
       if (!this.dependencies.artifacts || !this.dependencies.openResourceTile) throw new HttpError(503, 'Resource tiles are unavailable')
       await this.pruneResourceSnapshots(root)
@@ -235,14 +251,7 @@ export class PaneManagementApi {
       const { id } = this.dependencies.artifacts.register(directory)
       const file = html ? relative(directory, path).split(sep).map(encodeURIComponent).join('/') : encodeURIComponent(basename(path))
       const url = `/redline/artifacts/${id}/${file}`
-      try {
-        const webPaneId = this.dependencies.openResourceTile(paneId, url)
-        return { ok: true, performed: 'tile', webPaneId }
-      } catch (error) {
-        const status = (error as { status?: number }).status
-        if (status && status >= 400 && status <= 599) throw new HttpError(status, error instanceof Error ? error.message : 'Unable to open resource tile')
-        throw error
-      }
+      return { ok: true, performed: 'tile', webPaneId: this.openTile(() => engine ? this.dependencies.openResourceTile!(paneId, url, engine) : this.dependencies.openResourceTile!(paneId, url)) }
     }
     return { ok: true, performed: body.action }
   }
