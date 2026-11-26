@@ -101,23 +101,6 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
-/**
- * A deck folder safe to serve as it is: no dot-named entry at any depth (`.git`, `.env`, `.npmrc`, `.netrc`…) and no
- * `node_modules`. A walk past `MAX_PLAIN_WALK` entries counts as not plain.
- */
-const MAX_PLAIN_WALK = 2000
-async function plainDeckFolder(folder: string): Promise<boolean> {
-  let seen = 0
-  const walk = async (directory: string): Promise<boolean> => {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (++seen > MAX_PLAIN_WALK || entry.name.startsWith('.') || entry.name === 'node_modules') return false
-      if (entry.isDirectory() && !(await walk(join(directory, entry.name)))) return false
-    }
-    return true
-  }
-  return walk(folder)
-}
-
 function containsPath(root: string, path: string): boolean {
   const fromRoot = relative(root, path)
   return fromRoot === '' || (!isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`))
@@ -275,9 +258,9 @@ export class PaneManagementApi {
 
   /**
    * Opens a slides deck as a canvas tile, as `scripts/commando-slides` does. `path` is a real path inside an allowed root.
-   * The tile is served from an unauthenticated artifact URL, so only a folder that is plainly a deck is served as it is:
-   * a repo root, the pane's folder or a folder holding `.env` files is copied without its hidden files first, and
-   * hidden folders such as `~/.ssh` (which keep secrets in ordinary files) are refused.
+   * The tile is served from an unauthenticated artifact URL, so it always serves a copy without hidden files or
+   * `node_modules`, refreshed on each Present: a file added to the deck folder later never becomes reachable.
+   * Hidden folders such as `~/.ssh` (which keep secrets in ordinary files) are refused.
    */
   private async presentSlides(paneId: string, path: string, directory: boolean, execute: FolderOpenExecutor | undefined, platform: NodeJS.Platform) {
     const folder = directory ? path : dirname(path)
@@ -302,18 +285,11 @@ export class PaneManagementApi {
     const hidden = segments.some((segment, index) => segment.startsWith('.') && !SERVABLE_DOT_FOLDERS.has(segment) && segments[index + 1] !== 'worktrees')
     if (broad.includes(folder) || containsPath(state, folder) || containsPath(folder, state) || hidden) throw new HttpError(403, 'This folder cannot be presented')
     if (!this.dependencies.artifacts || !this.dependencies.openResourceTile) throw new HttpError(503, 'Slides tiles are unavailable')
-    const paneCwd = this.dependencies.panePath(paneId)
-    const cwd = paneCwd ? await realpath(paneCwd).catch(() => undefined) : undefined
-    const direct = !(cwd && containsPath(folder, cwd)) && await plainDeckFolder(folder)
-    let served = folder
-    if (!direct) {
-      const root = this.dependencies.resourceTileRoot ?? join(this.dependencies.resourceHome ?? homedir(), '.commando', 'resource-tiles')
-      await this.pruneResourceSnapshots(root)
-      const snapshot = await this.snapshotDeck(folder, root)
-      if (!snapshot) return { ok: true, performed: await openResource(path, execute, platform) }
-      served = snapshot
-    }
-    const { id } = this.dependencies.artifacts.register(served)
+    const root = this.dependencies.resourceTileRoot ?? join(this.dependencies.resourceHome ?? homedir(), '.commando', 'resource-tiles')
+    await this.pruneResourceSnapshots(root)
+    const snapshot = await this.snapshotDeck(folder, root)
+    if (!snapshot) return { ok: true, performed: await openResource(path, execute, platform) }
+    const { id } = this.dependencies.artifacts.register(snapshot)
     try {
       const webPaneId = this.dependencies.openResourceTile(paneId, `/redline/artifacts/${id}/`, { kind: 'canvas', artifactId: id, manifest })
       return { ok: true, performed: 'slides', webPaneId }

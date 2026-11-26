@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneManagementApi } from './pane-management-api.js'
 import { TmuxPaneActions } from './tmux-pane-actions.js'
@@ -599,7 +599,7 @@ describe('resource actions', () => {
   })
 
   it('presents a slides deck folder or a page in it as a canvas tile, and nothing else', async () => {
-    const { mkdir, realpath } = await import('node:fs/promises')
+    const { mkdir, readdir, realpath } = await import('node:fs/promises')
     const { dir, home, cwd, request, register, openResourceTile } = await setup()
     try {
       const deck = join(cwd, 'talk')
@@ -608,9 +608,11 @@ describe('resource actions', () => {
       await writeFile(join(deck, 'deck.html'), page)
       await writeFile(join(deck, 'onepager.html'), page)
       await writeFile(join(deck, 'plain.html'), '<p>no slides</p>')
-      const real = await realpath(deck)
       expect(await (await request({ path: deck, action: 'slides' })).json()).toEqual({ ok: true, performed: 'slides', webPaneId: 'w-12345678' })
-      expect(register).toHaveBeenLastCalledWith(real)
+      // The tile serves a private copy of the deck, never the folder itself.
+      const copy = register.mock.lastCall![0] as string
+      expect(copy.startsWith(join(await realpath(home), '.commando', 'resource-tiles'))).toBe(true)
+      expect((await readdir(copy)).sort()).toEqual(['deck.html', 'onepager.html', 'plain.html'])
       expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'deck.html' })
       expect((await request({ path: join(deck, 'onepager.html'), action: 'slides' })).status).toBe(200)
       expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', expect.objectContaining({ manifest: 'onepager.html' }))
@@ -635,7 +637,7 @@ describe('resource actions', () => {
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
-  it('serves a repo-root or pane-folder deck only as a copy without hidden files, and refuses hidden folders', async () => {
+  it('always serves a copy without hidden files, refreshed on each Present, and refuses hidden folders', async () => {
     const { mkdir, readdir, realpath } = await import('node:fs/promises')
     const root = await mkdtemp(join(tmpdir(), 'deck-snapshots-'))
     const { dir, home, cwd, request, register, openResourceTile } = await setup({ resourceTileRoot: root })
@@ -663,32 +665,23 @@ describe('resource actions', () => {
       expect(register.mock.lastCall![0]).toBe(snapshot)
       expect((await readdir(snapshot)).sort()).toEqual(['assets', 'deck.html', 'notes.md'])
 
-      // A deck folder inside a repo is served as it is.
+      // A plain deck folder is copied too, so a secret added after Present never becomes reachable.
       const talk = join(repo, 'docs', 'talk')
       await mkdir(talk, { recursive: true })
       await writeFile(join(talk, 'deck.html'), page)
       await request({ path: talk, action: 'slides' })
-      expect(register).toHaveBeenLastCalledWith(await realpath(talk))
-      // ...unless it holds .env files, or is the pane's folder.
-      await writeFile(join(talk, '.env.local'), 'SECRET=1')
+      const talkCopy = register.mock.lastCall![0] as string
+      expect(talkCopy.startsWith(await realpath(root))).toBe(true)
+      await writeFile(join(talk, '.env'), 'SECRET=1')
+      await mkdir(join(talk, 'sub'))
+      await writeFile(join(talk, 'sub', '.npmrc'), 'token')
+      expect(await readdir(talkCopy)).toEqual(['deck.html'])
       await request({ path: talk, action: 'slides' })
-      expect(register.mock.lastCall![0]).not.toBe(await realpath(talk))
-      // ...or any dot-named entry at any depth, or node_modules.
-      for (const [name, extra] of [['npmrc', '.npmrc'], ['nested-env', join('sub', '.env')], ['modules', join('node_modules', 'x.js')]]) {
-        const deck = join(repo, 'docs', name)
-        await mkdir(dirname(join(deck, extra)), { recursive: true })
-        await writeFile(join(deck, 'deck.html'), page)
-        await writeFile(join(deck, extra), 'secret')
-        await request({ path: deck, action: 'slides' })
-        const served = register.mock.lastCall![0] as string
-        expect(served.startsWith(await realpath(root))).toBe(true)
-        expect(await readdir(served)).not.toContain(extra.split('/')[0].startsWith('.') ? extra : 'node_modules')
-      }
-      const nested = register.mock.calls.at(-2)![0] as string
-      expect(await readdir(join(nested, 'sub'))).toEqual([])
+      expect((await readdir(talkCopy)).sort()).toEqual(['deck.html', 'sub'])
+      expect(await readdir(join(talkCopy, 'sub'))).toEqual([])
       await writeFile(join(cwd, 'deck.html'), page)
       await request({ path: cwd, action: 'slides' })
-      expect(register.mock.lastCall![0]).not.toBe(await realpath(cwd))
+      expect((register.mock.lastCall![0] as string).startsWith(await realpath(root))).toBe(true)
 
       // Hidden folders keep secrets in ordinary files: refused, never registered or copied.
       await mkdir(join(home, '.ssh'))
@@ -701,12 +694,12 @@ describe('resource actions', () => {
       await writeFile(join(home, '.aws', 'deck.html'), page)
       expect((await request({ path: join(home, '.aws'), action: 'slides' })).status).toBe(403)
       expect(register).toHaveBeenCalledTimes(calls)
-      // Agent worktrees are ordinary checkouts: a plain deck in one is served, a worktree root is copied.
+      // Agent worktrees are ordinary checkouts, presented like any other.
       const worktreeDeck = join(cwd, 'repo', '.claude', 'worktrees', 'feat', 'docs', 'deck')
       await mkdir(worktreeDeck, { recursive: true })
       await writeFile(join(worktreeDeck, 'deck.html'), page)
-      await request({ path: worktreeDeck, action: 'slides' })
-      expect(register).toHaveBeenLastCalledWith(await realpath(worktreeDeck))
+      expect((await request({ path: worktreeDeck, action: 'slides' })).status).toBe(200)
+      expect(register).toHaveBeenCalledTimes(calls + 1)
       const codexWorktree = join(home, '.codex', 'worktrees', 'abc')
       await mkdir(codexWorktree, { recursive: true })
       await writeFile(join(codexWorktree, '.git'), 'gitdir: elsewhere')
@@ -717,8 +710,7 @@ describe('resource actions', () => {
       // A deck in an artifact folder is fine.
       await mkdir(join(cwd, '.slides', 'q4'), { recursive: true })
       await writeFile(join(cwd, '.slides', 'q4', 'deck.html'), page)
-      await request({ path: join(cwd, '.slides', 'q4'), action: 'slides' })
-      expect(register).toHaveBeenLastCalledWith(await realpath(join(cwd, '.slides', 'q4')))
+      expect((await request({ path: join(cwd, '.slides', 'q4'), action: 'slides' })).status).toBe(200)
     } finally {
       await rm(dir, { recursive: true, force: true })
       await rm(root, { recursive: true, force: true })
