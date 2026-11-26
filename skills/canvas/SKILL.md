@@ -32,6 +32,24 @@ scripts/commando-canvas .canvas/settings
 # Or: scripts/commando-canvas .canvas/settings --manifest board.json
 ```
 
+Choose where the board appears on each call:
+
+- `--tile` (the default with neither flag): opens it as a side tile beside
+  your pane and prints the webPaneId. Use it for a review loop (comments,
+  threads, spotlight) or a board the user will work in for a while.
+- `--inline`: registers and validates the board without opening a tile, and
+  prints one Markdown line, such as `![Settings, regrouped](/abs/.canvas/settings)`.
+  Put that line in your reply exactly as printed: the chat shows the board
+  there as a strip of frame thumbnails, which the user can maximise over the
+  chat or move to a tile. Use it for a quick look at a few screens. `--inline`
+  needs the manifest at the top of the canvas folder and works without a
+  tmux pane.
+
+A single HTML mock-up shows inline the same way, with image syntax:
+`![Accounts mock-up](.canvas/settings/Accounts.html)`. Inline boards and
+mock-ups must live in a `.canvas`, `.redline` or `.pr` folder inside your
+working directory; anything else shows as a file chip instead.
+
 The scripts live in the **Commando repo checkout**, not the artifact/project
 folder. Invoke `/absolute/path/to/commando/scripts/commando-canvas` and
 `/absolute/path/to/commando/scripts/commando-feedback` when working elsewhere.
@@ -46,6 +64,7 @@ agent-hook-token as `Authorization: Bearer <token>`, read from
 |---|---|
 | Open: register directory | `POST /api/redline/artifacts` with `{"dir":"/absolute/canvas/folder"}`; retain returned `id` and `url` |
 | Open: validate manifest | `GET /api/redline/artifacts/:id/canvas?manifest=canvas.json` (or custom manifest) |
+| Open `--inline` | Skip creating the tab; write `![<manifest title>](/absolute/canvas/folder)` in the reply |
 | Open: create/select tab | `POST /api/web-panes` with `{"url":"<registered url>","anchor":"<TMUX_PANE>","engine":"webkit","content":{"kind":"canvas","artifactId":"<id>","manifest":"canvas.json"}}`; retain `webPaneId` |
 | Feedback / `--wait` | `GET /api/web-panes/:webPaneId/feedback?wait=30&cursor=<last cursor>`; first poll omits cursor, next poll acknowledges returned cursor; fetch attachments before acknowledging; repeat while review is active |
 | Threads | `GET /api/web-panes/:webPaneId/threads` |
