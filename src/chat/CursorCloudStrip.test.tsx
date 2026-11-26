@@ -129,3 +129,10 @@ it('shows request errors inline and disables checkout while disconnected', async
   await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Not connected'))
   expect(screen.getByRole('button', { name: 'Check out locally' })).toBeEnabled()
 })
+
+it('shows the environment muted immediately after the repo when known', () => {
+  render(<CursorCloudStrip cwd="/local/app" cloud={{ ...cloud, environment: 'App Dev' }} />)
+  const environment = screen.getByText('App Dev')
+  expect(environment).toHaveClass('chat-cloud-strip__repo')
+  expect(environment.previousElementSibling).toHaveTextContent('acme/app')
+})

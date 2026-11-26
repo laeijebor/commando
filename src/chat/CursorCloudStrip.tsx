@@ -66,6 +66,7 @@ export function CursorCloudStrip({ cloud, cwd, checkout, disabled, onOpenPr }: {
       <div>
         <span className="chat-cloud-strip__label"><Cloud size={13} aria-hidden="true" />Cursor cloud</span>
         <span className="chat-cloud-strip__repo" title={repo}>{repo}</span>
+        {cloud.environment ? <span className="chat-cloud-strip__repo">{cloud.environment}</span> : null}
         {cloud.branch ? <a href={`${cloud.repoUrl}/tree/${cloud.branch}`} target="_blank" rel="noreferrer">{cloud.branch}</a> : null}
         {cloud.prUrl ? <a href={cloud.prUrl} target="_blank" rel="noreferrer" onClick={(event) => {
           if (!pr || !onOpenPr || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return

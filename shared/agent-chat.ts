@@ -1,3 +1,4 @@
+import { isCursorEnvironmentName } from './cursor-cloud-agents.js'
 /**
  * Chat panes: an agent host process runs inside a tmux pane, drives the agent
  * through its SDK, and streams typed turn items to the daemon, which relays
@@ -495,7 +496,7 @@ export interface ChatLogin {
 }
 
 export interface ChatSessionInfo {
-  cloud?: { provider: 'cursor'; repoUrl: string; startingRef?: string; branch?: string; prUrl?: string; webUrl?: string }
+  cloud?: { provider: 'cursor'; environment?: string; repoUrl: string; startingRef?: string; branch?: string; prUrl?: string; webUrl?: string }
   login?: ChatLogin
   /** tmux pane id (`%N`) the session belongs to. */
   paneId: string
@@ -1107,7 +1108,7 @@ function parseChatCloud(value: unknown): ChatSessionInfo['cloud'] {
     } catch { /* Drop invalid links. */ }
   }
   const webUrl = shortString(value.webUrl, 4096) && /^https:\/\/cursor\.com\/agents\/bc-[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.webUrl) && value.webUrl === value.webUrl.trim() ? value.webUrl : undefined
-  return withOptional({ provider: 'cursor', repoUrl } as NonNullable<ChatSessionInfo['cloud']>, { startingRef: ref(value.startingRef), branch: ref(value.branch), prUrl, webUrl })
+  return withOptional({ provider: 'cursor', repoUrl } as NonNullable<ChatSessionInfo['cloud']>, { environment: isCursorEnvironmentName(value.environment) ? value.environment : undefined, startingRef: ref(value.startingRef), branch: ref(value.branch), prUrl, webUrl })
 }
 
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {

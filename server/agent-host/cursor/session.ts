@@ -1,3 +1,4 @@
+import { isCursorEnvironmentName } from '../../../shared/cursor-cloud-agents.js'
 import { randomUUID } from 'node:crypto'
 import type { AgentOptions, ModelListItem, ModelSelection, SDKImage, SettingSource } from '@cursor/sdk'
 import {
@@ -81,6 +82,7 @@ export class CursorChatSession implements ChatProviderSession {
   private loginController?: AbortController
   private loginFinishing = false
   private readonly apiKey?: string
+  private environmentLoaded = false
   private historyLoaded = false
   private readyToSend = false
   private ranUnsandboxed = false
@@ -178,7 +180,7 @@ export class CursorChatSession implements ChatProviderSession {
     return cursorModelSelection(option, this.info.effort, this.info.fast)
   }
   private agentOptions(resume = false): AgentOptions {
-    if (this.spec.cursorCloud) return { model: this.model(), ...(!resume ? { cloud: { repos: [{ url: this.spec.cursorCloud.repoUrl, startingRef: this.spec.cursorCloud.startingRef }], autoCreatePR: true, metadata: { commando: 'chat' } } } : {}) }
+    if (this.spec.cursorCloud) return { model: this.model(), ...(!resume ? { cloud: { ...(this.spec.cursorCloud.environment ? { env: { type: 'cloud' as const, name: this.spec.cursorCloud.environment } } : {}), repos: [{ url: this.spec.cursorCloud.repoUrl, startingRef: this.spec.cursorCloud.startingRef }], autoCreatePR: true, metadata: { commando: 'chat' } } } : {}) }
     // Local runs silently refuse askQuestion; the agent should ask in plain text instead.
     return {
       model: this.model(),
@@ -200,6 +202,13 @@ export class CursorChatSession implements ChatProviderSession {
       if (this.closing) { agent.close(); return }
       this.agent = agent
       this.agentId(agent.agentId)
+    }
+    if (id && this.info.cloud && !this.info.cloud.environment && !this.environmentLoaded) {
+      this.environmentLoaded = true
+      try {
+        const environment = (await this.sdk!.get(id)).env?.name
+        if (!this.closing && isCursorEnvironmentName(environment)) this.update({ cloud: { ...this.info.cloud, environment } })
+      } catch { /* Environment metadata is optional; keep the chat usable. */ }
     }
     this.stale = false
     if (this.spec.resume && !this.historyLoaded) {

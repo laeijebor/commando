@@ -315,6 +315,13 @@ describe('steering the whole queue', () => {
 })
 
 describe('Cursor cloud session info', () => {
+  it.each(['App Dev', 'x', 'x'.repeat(200)])('keeps valid environment %j', (environment) => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, environment } })?.cloud?.environment).toBe(environment)
+  })
+  it.each(['', ' leading', 'trailing ', 'x'.repeat(201), 'bad\nname', 'bad\tname', 'bad\u0000', 'bad\u007f', 'bad\u0085', 1, null])('drops invalid environment %j without losing cloud fields', (environment) => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, environment } })?.cloud).toEqual(cloud)
+  })
+
   const cloud = { provider: 'cursor', repoUrl: 'https://github.com/acme/app', startingRef: 'main', branch: 'cursor/feature', prUrl: 'https://github.com/acme/app/pull/1', webUrl: 'https://cursor.com/agents/bc-cloud123' }
   it('keeps cloud fields through host session snapshot and update parsing', () => {
     const info = { ...session, provider: 'cursor', sessionId: 'bc-cloud123', cloud: { ...cloud, unknown: 'dropped' } }

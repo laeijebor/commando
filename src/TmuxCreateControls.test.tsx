@@ -1103,6 +1103,101 @@ describe('Cursor cloud New session controls', () => {
     return onCreateSession
   }
 
+  const environments = [
+    { id: 'z', name: 'Zulu Repo', repoUrls: [github.repoUrl] },
+    { id: 'o', name: 'Other Dev', repoUrls: ['https://github.com/other/repo'] },
+    { id: 'a', name: 'App Dev', repoUrls: ['https://github.com/Acme/App'] },
+    { id: 'b', name: 'Another Dev', repoUrls: [] },
+  ]
+  function environmentResponse(value: unknown) {
+    vi.mocked(fetch).mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes('cursor-cloud-environments') ? value : { command: '' })))
+  }
+  async function chooseCloud() {
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    chooseAgent('cursor-chat')
+    fireEvent.click(screen.getByRole('button', { name: 'Cursor cloud' }))
+  }
+  it('groups and alphabetises environments, sends the selection and remembers it', async () => {
+    environmentResponse({ login: 'ok', environments })
+    const onCreateSession = form()
+    await chooseCloud()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/cursor-cloud-environments', expect.anything()))
+    const pill = screen.getByRole('button', { name: /^Environment:/ })
+    fireEvent.click(pill)
+    expect(await screen.findByRole('group', { name: 'For acme/app' })).toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'For acme/app' })).getAllByRole('menuitemradio').map((item) => item.textContent)).toEqual(['App Dev', 'Zulu Repo'])
+    expect(within(screen.getByRole('group', { name: 'Other environments' })).getAllByRole('menuitemradio').map((item) => item.textContent)).toEqual(['Another Dev', 'Other Dev'])
+    expect(screen.getByRole('menuitemradio', { name: 'Cursor default for this repo' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'App Dev' }))
+    expect(pill).toHaveAccessibleName('Environment: App Dev')
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cloud-env' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalled())
+    expect(onCreateSession.mock.calls[0][0].agent?.cursorCloud).toEqual({ repoUrl: github.repoUrl, ref: github.ref, environment: 'App Dev' })
+    expect(JSON.parse(window.localStorage.getItem(CHAT_LAUNCH_STORAGE_KEY)!)[`cursor:${MAIN}`].cursorEnvironment).toBe('App Dev')
+  })
+  it('preserves the last environment when a later chat runs locally', async () => {
+    environmentResponse({ login: 'ok', environments })
+    window.localStorage.setItem(CHAT_LAUNCH_STORAGE_KEY, JSON.stringify({ [`cursor:${MAIN}`]: { permissionMode: 'plan', cursorRuntime: 'cloud', cursorEnvironment: 'App Dev' } }))
+    const onCreateSession = form()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    chooseAgent('cursor-chat')
+    await screen.findByRole('button', { name: 'Environment: App Dev' })
+    fireEvent.click(screen.getByRole('button', { name: 'This Mac' }))
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'local-chat' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalled())
+    expect(onCreateSession.mock.calls[0][0].agent).not.toHaveProperty('cursorCloud')
+    expect(JSON.parse(window.localStorage.getItem(CHAT_LAUNCH_STORAGE_KEY)!)[`cursor:${MAIN}`].cursorEnvironment).toBe('App Dev')
+  })
+  it.each(['App Dev', 'Deleted Dev'])('restores remembered %s or falls back to Cursor default', async (name) => {
+    environmentResponse({ login: 'ok', environments })
+    window.localStorage.setItem(CHAT_LAUNCH_STORAGE_KEY, JSON.stringify({ [`cursor:${MAIN}`]: { permissionMode: 'plan', cursorRuntime: 'cloud', cursorEnvironment: name } }))
+    const onCreateSession = form()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    chooseAgent('cursor-chat')
+    const expected = name === 'App Dev' ? name : 'Cursor default for this repo'
+    const pill = await screen.findByRole('button', { name: `Environment: ${expected}` })
+    fireEvent.click(pill)
+    await screen.findByRole('menuitemradio', { name: 'App Dev' })
+    expect(screen.getByRole('menuitemradio', { name: expected })).toHaveAttribute('aria-checked', 'true')
+    if (name === 'App Dev') fireEvent.click(screen.getByRole('menuitemradio', { name: 'Cursor default for this repo' }))
+    else fireEvent.click(pill)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cloud-default' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalled())
+    expect(onCreateSession.mock.calls[0][0].agent?.cursorCloud).not.toHaveProperty('environment')
+    expect(JSON.parse(window.localStorage.getItem(CHAT_LAUNCH_STORAGE_KEY)!)[`cursor:${MAIN}`]).not.toHaveProperty('cursorEnvironment')
+  })
+  it.each([
+    { login: 'required', environments: [], message: 'Log in to Cursor from a Cursor chat to see environments.' },
+    { login: 'ok', environments: [], message: 'No named environments.' },
+    { login: 'ok', environments: [], error: 'Unavailable', message: 'Unavailable' },
+  ])('keeps default available with menu state $message', async ({ message, ...response }) => {
+    environmentResponse(response)
+    const onCreateSession = form()
+    await chooseCloud()
+    fireEvent.click(screen.getByRole('button', { name: /^Environment:/ }))
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Cursor default for this repo' }))
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cloud-default' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalled())
+    expect(onCreateSession.mock.calls[0][0].agent?.cursorCloud).not.toHaveProperty('environment')
+  })
+  it('starts with the default while the environments request is pending', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => String(url).includes('cursor-cloud-environments') ? new Promise<Response>(() => {}) : new Response(JSON.stringify({ command: '' })))
+    const onCreateSession = form()
+    await chooseCloud()
+    fireEvent.click(screen.getByRole('button', { name: /^Environment:/ }))
+    expect(screen.getByText('Loading environments…')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Cursor default for this repo' }))
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cloud-default' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalled())
+    expect(onCreateSession.mock.calls[0][0].agent?.cursorCloud).not.toHaveProperty('environment')
+  })
+
   it('offers cloud for GitHub, hides worktrees, restricts permissions and sends a cloud request', async () => {
     const onCreateSession = form()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())

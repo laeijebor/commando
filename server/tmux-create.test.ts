@@ -1325,3 +1325,13 @@ describe('Cursor cloud creation', () => {
     } finally { pushed.mockRestore() }
   })
 })
+
+describe('Cursor cloud environment validation', () => {
+  const cursorCloud = { repoUrl: 'https://github.com/acme/app', ref: 'main' }
+  it.each(['App Dev', 'x', 'x'.repeat(200), '開発'])('whitelists environment %j and drops unknown fields', (environment) => {
+    expect(validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, environment, extra: true } })?.cursorCloud).toEqual({ ...cursorCloud, environment })
+  })
+  it.each(['', ' ', ' leading', 'trailing ', 'x'.repeat(201), 'bad\nname', 'bad\tname', 'bad\u0000', 'bad\u007f', 'bad\u0085', 1, null])('rejects environment %j', (environment) => {
+    expect(() => validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, environment } })).toThrow('environment')
+  })
+})

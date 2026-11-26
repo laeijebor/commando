@@ -1,3 +1,4 @@
+import { isCursorEnvironmentName } from '../shared/cursor-cloud-agents.js'
 import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access, readdir, realpath, stat } from 'node:fs/promises'
@@ -185,11 +186,12 @@ export function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (cursorCloud !== undefined) {
     if (provider !== 'cursor-chat') throw new Error('Only Cursor chat accepts Cursor cloud')
     if (!cursorCloud || typeof cursorCloud !== 'object' || Array.isArray(cursorCloud)) throw new Error('cursorCloud must be an object')
-    const { repoUrl, ref } = cursorCloud as { repoUrl?: unknown; ref?: unknown }
+    const { repoUrl, ref, environment } = cursorCloud as { repoUrl?: unknown; ref?: unknown; environment?: unknown }
+    if (environment !== undefined && !isCursorEnvironmentName(environment)) throw new Error('Invalid Cursor cloud environment')
     validateCloudRepoUrl(repoUrl)
     if (!(ref === undefined && resume !== undefined) && (typeof ref !== 'string' || ref !== ref.trim() || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) throw new Error('Invalid Cursor cloud ref')
     if (permissionMode !== undefined && permissionMode !== 'bypassPermissions' && permissionMode !== 'plan') throw new Error('Cursor cloud supports only Full access and Plan')
-    cloud = { repoUrl, ...(typeof ref === 'string' ? { ref } : {}) }
+    cloud = { repoUrl, ...(typeof ref === 'string' ? { ref } : {}), ...(isCursorEnvironmentName(environment) ? { environment } : {}) }
   }
   const chatName = provider === 'deepseek-chat' ? 'DeepSeek' : provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : provider === 'cursor-chat' ? 'Cursor' : 'Claude'
   if (chatName !== 'Claude' && (configDir !== undefined || readableDir !== undefined)) throw new Error(`${chatName} chat does not accept a Claude profile or readable folder`)

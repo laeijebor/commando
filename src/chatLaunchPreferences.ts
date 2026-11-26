@@ -1,10 +1,11 @@
+import { isCursorEnvironmentName } from '../shared/cursor-cloud-agents'
 import { chatPermissionModes, type ChatLaunchProvider, type ChatPermissionMode } from '../shared/tmux-create'
 
 export const CHAT_LAUNCH_STORAGE_KEY = 'commando.chat-launch.by-repo'
 const LAST_KEY = '*'
 
 /** How a chat pane is started: the Claude profile (login) and permission mode. */
-export type ChatLaunchPreference = { configDir?: string; permissionMode: ChatPermissionMode; cursorRuntime?: 'local' | 'cloud' }
+export type ChatLaunchPreference = { configDir?: string; permissionMode: ChatPermissionMode; cursorRuntime?: 'local' | 'cloud'; cursorEnvironment?: string }
 
 const DEFAULT_PREFERENCE: ChatLaunchPreference = { permissionMode: 'default' }
 
@@ -33,7 +34,7 @@ export function loadChatLaunch(repoKey: string | undefined, provider: ChatLaunch
   const { key, lastKey } = storageKeys(repoKey, provider)
   const all = readAll(host)
   const stored = (key && all[key]) || all[lastKey]
-  if (provider !== 'claude-chat') return { ...(provider === 'cursor-chat' && (stored?.cursorRuntime === 'local' || stored?.cursorRuntime === 'cloud') ? { cursorRuntime: stored.cursorRuntime } : {}), permissionMode: chatPermissionModes(provider).some((mode) => mode.value === stored?.permissionMode) ? stored.permissionMode : provider === 'cursor-chat' ? 'bypassPermissions' : 'default' }
+  if (provider !== 'claude-chat') return { ...(provider === 'cursor-chat' && isCursorEnvironmentName(stored?.cursorEnvironment) ? { cursorEnvironment: stored.cursorEnvironment } : {}), ...(provider === 'cursor-chat' && (stored?.cursorRuntime === 'local' || stored?.cursorRuntime === 'cloud') ? { cursorRuntime: stored.cursorRuntime } : {}), permissionMode: chatPermissionModes(provider).some((mode) => mode.value === stored?.permissionMode) ? stored.permissionMode : provider === 'cursor-chat' ? 'bypassPermissions' : 'default' }
   return stored && typeof stored === 'object' ? { ...DEFAULT_PREFERENCE, ...stored } : DEFAULT_PREFERENCE
 }
 
@@ -41,7 +42,7 @@ export function saveChatLaunch(repoKey: string | undefined, preference: ChatLaun
   try {
     const all = readAll(host)
     const { key, lastKey } = storageKeys(repoKey, provider)
-    const saved = provider === 'claude-chat' ? preference : { permissionMode: preference.permissionMode, ...(provider === 'cursor-chat' && preference.cursorRuntime ? { cursorRuntime: preference.cursorRuntime } : {}) }
+    const saved = provider === 'claude-chat' ? preference : { permissionMode: preference.permissionMode, ...(provider === 'cursor-chat' && isCursorEnvironmentName(preference.cursorEnvironment) ? { cursorEnvironment: preference.cursorEnvironment } : {}), ...(provider === 'cursor-chat' && preference.cursorRuntime ? { cursorRuntime: preference.cursorRuntime } : {}) }
     if (key) all[key] = saved
     all[lastKey] = saved
     window.localStorage.setItem(host === 'local' ? CHAT_LAUNCH_STORAGE_KEY : `${CHAT_LAUNCH_STORAGE_KEY}.${host}`, JSON.stringify(all))

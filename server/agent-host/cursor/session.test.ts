@@ -81,6 +81,7 @@ class FakeSdk implements CursorSdk {
     return this.loginResult.promise
   })
   listModels = vi.fn(async () => models)
+  get = vi.fn<CursorSdk['get']>().mockResolvedValue({})
   create = vi.fn(async (_options: AgentOptions) => this.agent)
   resume = vi.fn(async (_id: string, _options: AgentOptions) => this.agent)
   history = vi.fn(async (_id: string, _cwd: string): Promise<CursorHistory> => ({ turns: [], skipped: 0 }))
@@ -1242,6 +1243,47 @@ describe('Cursor cloud chats', () => {
       expect.objectContaining({ kind: 'notice', text: "Couldn't reload this Cursor cloud run: Unavailable" }),
       expect.objectContaining({ kind: 'notice', level: 'error', text: 'Run failed' }),
     ]))
+    session.close()
+  })
+})
+
+describe('Cursor cloud environment metadata', () => {
+  it.each([undefined, 'App Dev'])('creates with environment only when selected: %j', async (environment) => {
+    const { session, sdk } = harness({ cursorCloud: { ...cloudSpec.cursorCloud, ...(environment ? { environment } : {}) } })
+    expect(session.snapshot().session.cloud?.environment).toBe(environment)
+    await session.start()
+    session.send('Hello'); await tick()
+    const options = sdk.create.mock.calls[0][0]
+    if (environment) expect(options.cloud?.env).toEqual({ type: 'cloud', name: environment })
+    else expect(options.cloud).not.toHaveProperty('env')
+    expect(parseChatSessionInfo(session.snapshot().session)?.cloud?.environment).toBe(environment)
+    expect(sdk.get).not.toHaveBeenCalled()
+    session.close()
+  })
+  it('discovers a resumed environment once and preserves it through updates', async () => {
+    const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    sdk.get.mockResolvedValue({ env: { name: 'Recovered Dev' } })
+    await session.start(); await session.start()
+    expect(sdk.get).toHaveBeenCalledExactlyOnceWith('bc-cloud123')
+    expect(session.snapshot().session.cloud?.environment).toBe('Recovered Dev')
+    expect(parseChatSessionInfo(session.snapshot().session)?.cloud?.environment).toBe('Recovered Dev')
+    session.close()
+  })
+  it('uses the explicit flag without a metadata request on resume', async () => {
+    const { session, sdk } = harness({ cursorCloud: { ...cloudSpec.cursorCloud, environment: 'Explicit Dev' }, resume: 'bc-cloud123' })
+    await session.start()
+    expect(sdk.get).not.toHaveBeenCalled()
+    expect(session.snapshot().session.cloud?.environment).toBe('Explicit Dev')
+    session.close()
+  })
+  it.each(['failed', 'unnamed', 'invalid'])('ignores %s metadata without affecting readiness', async (outcome) => {
+    const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    if (outcome === 'failed') sdk.get.mockRejectedValue(new Error('secret-key'))
+    else sdk.get.mockResolvedValue({ env: outcome === 'invalid' ? { name: 'bad\nname' } : {} })
+    await session.start()
+    expect(session.snapshot().session).toMatchObject({ status: 'idle' })
+    expect(session.snapshot().session.cloud?.environment).toBeUndefined()
+    expect(JSON.stringify(session.snapshot())).not.toContain('secret-key')
     session.close()
   })
 })

@@ -1,5 +1,6 @@
 import { ChevronDown, Clock, Shield, Zap } from 'lucide-react'
 import { useState } from 'react'
+import type { CursorCloudEnvironment } from '../shared/cursor-cloud-agents'
 import type { ChatModelOption } from '../shared/agent-chat'
 import type { ChatPermissionMode } from '../shared/tmux-create'
 import { MenuOption, SectionLabel } from './chat/ComposerControls'
@@ -163,4 +164,37 @@ export function NewSessionPermissionPicker({ modes, selected, disabled, onPick }
       </PopoverPopup>
     </Popover>
   )
+}
+
+export function NewSessionEnvironmentPicker({ environments, selected, repoUrl, message, disabled, onPick }: {
+  environments: readonly CursorCloudEnvironment[]
+  selected?: string
+  repoUrl: string
+  message?: string
+  disabled: boolean
+  onPick: (environment: string | undefined) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const matches = (environment: (typeof environments)[number]) => environment.repoUrls.some((url) => url.toLowerCase() === repoUrl.toLowerCase())
+  const sorted = [...environments].sort((a, b) => a.name.localeCompare(b.name))
+  const groups = [
+    { label: `For ${repoUrl.replace('https://github.com/', '')}`, items: sorted.filter(matches) },
+    { label: 'Other environments', items: sorted.filter((environment) => !matches(environment)) },
+  ]
+  const pick = (name?: string) => { setOpen(false); onPick(name) }
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger disabled={disabled} className={cn(PILL, open && 'is-open')} aria-label={`Environment: ${selected ?? 'Cursor default for this repo'}`}>
+      <span className="tmux-create__pill-text">{selected ?? 'Environment'}</span><ChevronDown aria-hidden="true" />
+    </PopoverTrigger>
+    <PopoverPopup className="w-[300px]" side="bottom" aria-label="Environment">
+      <div role="menu" aria-label="Environment">
+        <MenuOption checked={!selected} label="Cursor default for this repo" onSelect={() => pick()} />
+        {groups.map(({ label, items }) => items.length ? <div key={label} role="group" aria-label={label}>
+          <SectionLabel>{label}</SectionLabel>
+          {items.map((environment) => <MenuOption key={environment.id} label={environment.name} checked={selected === environment.name} onSelect={() => pick(environment.name)} />)}
+        </div> : null)}
+      </div>
+      {message ? <p className="tmux-create__menu-foot" role="status">{message}</p> : null}
+    </PopoverPopup>
+  </Popover>
 }

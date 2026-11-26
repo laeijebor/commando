@@ -492,6 +492,7 @@ export class AgentHostHub {
     // An older host reports no picks; its launch flags are still right.
     if (!session || !hostTakesSettings(session) || !isChatPermissionMode(session.permissionMode)) return undefined
     return {
+      ...(session.provider === 'cursor' && session.cloud?.environment ? { cursorEnvironment: session.cloud.environment } : {}),
       permissionMode: session.permissionMode,
       ...(session.selectedModel ? { model: session.selectedModel } : {}),
       ...(session.effort ? { effort: session.effort } : {}),

@@ -1,3 +1,4 @@
+import { CURSOR_CLOUD_ENVIRONMENTS_ROUTE, type CursorCloudEnvironmentsResponse } from '../shared/cursor-cloud-agents'
 import { useHost } from './HostContext'
 import { type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { ChevronRight, GitBranch, Paperclip } from 'lucide-react'
@@ -41,7 +42,7 @@ import {
   type AgentOption,
   type StartWith,
 } from './newSessionAgents'
-import { AgentPicker, NewSessionFastToggle, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
+import { AgentPicker, NewSessionEnvironmentPicker, NewSessionFastToggle, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
 import { isAttachableFile, useOpeningAttachments, type AttachmentUploads } from './useOpeningAttachments'
 import type { SessionNamingApi } from './sessionNamingApi'
 import { cachedClaudeProfiles, rememberClaudeProfiles } from './claudeProfileCache'
@@ -338,6 +339,28 @@ export function TmuxCreateControls({
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>', repo.worktreesParent) : '')
   const cursorCloud = agentProvider === 'cursor-chat' && chatLaunch.cursorRuntime === 'cloud' && Boolean(repo?.github)
+  const [cloudEnvironments, setCloudEnvironments] = useState<CursorCloudEnvironmentsResponse | null>(null)
+  useEffect(() => {
+    if (!cursorCloud) { setCloudEnvironments(null); return }
+    let cancelled = false
+    setCloudEnvironments(null)
+    void daemonFetch(CURSOR_CLOUD_ENVIRONMENTS_ROUTE, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Environment request failed')
+        const value = await response.json() as CursorCloudEnvironmentsResponse
+        if (!Array.isArray(value.environments)) throw new Error('Invalid environment response')
+        if (!cancelled) setCloudEnvironments(value)
+      }).catch(() => {
+        if (!cancelled) setCloudEnvironments({ login: 'ok', environments: [], error: 'Unable to load environments.' })
+      })
+    return () => { cancelled = true }
+  }, [cursorCloud, daemonFetch, token])
+  const cursorEnvironment = cloudEnvironments?.environments.some((environment) => environment.name === chatLaunch.cursorEnvironment)
+    ? chatLaunch.cursorEnvironment : undefined
+  const rememberedCursorEnvironment = cursorCloud ? cursorEnvironment : chatLaunch.cursorEnvironment
+  const environmentMessage = !cloudEnvironments ? 'Loading environments…'
+    : cloudEnvironments.login === 'required' ? 'Log in to Cursor from a Cursor chat to see environments.'
+    : cloudEnvironments.error ?? (!cloudEnvironments.environments.length ? 'No named environments.' : undefined)
   const cloudPermissionMode = chatLaunch.permissionMode === 'plan' ? 'plan' : 'bypassPermissions'
   const permissionMode = cursorCloud ? cloudPermissionMode : chatLaunch.permissionMode
   const worktreeRequested = Boolean(repo && worktreeEnabled && !cursorCloud)
@@ -644,7 +667,7 @@ export function TmuxCreateControls({
         const model = chatProvider && selectedModel !== 'default' ? selectedModel : undefined
         request.agent = {
           provider: agentProvider,
-          ...(cursorCloud && repo?.github ? { cursorCloud: { repoUrl: repo.github.repoUrl, ref: repo.github.ref } } : {}),
+          ...(cursorCloud && repo?.github ? { cursorCloud: { repoUrl: repo.github.repoUrl, ref: repo.github.ref, ...(cursorEnvironment ? { environment: cursorEnvironment } : {}) } } : {}),
           ...(promptAccepted && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
           ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
           ...(model ? { model } : {}),
@@ -653,7 +676,7 @@ export function TmuxCreateControls({
           ...(agentProvider === 'claude-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
           ...(usesClaudeProfile(agentProvider) && claudeConfigDir ? { configDir: claudeConfigDir } : {}),
         }
-        if (isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat') saveChatLaunch(repoKey, { permissionMode, ...(agentProvider === 'cursor-chat' ? { cursorRuntime: cursorCloud ? 'cloud' as const : 'local' as const } : {}) }, agentProvider, host)
+        if (isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat') saveChatLaunch(repoKey, { permissionMode, ...(agentProvider === 'cursor-chat' ? { cursorRuntime: cursorCloud ? 'cloud' as const : 'local' as const, ...(rememberedCursorEnvironment ? { cursorEnvironment: rememberedCursorEnvironment } : {}) } : {}) }, agentProvider, host)
         if (usesClaudeProfile(agentProvider)) {
           // Keep a remembered profile even when the list could not be loaded this time.
           const remembered = agentProvider === 'claude-chat' ? chatLaunch : loadChatLaunch(repoKey, 'claude-chat', host)
@@ -831,6 +854,14 @@ export function TmuxCreateControls({
             onPick={(value) => { if (catalogKey) setModelPick({ key: catalogKey, value }) }}
           />
         ) : null}
+        {cursorCloud && repo?.github ? <NewSessionEnvironmentPicker
+          environments={cloudEnvironments?.environments ?? []}
+          selected={cursorEnvironment}
+          repoUrl={repo.github.repoUrl}
+          message={environmentMessage}
+          disabled={unavailable}
+          onPick={(cursorEnvironment) => setChatLaunch((current) => ({ ...current, cursorEnvironment }))}
+        /> : null}
         {fastAvailable ? (
           <NewSessionFastToggle on={fast} disabled={unavailable} onToggle={() => setFastPick(!fast)} />
         ) : null}

@@ -234,6 +234,14 @@ describe('AgentHostHub', () => {
     expect(hub.resumeSettings('%2')).toBeUndefined()
   })
 
+  it('carries the exact cloud environment from session metadata into resume settings', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 2, provider: 'cursor', permissionMode: 'bypassPermissions', cloud: { provider: 'cursor', repoUrl: 'https://github.com/acme/app', environment: 'App  Dev' } }), items: [] })
+    await settle()
+    expect(hub.resumeSettings('%1')).toMatchObject({ cursorEnvironment: 'App  Dev', permissionMode: 'bypassPermissions' })
+  })
+
   it('trusts no settings from a host older than the pickers, and logs messages it drops', async () => {
     const logs: string[] = []
     const hub = new AgentHostHub({ paneExists: () => true, targetIdFor: () => undefined, broadcast: () => {}, log: (line) => logs.push(line) })

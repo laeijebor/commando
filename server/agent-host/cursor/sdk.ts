@@ -48,6 +48,7 @@ export interface CursorSdk {
   authStatus(): Promise<{ status: 'logged-in' | 'logged-out'; email?: string }>
   login(options: { onLoginUrl: (url: string) => void; signal: AbortSignal }): Promise<{ email?: string }>
   listModels(): Promise<ModelListItem[]>
+  get(agentId: string): Promise<{ agentId?: string; env?: { name?: string } }>
   create(options: AgentOptions): Promise<CursorAgent>
   resume(agentId: string, options: AgentOptions): Promise<CursorAgent>
   history(agentId: string, cwd: string): Promise<CursorHistory>
@@ -191,6 +192,7 @@ export async function loadCursorSdk(log?: (message: string) => void): Promise<Cu
       return { email }
     },
     listModels: () => Cursor.models.list(),
+    get: (agentId) => Agent.get(agentId),
     create: (options) => Agent.create(options),
     resume: (agentId, options) => Agent.resume(agentId, options),
     history: (agentId, cwd) => cursorHistory((id, options) => Agent.listRuns(id, options), agentId, cwd, log, (id, options) => Agent.messages.list(id, options)),
