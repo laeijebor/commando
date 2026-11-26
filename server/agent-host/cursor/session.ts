@@ -175,7 +175,8 @@ export class CursorChatSession implements ChatProviderSession {
     return cursorModelSelection(option, this.info.effort, this.info.fast)
   }
   private agentOptions(): AgentOptions {
-    // Local runs silently refuse askQuestion; the agent should ask in plain text instead.
+    // Local runs refuse askQuestion and fail closed on tools needing approval;
+    // there is no host approval callback. This also keeps ephemeral asides non-interactive.
     return {
       model: this.model(),
       disallowedTools: ['askQuestion'],

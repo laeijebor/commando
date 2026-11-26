@@ -39,7 +39,7 @@ import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
 import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { commanderAllowedTools } from '../commander-tools.js'
-import { asideEnv, asideInstructions } from './aside-brief.js'
+import { asideEnv, asideInstructions, QUICK_ANSWER_INTERACTION_DENIED } from './aside-brief.js'
 import { AsideTimeline, countTimelineMessages } from './aside-timeline.js'
 import { DEEPSEEK_MODELS, DEEPSEEK_RUNTIME_ENV } from './deepseek.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
@@ -539,7 +539,10 @@ export class AgentSession implements ChatProviderSession {
         thinking: { type: 'adaptive', display: 'summarized' },
         // Read-only blocks edit tools and drops bypass/acceptEdits to default; Bash still follows the user's permission rules and prompts.
         permissionMode: this.spec.readOnly && this.spec.permissionMode !== 'plan' ? 'default' : this.spec.permissionMode,
-        ...(this.spec.readOnly ? { disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', ...(this.spec.aside?.ephemeral ? ['Bash', 'Agent', 'Task'] : [])] } : {}),
+        ...(this.spec.readOnly || this.spec.aside?.ephemeral ? { disallowedTools: [
+          ...(this.spec.readOnly ? ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] : []),
+          ...(this.spec.aside?.ephemeral ? ['Bash', 'Agent', 'Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'] : []),
+        ] } : {}),
         // Commander may run its own CLI without asking; nothing else is pre-approved.
         ...(!this.spec.aside?.ephemeral && commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
         ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
@@ -550,6 +553,7 @@ export class AgentSession implements ChatProviderSession {
         // Subagents' own text and thinking, so a subagent's transcript can be shown live.
         forwardSubagentText: true,
         canUseTool,
+        ...(this.spec.aside?.ephemeral ? { onElicitation: async () => ({ action: 'decline' as const }) } : {}),
       },
     })
     this.setStatus('idle')
@@ -1240,6 +1244,7 @@ export class AgentSession implements ChatProviderSession {
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
+    if (this.spec.aside?.ephemeral) return Promise.resolve({ behavior: 'deny', message: QUICK_ANSWER_INTERACTION_DENIED })
     const requestId = options.requestId || options.toolUseID
     if (toolName === 'ExitPlanMode' && !options.agentID) {
       // The plan becomes a card with Implement and Refine; without a plan, the generic approval below.
