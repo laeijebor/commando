@@ -3,15 +3,19 @@ import { parseChatImageRefs, type AsideReport, type ChatImageRef } from '../../s
 const PREFIX = 'commando:chat-draft:'
 const MAX_BYTES = 100 * 1024
 const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+export const CHAT_SEND_REFUSAL_MS = 30_000
 
 /** A reference waits with Main’s draft until the next message is sent. */
 export type PendingAsideReference = AsideReport & { close?: boolean }
-export type ReportSend = { requestId: string; text: string; at: number }
+export type ReportSend = { requestId: string; text: string; at: number; before?: string[] }
 /** Composer content and report sends waiting for a possible refusal. */
 export type SavedDraftContent = { text: string; images: ChatImageRef[]; references?: PendingAsideReference[]; reportSends?: ReportSend[] }
 type SavedDraft = Omit<SavedDraftContent, 'images'> & { images?: ChatImageRef[]; updatedAt: number }
 
 const EMPTY: SavedDraftContent = { text: '', images: [] }
+// Keep recovery independent of best-effort storage, including across pane remounts.
+// Empty entries prevent a failed removal from replaying a consumed persisted send.
+const reportSendRecovery = new Map<string, { sends: ReportSend[]; updatedAt: number }>()
 
 const sameImages = (a: ChatImageRef[], b: ChatImageRef[]) =>
   a.length === b.length && a.every((ref, index) => ref.id === b[index]!.id && ref.name === b[index]!.name)
@@ -28,7 +32,8 @@ function parseDraft(raw: string | null, now: number): SavedDraft | null {
     const references = Array.isArray(draft.references) ? draft.references.filter((ref): ref is PendingAsideReference =>
       !!ref && typeof ref === 'object' && typeof ref.asideId === 'string' && typeof ref.title === 'string' && typeof ref.body === 'string' && (ref.close === undefined || typeof ref.close === 'boolean')) : []
     const reportSends = Array.isArray(draft.reportSends) ? draft.reportSends.filter((send): send is ReportSend =>
-      !!send && typeof send === 'object' && typeof send.requestId === 'string' && typeof send.text === 'string' && typeof send.at === 'number' && Number.isFinite(send.at)) : []
+      !!send && typeof send === 'object' && typeof send.requestId === 'string' && typeof send.text === 'string' && typeof send.at === 'number' && Number.isFinite(send.at)
+      && (send.before === undefined || (Array.isArray(send.before) && send.before.every((id: unknown) => typeof id === 'string')))) : []
     return { text: draft.text, images, ...(references.length ? { references } : {}), ...(reportSends.length ? { reportSends } : {}), updatedAt: draft.updatedAt }
   } catch {
     return null
@@ -49,6 +54,17 @@ export function loadDraft(sessionId: string | undefined): SavedDraftContent {
 
 export function readDraft(sessionId: string | undefined): string {
   return loadDraft(sessionId).text
+}
+
+/** Memory is authoritative until the refusal window ends; storage covers reloads. */
+export function loadReportSends(sessionId: string | undefined): ReportSend[] {
+  const now = Date.now()
+  for (const [id, recovery] of reportSendRecovery) {
+    if (now - recovery.updatedAt > CHAT_SEND_REFUSAL_MS) reportSendRecovery.delete(id)
+  }
+  if (!sessionId) return []
+  return (reportSendRecovery.get(sessionId)?.sends ?? loadDraft(sessionId).reportSends ?? [])
+    .filter((send) => now - send.at <= CHAT_SEND_REFUSAL_MS)
 }
 
 /**
@@ -85,6 +101,9 @@ export function saveDraft(sessionId: string | undefined, text: string, images: C
 
 /** Update report metadata without overwriting the composer's text or attachments. */
 export function updateDraftReports(sessionId: string | undefined, reports: Pick<SavedDraftContent, 'references' | 'reportSends'>): void {
+  if (sessionId && reports.reportSends) {
+    reportSendRecovery.set(sessionId, { sends: reports.reportSends, updatedAt: Date.now() })
+  }
   const draft = loadDraft(sessionId)
   saveDraft(sessionId, draft.text, draft.images, reports)
 }

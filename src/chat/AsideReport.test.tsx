@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ASIDE_REPORT_PROMPT, asideKey, asideReportText, type ChatAsideRecord, type ChatItem, type ChatState } from '../../shared/agent-chat'
 import { ChatPane, type ChatAsideServices, type ChatThreadBindings } from './ChatPane'
-import { saveDraft, loadDraft } from './draftStore'
+import { saveDraft, loadDraft, loadReportSends, updateDraftReports } from './draftStore'
 
 const record: ChatAsideRecord = { id: 'abcdefgh', title: 'Why flaky?', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1, status: 'open' }
 const key = asideKey('%5', record.id)
@@ -54,7 +54,7 @@ const selectMain = () => fireEvent.click(screen.getByRole('tab', { name: /Main/ 
 const selectAside = () => fireEvent.click(screen.getByRole('tab', { name: /Why flaky/ }))
 const sendReport = () => fireEvent.click(screen.getByRole('button', { name: 'Send to Main' }))
 beforeEach(() => { localStorage.clear(); HTMLElement.prototype.scrollIntoView = vi.fn() })
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); updateDraftReports('main', { reportSends: [] }) })
 
 describe('Report to Main', () => {
   it.each(['Ready code word IBIS', 'Own investigation'])('uses the aside’s own title in report headings and deliveries (session title: %s)', (title) => {
@@ -347,6 +347,61 @@ it('does not duplicate a refused reference while Main is mounted', async () => {
   view.refuseMain()
   expect(input).toHaveValue(`New unsaved words\n\n${envelope}\n\nUse this finding`)
   expect(loadDraft('main').text).toBe(`New unsaved words\n\n${envelope}\n\nUse this finding`)
+})
+
+it.each([
+  { failure: 'writes fail', remount: false },
+  { failure: 'storage unavailable', remount: false },
+  { failure: 'writes fail', remount: true },
+  { failure: 'storage unavailable', remount: true },
+])('recovers a refused reference and typed text when $failure (remount=$remount)', async ({ failure, remount }) => {
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Blocked') })
+  if (failure === 'storage unavailable') vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('Blocked') })
+  const view = setup(); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  fireEvent.change(input, { target: { value: 'Use this finding' } }); fireEvent.keyDown(input, { key: 'Enter' })
+  expect(view.onSend).toHaveBeenCalledExactlyOnceWith(`${envelope}\n\nUse this finding`, [], { delivery: 'queue' })
+  expect(input).toHaveValue('')
+  if (remount) {
+    view.unmount()
+    const remounted = setup(); remounted.refuseMain(); selectMain()
+  } else view.refuseMain()
+  expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue(`${envelope}\n\nUse this finding`)
+})
+
+it.each(['queue', 'timeline'] as const)('clears report recovery after a %s acknowledgement even if storage removal fails', async (acknowledgement) => {
+  const view = setup(); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  const text = `${envelope}\n\nUse this finding`
+  fireEvent.change(input, { target: { value: 'Use this finding' } }); fireEvent.keyDown(input, { key: 'Enter' })
+  expect(loadReportSends('main')).toHaveLength(1)
+  vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('Blocked') })
+  view.updateMain(acknowledgement === 'queue'
+    ? { ...main, session: { ...main.session, queue: [{ id: 'accepted', text }] } }
+    : { ...main, items: [{ ...base, id: 'accepted', kind: 'user_message', text }] })
+  expect(loadReportSends('main')).toEqual([])
+  expect(loadDraft('main').reportSends).toHaveLength(1)
+  view.unmount()
+  const remounted = setup(); remounted.refuseMain(); selectMain()
+  expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue('')
+})
+
+it('does not treat an existing identical message as acknowledgement of a new report send', async () => {
+  const text = `${envelope}\n\nUse this finding`
+  const existing: ChatState = { ...main, items: [{ ...base, id: 'existing', kind: 'user_message', text }] }
+  const view = setup(existing); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  fireEvent.change(input, { target: { value: 'Use this finding' } }); fireEvent.keyDown(input, { key: 'Enter' })
+  view.updateMain({ ...existing, items: [...existing.items] })
+  expect(loadReportSends('main')).toHaveLength(1)
+  view.refuseMain()
+  expect(input).toHaveValue(text)
 })
 
 it('keeps manual draft delivery usable when storage is unavailable', async () => {

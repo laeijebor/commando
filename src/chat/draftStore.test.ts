@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { appendDraftText, loadDraft, readDraft, saveDraft, updateDraftReports } from './draftStore'
+import { CHAT_SEND_REFUSAL_MS, appendDraftText, loadDraft, loadReportSends, readDraft, saveDraft, updateDraftReports } from './draftStore'
 
 afterEach(() => {
   vi.restoreAllMocks()
+  updateDraftReports('main', { reportSends: [] })
   localStorage.clear()
 })
 
@@ -125,4 +126,33 @@ it('merges refusal text without losing images, references or other pending repor
 it('rejects malformed reference and send metadata without losing valid draft content', () => {
   localStorage.setItem(key('bad'), JSON.stringify({ text: 'Keep me', references: [null, { asideId: 3 }, { asideId: 'a', title: 't', body: 'b', close: 'true' }], reportSends: [null, { requestId: 3 }], updatedAt: Date.now() }))
   expect(loadDraft('bad')).toEqual({ text: 'Keep me', images: [] })
+})
+
+it('falls back to persisted report sends when no memory copy exists', () => {
+  const send = { requestId: 'persisted', text: 'Report envelope', at: Date.now() }
+  saveDraft('persisted-main', '', [], { reportSends: [send] })
+  expect(loadReportSends('persisted-main')).toEqual([send])
+})
+
+it('prefers memory over stale persisted sends and isolates Main draft ids when writes fail', () => {
+  const old = { requestId: 'old', text: 'Old report', at: Date.now() }
+  const latest = { requestId: 'latest', text: 'Latest report and typed text', at: Date.now() }
+  saveDraft('recovery-main', '', [], { reportSends: [old] })
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Quota exceeded') })
+  updateDraftReports('recovery-main', { reportSends: [latest] })
+  updateDraftReports('remote:recovery-main', { reportSends: [old] })
+  expect(loadDraft('recovery-main').reportSends).toEqual([old])
+  expect(loadReportSends('recovery-main')).toEqual([latest])
+  expect(loadReportSends('remote:recovery-main')).toEqual([old])
+})
+
+it('expires report recovery in memory and storage after the refusal window', () => {
+  const at = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(at)
+  const send = { requestId: 'expired', text: 'Report envelope', at }
+  updateDraftReports('expiring-main', { reportSends: [send] })
+  clock.mockReturnValue(at + CHAT_SEND_REFUSAL_MS)
+  expect(loadReportSends('expiring-main')).toEqual([send])
+  clock.mockReturnValue(at + CHAT_SEND_REFUSAL_MS + 1)
+  expect(loadReportSends('expiring-main')).toEqual([])
 })
