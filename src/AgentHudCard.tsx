@@ -1,3 +1,4 @@
+import { chatMessageSummary } from '../shared/agent-chat'
 import { relativeTime } from './relativeTime'
 import {
   AlertTriangle,
@@ -311,5 +312,5 @@ export function AgentHudCard({
 export function visibleAgentTask(value: string | undefined): string | undefined {
   const text = value?.trim()
   if (!text || /^<task-notification(?:\s[^>]*)?>/i.test(text)) return undefined
-  return text
+  return chatMessageSummary(text)
 }

@@ -6,6 +6,7 @@ import type { ExternalAgentRun, ChatAsideAction, ChatAsideRecord, ChatAsideResul
 import type { ChatStashEntry } from './chat-stash.js'
 import type { ChatMcpRequest, ChatMcpResult } from './chat-mcp.js'
 import type { ChatCardEvent } from './chat-tile-events.js'
+import type { ReportBackTaskSnapshot } from './report-back.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'muse' | 'deepseek' | 'unknown'
 
@@ -773,6 +774,7 @@ export type LayoutSpec =
   | { kind: 'split'; direction: 'row' | 'column'; children: LayoutSpec[] }
 
 export type ServerMessage =
+  | { type: 'board:changed'; targetId: string; rev: number }
   | { type: 'snapshot'; snapshot: CommandoSnapshot }
   | { type: 'session_ides'; ides: SessionIde[] }
   | { type: 'capabilities'; capabilities: { revealInFinder: boolean } }
@@ -881,6 +883,8 @@ export type ServerMessage =
   | ({ type: 'chat_aside_result'; paneId: string; requestId: string } & ChatAsideResult)
   | { type: 'chat_asides'; paneId: string; asides: ChatAsideRecord[]; error?: string }
   | ({ type: 'chat_mcp_result'; paneId: string; requestId: string } & ChatMcpResult)
+  /** Report-back MCP: a remote task's status, updates, pending question, or replies changed. */
+  | { type: 'report_back_updated'; task: ReportBackTaskSnapshot }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024

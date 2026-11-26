@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AGENT_HOST_PROTOCOL_VERSION, type ChatItem, type ChatProvider, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { AsideStore, ChatAsides } from './asides.js'
-import { asideBrief, asideEnv } from './aside-brief.js'
+import { asideBrief, asideEnv, asideInstructions } from './aside-brief.js'
 import type { ChatProviderSession, ChatProviderSessionEvents } from './provider.js'
 import type { AgentSessionSpec } from './session.js'
 
@@ -43,6 +43,123 @@ async function setup(provider: ChatProvider = 'claude') {
 }
 
 describe('chat asides', () => {
+  it('persists a failed quick answer as discarded so a partial transcript stays hidden', async () => {
+    const { manager, factory, created, store } = await setup()
+    const create = factory.getMockImplementation()!
+    factory.mockImplementationOnce(async (provider, spec) => {
+      const session = await create(provider, spec)
+      created.at(-1)!.set({ status: 'error', error: 'Answer unavailable' })
+      return session
+    })
+    expect(await manager.act({ action: 'open', text: 'Quick?', ephemeral: true })).toEqual({ ok: false, error: 'Answer unavailable' })
+    expect((await store.load('main-session'))[0]).toMatchObject({ status: 'discarded', ephemeral: true, sessionId: expect.any(String) })
+  })
+  it('requires a durable promoted status even when retrying a failed save', async () => {
+    const { manager, store } = await setup()
+    const { asideId } = await manager.act({ action: 'open', text: 'Big question' })
+    const save = vi.spyOn(store, 'save').mockRejectedValueOnce(new Error('Disk full'))
+    expect(await manager.act({ action: 'promote', asideId: asideId! })).toEqual({ ok: false, error: 'Disk full' })
+    expect((await store.load('main-session'))[0]?.status).toBe('open')
+    expect((await manager.act({ action: 'promote', asideId: asideId! })).ok).toBe(true)
+    expect(save).toHaveBeenCalledTimes(2)
+    expect((await store.load('main-session'))[0]?.status).toBe('promoted')
+  })
+  it('anchors native forks at the selected turn boundary and normal opens at the last item', async () => {
+    const { manager, main, factory } = await setup()
+    main.session.forkPoint = vi.fn((id) => ({ sessionId: 'main-session', at: id ? 'older-final-uuid' : 'latest-final-uuid', itemId: id ?? 'Main context' }))
+    expect((await manager.act({ action: 'open', text: 'Earlier question', at: 'Main goal' })).ok).toBe(true)
+    expect(main.session.forkPoint).toHaveBeenCalledWith('Main goal')
+    expect(factory.mock.calls[0]?.[1].fork).toEqual({ sessionId: 'main-session', at: 'older-final-uuid', itemId: 'Main goal' })
+    await manager.act({ action: 'open', text: 'Latest question' })
+    expect(manager.list()[1]?.forkedFrom.itemId).toBe('Main context')
+  })
+  it('rejects a running turn or a missing anchor without creating a record', async () => {
+    const { manager, main, factory } = await setup()
+    main.session.forkPoint = () => null
+    main.setBusy(true)
+    expect(await manager.act({ action: 'open', text: 'Q', at: 'Main goal' })).toEqual({ ok: false, error: 'That turn is still running' })
+    expect(await manager.act({ action: 'open', text: 'Q', at: 'missing' })).toMatchObject({ ok: false })
+    expect(factory).not.toHaveBeenCalled()
+    expect(manager.list()).toEqual([])
+  })
+  it.each(['cursor', 'muse'] as const)('cuts a %s brief at the END of the anchor turn and excludes active turns', async (provider) => {
+    const { manager, main, created } = await setup(provider)
+    delete main.session.forkPoint
+    main.setItems([item('user_message', 'Main goal'), item('assistant_message', 'End of first turn'), { ...item('user_message', 'Later question'), turnId: 'new' }, { ...item('assistant_message', 'Still writing'), turnId: 'new', status: 'running' }])
+    main.set({ status: 'running' })
+    expect((await manager.act({ action: 'open', text: 'Old Q', at: 'Main goal' })).ok).toBe(true)
+    expect(created[0]!.session.send).toHaveBeenCalledWith(expect.stringContaining('End of first turn'), undefined)
+    expect(vi.mocked(created[0]!.session.send).mock.calls[0]?.[0]).not.toContain('Later question')
+    expect((await manager.act({ action: 'open', text: 'Latest Q' })).ok).toBe(true)
+    expect(manager.list()[1]?.forkedFrom.itemId).toBe('End of first turn')
+    expect(await manager.act({ action: 'open', text: 'Q', at: 'Later question' })).toEqual({ ok: false, error: 'That turn is still running' })
+  })
+  it('allows one ephemeral answer beyond the cap, forces read-only, and keeps it only when there is room', async () => {
+    const { manager, created, store, factory } = await setup()
+    for (let i = 0; i < 5; i++) await manager.act({ action: 'open', text: `Q${i}` })
+    const quick = await manager.act({ action: 'open', text: 'Quick?', ephemeral: true, mode: 'inherit' })
+    expect(quick.ok).toBe(true)
+    expect(factory.mock.calls.at(-1)?.[1]).toMatchObject({ readOnly: true, aside: { ephemeral: true, mode: 'read-only' } })
+    expect(await manager.act({ action: 'open', text: 'Another quick?', ephemeral: true })).toMatchObject({ ok: false })
+    expect(await manager.act({ action: 'keep', asideId: quick.asideId! })).toMatchObject({ ok: false, error: expect.stringContaining('5 open') })
+    await manager.act({ action: 'close', asideId: manager.list()[0]!.id })
+    expect((await manager.act({ action: 'keep', asideId: quick.asideId! })).ok).toBe(true)
+    expect(manager.list().at(-1)?.ephemeral).toBeUndefined()
+    expect((await store.load('main-session')).at(-1)?.ephemeral).toBeUndefined()
+    expect(created.at(-1)!.session.close).not.toHaveBeenCalled()
+    expect(created[5]!.session.close).toHaveBeenCalledOnce()
+    expect(factory.mock.calls.at(-1)?.[1]).toMatchObject({ resume: `child-${quick.asideId}`, fork: undefined, readOnly: true, aside: { mode: 'read-only' } })
+    expect(factory.mock.calls.at(-1)?.[1].aside?.ephemeral).toBeUndefined()
+    expect(created.at(-1)!.session.send).not.toHaveBeenCalled()
+    const calls = factory.mock.calls.length
+    expect((await manager.act({ action: 'keep', asideId: quick.asideId! })).ok).toBe(true)
+    expect(factory).toHaveBeenCalledTimes(calls)
+  })
+  it('keeps a failed quick-answer conversion closed and resumable as an ordinary aside', async () => {
+    const { manager, factory, store } = await setup()
+    const { asideId } = await manager.act({ action: 'open', text: 'Quick?', ephemeral: true })
+    factory.mockRejectedValueOnce(new Error('Resume failed'))
+    expect(await manager.act({ action: 'keep', asideId: asideId! })).toEqual({ ok: false, error: 'Resume failed' })
+    expect((await store.load('main-session'))[0]).toMatchObject({ status: 'closed', sessionId: `child-${asideId}`, lastError: 'Resume failed' })
+    expect(manager.list()[0]?.ephemeral).toBeUndefined()
+    expect((await manager.act({ action: 'reopen', asideId: asideId! })).ok).toBe(true)
+    expect(factory.mock.calls.at(-1)?.[1].aside?.ephemeral).toBeUndefined()
+  })
+  it('discards quick answers durably and never resurrects them after restart', async () => {
+    const { manager, main, spec, host, store, factory, created } = await setup()
+    const quick = await manager.act({ action: 'open', text: 'Quick?', ephemeral: true })
+    expect((await manager.act({ action: 'discard', asideId: quick.asideId! })).ok).toBe(true)
+    expect(created[0]!.session.close).toHaveBeenCalled()
+    expect((await store.load('main-session'))[0]).toMatchObject({ status: 'discarded', ephemeral: true, sessionId: expect.any(String) })
+    expect((await manager.act({ action: 'reopen', asideId: quick.asideId! })).ok).toBe(false)
+    await manager.act({ action: 'open', text: 'Unkept on exit', ephemeral: true })
+    manager.stop()
+    const restored = new ChatAsides(main.session, spec, host, store, factory)
+    await restored.sync()
+    expect(restored.list().map((record) => record.status)).toEqual(['discarded', 'discarded'])
+    expect(factory).toHaveBeenCalledTimes(2)
+    const closedAt = restored.list()[1]!.closedAt
+    const save = vi.spyOn(store, 'save').mockRejectedValueOnce(new Error('Disk full'))
+    expect(await restored.act({ action: 'discard', asideId: restored.list()[1]!.id })).toEqual({ ok: false, error: 'Disk full' })
+    for (const action of ['discard', 'close'] as const) {
+      expect(await restored.act({ action, asideId: restored.list()[1]!.id })).toEqual({ ok: true, asideId: restored.list()[1]!.id })
+    }
+    expect(restored.list()[1]).toMatchObject({ status: 'discarded', closedAt })
+    expect(save).toHaveBeenCalledTimes(3)
+    expect(factory).toHaveBeenCalledTimes(2)
+    restored.stop()
+  })
+  it.each([false, true])('releases ownership before persisting promotion (closed: %s), then refuses reopen', async (closed) => {
+    const { manager, created, host, store } = await setup()
+    const { asideId } = await manager.act({ action: 'open', text: 'Big question' })
+    if (closed) await manager.act({ action: 'close', asideId: asideId! })
+    expect((await manager.act({ action: 'promote', asideId: asideId! })).ok).toBe(true)
+    expect(created[0]!.session.close).toHaveBeenCalledTimes(1)
+    expect(host.remove).toHaveBeenCalledWith(created[0]!.session.paneId)
+    expect((await store.load('main-session'))[0]).toMatchObject({ status: 'promoted', sessionId: expect.any(String) })
+    expect(await manager.act({ action: 'reopen', asideId: asideId! })).toEqual({ ok: false, error: 'That aside was opened as chat' })
+    expect((await manager.act({ action: 'promote', asideId: asideId! })).ok).toBe(true)
+  })
   it('forks from the completed point, defaults to read-only and isolates child env', async () => {
     const { manager, factory, main, created, store } = await setup()
     const result = await manager.act({ action: 'open', text: 'Side question\nwith details' })
@@ -401,6 +518,14 @@ describe('chat asides', () => {
 })
 
 describe('aside brief and env', () => {
+  it.each(['read-only', 'inherit'] as const)('suppresses inherited status lines while retaining %s restrictions', (mode) => {
+    const instructions = asideInstructions(mode)
+    expect(instructions).toContain('Do not end replies with a 🟢 status line')
+    expect(instructions).toContain('even if the main conversation’s instructions request one')
+    expect(instructions).toContain('do not continue the main task')
+    expect(instructions).toContain('Do not set pane titles or headlines')
+    expect(instructions).toContain(mode === 'read-only' ? 'Do not modify files.' : 'The read-only restriction is off')
+  })
   it('keeps the goal, recent dialogue in order and unique file paths within its budget', () => {
     const change: ChatItem = { id: 'file', turnId: 't', kind: 'file_change', path: 'file.ts', toolUseId: 'tool', toolName: 'Write', additions: 1, deletions: 0, createdAt: 1, updatedAt: 1, status: 'completed' }
     const text = asideBrief([item('user_message', 'Goal'), item('assistant_message', 'x'.repeat(10000)), item('user_message', 'Recent'), item('assistant_message', 'Latest'), change, change], 'read-only')

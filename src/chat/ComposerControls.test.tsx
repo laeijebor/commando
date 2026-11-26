@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatSessionInfo } from '../../shared/agent-chat'
+import type { ChatModelOption, ChatProvider, ChatSessionInfo } from '../../shared/agent-chat'
 import { ModelPicker, PermissionPicker } from './ComposerControls'
 
 const models = [
@@ -89,5 +89,51 @@ describe('Codex model and permissions controls', () => {
     expect(await screen.findByRole('menuitemradio', { name: /Read only/ })).toBeInTheDocument()
     expect(screen.getByRole('menuitemradio', { name: /Full access/ })).toBeInTheDocument()
     expect(screen.queryByRole('menuitemradio', { name: /Accept edits|Auto/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('ModelPicker cross-provider handoff', () => {
+  const providerModels: Partial<Record<ChatProvider, ChatModelOption[]>> = {
+    cursor: [{ value: 'claude-4-sonnet', displayName: 'Claude 4 Sonnet' }],
+    codex: [{ value: 'gpt-5.4', displayName: 'GPT-5.4' }],
+  }
+
+  it('groups other providers below current models and requires inline confirmation before handing off', async () => {
+    const onHandoff = vi.fn(async () => {})
+    render(<ModelPicker session={fresh} disabled={false} onConfigure={vi.fn()} providerModels={providerModels} onHandoff={onHandoff} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
+    expect(await screen.findByText('Hand off to another provider')).toBeInTheDocument()
+    // Excludes the current provider (Claude) from handoff targets.
+    expect(screen.queryByRole('menu', { name: 'Hand off to Claude' })).toBeNull()
+    expect(screen.getByRole('menu', { name: 'Hand off to Cursor' })).toBeInTheDocument()
+    expect(screen.getByRole('menu', { name: 'Hand off to Codex' })).toBeInTheDocument()
+    expect(screen.getByRole('menu', { name: 'Hand off to Muse' })).toBeInTheDocument()
+    expect(screen.getByRole('menu', { name: 'Hand off to DeepSeek' })).toBeInTheDocument()
+
+    // Clicking a target shows the confirmation strip without immediately handing off.
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Claude 4 Sonnet' }))
+    expect(onHandoff).not.toHaveBeenCalled()
+    expect(screen.getByTestId('handoff-confirm')).toHaveTextContent('Hand off to Cursor (Claude 4 Sonnet) in this worktree? Sends a brief of this chat.')
+
+    // Cancelling dismisses the confirmation strip.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('handoff-confirm')).toBeNull()
+
+    // Confirming invokes onHandoff with the chosen provider and model.
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Claude 4 Sonnet' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Hand off' }))
+    expect(onHandoff).toHaveBeenCalledWith({ provider: 'cursor', model: 'claude-4-sonnet' })
+  })
+
+  it('disables confirmation while a turn is running', async () => {
+    const onHandoff = vi.fn(async () => {})
+    render(<ModelPicker session={{ ...fresh, status: 'running' }} disabled={false} onConfigure={vi.fn()} providerModels={providerModels} onHandoff={onHandoff} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'GPT-5.4' }))
+    expect(screen.getByText('Wait for the current turn to finish before handing off.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hand off' })).toBeDisabled()
+    expect(onHandoff).not.toHaveBeenCalled()
   })
 })

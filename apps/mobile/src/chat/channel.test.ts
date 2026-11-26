@@ -114,3 +114,38 @@ describe('the chat channel', () => {
     await expect(channel.subagentTranscript('agent-4')).resolves.toEqual({ items: [], error: 'Not connected to Commando' })
   })
 })
+
+describe('aside lifecycle requests', () => {
+  afterEach(() => { for (const channel of channels.splice(0)) channel.dispose(); jest.useRealTimers() })
+  it('matches replies by pane and request id, including a synchronous demo reply', async () => {
+    const { client, channel } = setup()
+    const pending = channel.aside({ action: 'open', text: 'Investigate', mode: 'read-only' })
+    const request = client.last('chat_aside')!
+    expect(request).toMatchObject({ paneId: '%7', action: { action: 'open', text: 'Investigate', mode: 'read-only' } })
+    client.emit({ type: 'chat_aside_result', paneId: '%8', requestId: request.requestId, ok: false })
+    client.emit({ type: 'chat_aside_result', paneId: '%7', requestId: 'unrelated', ok: false })
+    client.emit({ type: 'chat_aside_result', paneId: '%7', requestId: request.requestId, ok: true, asideId: 'aside001' })
+    await expect(pending).resolves.toMatchObject({ ok: true, asideId: 'aside001' })
+    const synchronous = new ChatChannel({ send: (message) => {
+      synchronous.receive({ type: 'chat_aside_result', paneId: '%7', requestId: message.requestId!, ok: true })
+      return message.requestId!
+    } }, '%7', { sendRefused: jest.fn(), actionRefused: jest.fn() })
+    await expect(synchronous.aside({ action: 'close', asideId: 'aside001' })).resolves.toMatchObject({ ok: true })
+    synchronous.dispose()
+  })
+  it('settles on server errors, timeout, closed channel and no socket', async () => {
+    jest.useFakeTimers()
+    const { client, channel } = setup()
+    const refused = channel.aside({ action: 'refork', asideId: 'aside001' })
+    client.emit({ type: 'error', requestId: client.last('chat_aside')!.requestId, code: 'failed', message: 'Fork failed' })
+    await expect(refused).resolves.toEqual({ ok: false, error: 'Fork failed' })
+    const slow = channel.aside({ action: 'reopen', asideId: 'aside001' })
+    jest.advanceTimersByTime(125_000)
+    await expect(slow).resolves.toMatchObject({ ok: false, error: expect.stringContaining('timed out') })
+    const closing = channel.aside({ action: 'close', asideId: 'aside001' })
+    channel.dispose()
+    await expect(closing).resolves.toEqual({ ok: false, error: 'The chat closed' })
+    client.connected = false
+    await expect(channel.aside({ action: 'open', text: 'Question' })).resolves.toEqual({ ok: false, error: 'Not connected to Commando' })
+  })
+})

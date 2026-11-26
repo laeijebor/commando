@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type {
   ChatAnswer,
+  ChatAsideAction,
+  ChatAsideResult,
   ChatFileSearchResult,
   ChatImageRef,
   ChatQueueAction,
@@ -46,6 +48,7 @@ export class ChatChannel {
   private readonly actions = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly searches = new Map<string, (result: ChatFileSearchResult) => void>()
   private readonly transcripts = new Map<string, (result: ChatSubagentTranscript) => void>()
+  private readonly asides = new Map<string, (result: ChatAsideResult) => void>()
   private refused: ChatSendError['refused'] = []
 
   constructor(
@@ -68,6 +71,21 @@ export class ChatChannel {
     }
     this.sends.set(requestId, setTimeout(() => this.sends.delete(requestId), CHAT_SEND_REFUSAL_MS))
     return requestId
+  }
+
+  /** Lifecycle operations can include a native fork; match the web's 125-second bound. Never rejects. */
+  aside(action: ChatAsideAction): Promise<ChatAsideResult> {
+    return new Promise((resolve) => {
+      const requestId = nextRequestId()
+      const finish = (result: ChatAsideResult): void => {
+        clearTimeout(timer)
+        this.asides.delete(requestId)
+        resolve(result)
+      }
+      const timer = setTimeout(() => finish({ ok: false, error: 'The aside operation timed out and may still be in progress' }), 125_000)
+      this.asides.set(requestId, finish)
+      if (this.transport.send({ type: 'chat_aside', paneId: this.paneId, requestId, action }) === null) finish({ ok: false, error: 'Not connected to Commando' })
+    })
   }
 
   /** `dropQueued`: queued messages Stop took back into the draft. */
@@ -143,6 +161,10 @@ export class ChatChannel {
 
   /** Every server message, so replies to this pane's requests reach their caller. */
   receive(message: ServerMessage): void {
+    if (message.type === 'chat_aside_result') {
+      if (message.paneId === this.paneId) this.asides.get(message.requestId)?.(message)
+      return
+    }
     if (message.type === 'chat_file_search_result') {
       const { type: _type, paneId: _paneId, requestId, ...result } = message
       this.searches.get(requestId)?.(result)
@@ -155,6 +177,7 @@ export class ChatChannel {
     }
     if (message.type !== 'error' || !message.requestId) return
     const { requestId } = message
+    this.asides.get(requestId)?.({ ok: false, error: message.message })
     this.searches.get(requestId)?.({ entries: [], truncated: false, error: message.message })
     this.transcripts.get(requestId)?.({ items: [], error: message.message })
     const send = this.sends.get(requestId)
@@ -178,6 +201,7 @@ export class ChatChannel {
 
   dispose(): void {
     for (const timer of [...this.sends.values(), ...this.actions.values()]) clearTimeout(timer)
+    for (const finish of [...this.asides.values()]) finish({ ok: false, error: 'The chat closed' })
     this.sends.clear()
     this.actions.clear()
     for (const finish of [...this.searches.values()]) finish({ entries: [], truncated: false, error: 'The chat closed' })

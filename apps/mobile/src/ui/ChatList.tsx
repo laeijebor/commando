@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
+import { chatMessageSummary } from '@commando/agent-chat'
 import type { SessionIdentities, SessionIdentity } from '@commando/session-identity'
 import { sessionCreationStatus, type SessionCreation } from '@commando/tmux-create'
 import type { AgentRow } from '../agents/selectors'
@@ -104,7 +105,7 @@ export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelect
           id: row.session.id, name: row.session.name, identity: row.identity, indicator: row.indicator,
           subtitle: row.subtitle, provider: row.provider, updatedAt: row.updatedAt, pending: row.pending, openPaneId: row.openPaneId,
           paneIds: row.agents.map((pane) => pane.id), selected: row.openPaneId === selectedPaneId || row.agents.some((pane) => pane.id === selectedPaneId),
-          children: row.agents.length > 1 ? row.agents.map((pane) => ({ id: pane.id, title: chats[pane.id]?.session.title || pane.title || 'Agent', provider: chats[pane.id]?.session.provider ?? state.agentStatuses[pane.id]?.provider, attention: chatPaneAttention(state.agentStatuses[pane.id], chats[pane.id], seen[pane.id]), selected: pane.id === selectedPaneId })) : [],
+          children: row.agents.length > 1 ? row.agents.map((pane) => ({ id: pane.id, title: chatMessageSummary(chats[pane.id]?.session.title || pane.title || 'Agent'), provider: chats[pane.id]?.session.provider ?? state.agentStatuses[pane.id]?.provider, attention: chatPaneAttention(state.agentStatuses[pane.id], chats[pane.id], seen[pane.id]), selected: pane.id === selectedPaneId })) : [],
         } })) : []),
       ]),
     ]

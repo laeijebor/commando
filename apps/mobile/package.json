@@ -52,6 +52,8 @@
   },
   "jest": {
     "preset": "jest-expo/ios",
+    "watchman": false,
+    "maxWorkers": 2,
     "setupFilesAfterEnv": [
       "<rootDir>/jest.setup.ts"
     ],
@@ -66,8 +68,10 @@
       "^@commando/canvas-feedback$": "<rootDir>/../../shared/canvas-feedback.ts",
       "^@commando/chat-subagents$": "<rootDir>/../../shared/chat-subagents.ts",
       "^@commando/chat-tile-events$": "<rootDir>/../../shared/chat-tile-events.ts",
+      "^\\./session-asks\\.js$": "<rootDir>/../../shared/session-asks.ts",
       "^\\./agent-chat\\.js$": "<rootDir>/../../shared/agent-chat.ts",
       "^\\./chat-mcp\\.js$": "<rootDir>/../../shared/chat-mcp.ts",
+      "^\\./report-back\\.js$": "<rootDir>/../../shared/report-back.ts",
       "^\\./tile-inspect\\.js$": "<rootDir>/../../shared/tile-inspect.ts",
       "^\\./protocol\\.js$": "<rootDir>/../../shared/protocol.ts",
       "^\\./canvas-manifest\\.js$": "<rootDir>/../../shared/canvas-manifest.ts",

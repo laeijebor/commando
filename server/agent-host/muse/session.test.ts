@@ -59,8 +59,8 @@ function harness(spec: Partial<AgentSessionSpec> = {}) {
 }
 
 /** A started chat with one turn under way. */
-async function running() {
-  const result = harness()
+async function running(spec: Partial<AgentSessionSpec> = {}) {
+  const result = harness(spec)
   await result.session.start()
   result.session.send('Hello')
   await tick()
@@ -114,6 +114,54 @@ describe('Muse brief aside timeline', () => {
 })
 
 describe('MuseChatSession', () => {
+  const quickAside = { parentPaneId: '%3', id: 'abcd1234', title: 'Quick', mode: 'read-only' as const, method: 'brief' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1, ephemeral: true as const }
+
+  it('declines ephemeral approvals and questions once without publishing or retaining a user request', async () => {
+    const { session, client, turnId } = await running({ aside: quickAside, readOnly: true })
+    const emitted: unknown[] = []
+    session.on('items', (items) => emitted.push(...items))
+    const approval = { turnId, approvalId: 'quick-ap', currentRequirementId: { approvalId: 'quick-ap', sourceIndex: 0 },
+      availableChoices: [{ choiceId: 'yes', decision: 'approved' }, { choiceId: 'no', decision: 'denied' }] }
+    const question = { turnId, userInputId: 'quick-q', questions: [{ id: 'q', question: 'Which?', options: [{ label: 'A' }] }] }
+    client.server('approval/request', approval)
+    client.emit('approval/requested', approval)
+    client.server('userInput/request', question, 'req-2')
+    client.emit('userInput/requested', question)
+    await tick()
+    // The notification can arrive after the decision RPC succeeds.
+    client.emit('approval/requested', approval)
+    expect(client.sent('approval/decide')).toEqual([{ sessionId: SESSION, commandId: expect.stringMatching(V7), approvalId: 'quick-ap', choiceId: 'no', requirementId: approval.currentRequirementId }])
+    expect(client.sent('userInput/cancel')).toEqual([{ sessionId: SESSION, commandId: expect.stringMatching(V7), userInputId: 'quick-q' }])
+    expect(client.notified).toEqual([])
+    expect(emitted).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'request' })]))
+    expect(session.snapshot().items.some((item) => item.kind === 'request')).toBe(false)
+    expect(session.snapshot().session.status).toBe('running')
+    expect(session.answer('approval:quick-ap', { kind: 'approval', decision: 'allow' })).toBe(false)
+    expect(session.answer('question:quick-q', { kind: 'question', answers: { 'Which?': 'A' } })).toBe(false)
+    session.close()
+  })
+
+  it.each(['missing-choice', 'decline-rejected'])('interrupts ephemeral requests when Muse cannot decline (%s)', async (failure) => {
+    const { session, client, turnId } = await running({ aside: quickAside, readOnly: true })
+    if (failure === 'decline-rejected') client.request.mockRejectedValueOnce(new Error('Decline refused'))
+    client.server('approval/request', { turnId, approvalId: 'quick-ap', availableChoices: failure === 'missing-choice' ? [] : [{ choiceId: 'no', decision: 'denied' }] })
+    await tick()
+    expect(client.sent('turn/interrupt')).toMatchObject([{ sessionId: SESSION, turnId }])
+    expect(session.snapshot().items.some((item) => item.kind === 'request')).toBe(false)
+    expect(session.snapshot().session.status).not.toBe('waiting')
+    session.close()
+  })
+
+  it('restores interactive requests in a kept aside session', async () => {
+    const { session, client, turnId } = await running({ aside: { ...quickAside, ephemeral: undefined }, readOnly: true, resume: SESSION })
+    client.server('userInput/request', { turnId, userInputId: 'kept-q', questions: [{ id: 'q', question: 'Which?', selection: { mode: 'single' }, options: [{ label: 'A' }] }] })
+    expect(session.snapshot().session.status).toBe('waiting')
+    expect(session.answer('question:kept-q', { kind: 'question', answers: { 'Which?': 'A' } })).toBe(true)
+    await tick()
+    expect(client.sent('userInput/answer')).toMatchObject([{ userInputId: 'kept-q', answers: [{ questionId: 'q', selectedLabel: 'A' }] }])
+    session.close()
+  })
+
   it('starts a session in the pane folder with the chat\'s approval mode, then lists models and skills', async () => {
     const { session, client } = harness({ permissionMode: 'bypassPermissions', fullAccess: true })
     await session.start()

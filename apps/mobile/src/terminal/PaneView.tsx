@@ -1,3 +1,4 @@
+import { parseAsideKey } from '@commando/agent-chat'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Dimensions,
@@ -62,6 +63,11 @@ export type PaneViewProps = {
  * component so that neither can drift from the other.
  */
 export function PaneView(props: PaneViewProps): React.JSX.Element {
+  if (props.paneId && parseAsideKey(props.paneId)) return <Text>Open asides from their Main chat.</Text>
+  return <PaneContent {...props} />
+}
+
+function PaneContent(props: PaneViewProps): React.JSX.Element {
   const chat = useChat(props.host?.id, props.paneId)
   const state = useDaemonConnection(props.host)
   const client = useDaemonClient(props.host)

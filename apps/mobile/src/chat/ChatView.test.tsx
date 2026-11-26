@@ -1,7 +1,7 @@
-import { ActionSheetIOS, StyleSheet } from 'react-native'
+import { ActionSheetIOS, Linking, StyleSheet } from 'react-native'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
-import type { ChatState } from '@commando/agent-chat'
+import type { ChatModelOption, ChatState } from '@commando/agent-chat'
 
 import type { Host } from '../hosts/types'
 import { ThemeProvider } from '../theme'
@@ -191,6 +191,124 @@ describe('the phone chat view', () => {
     expect(sheet.mock.calls[0]![0].options).toEqual(['✓ Ask before edits', 'Accept edits', 'Plan mode', 'Cancel'])
     expect(client.last('chat_configure')).toMatchObject({ settings: { permissionMode: 'plan' } })
     sheet.mockRestore()
+  })
+
+  it('shows Cursor settings pills including fast mode toggle and Cursor permission options', async () => {
+    const sheet = jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions').mockImplementation((options, callback) => {
+      callback(options.options.findIndex((option) => option === 'Auto-review'))
+    })
+    const cursorModels: ChatModelOption[] = [
+      { value: 'claude-4.5-sonnet', displayName: 'Sonnet 4.5', resolvedModel: 'claude-4.5-sonnet', efforts: ['low', 'medium', 'high'], supportsFast: true },
+      { value: 'gpt-5', displayName: 'GPT-5', resolvedModel: 'gpt-5' },
+    ]
+    const { client, rerender } = renderChat(chatState({
+      session: session({
+        provider: 'cursor',
+        permissionMode: 'default',
+        models: [...cursorModels],
+        model: 'claude-4.5-sonnet',
+        selectedModel: 'claude-4.5-sonnet',
+        effort: 'medium',
+      }),
+    }))
+    await settle()
+
+    expect(screen.getByLabelText('Model: Sonnet 4.5')).toBeTruthy()
+    expect(screen.getByLabelText('Effort: Medium')).toBeTruthy()
+    const fastOff = screen.getByLabelText('Fast mode: Fast off')
+    expect(fastOff.props.accessibilityState).toMatchObject({ checked: false })
+    fireEvent.press(fastOff)
+    expect(client.last('chat_configure')).toMatchObject({ settings: { fast: true } })
+
+    rerender(chatState({
+      session: session({
+        provider: 'cursor',
+        permissionMode: 'default',
+        models: [...cursorModels],
+        model: 'claude-4.5-sonnet',
+        selectedModel: 'claude-4.5-sonnet',
+        effort: 'medium',
+        fast: true,
+      }),
+    }))
+    const fastOn = screen.getByLabelText('Fast mode: ⚡ Fast')
+    expect(fastOn.props.accessibilityState).toMatchObject({ checked: true })
+    fireEvent.press(fastOn)
+    expect(client.last('chat_configure')).toMatchObject({ settings: { fast: false } })
+
+    await act(async () => { fireEvent.press(screen.getByLabelText('Permissions: Sandboxed')) })
+    expect(sheet.mock.calls[0]![0].options).toEqual(['Full access', '✓ Sandboxed', 'Auto-review', 'Plan', 'Cancel'])
+    expect(client.last('chat_configure')).toMatchObject({ settings: { permissionMode: 'auto' } })
+    sheet.mockRestore()
+
+    // Models without supportsFast hide the fast toggle.
+    rerender(chatState({
+      session: session({
+        provider: 'cursor',
+        permissionMode: 'default',
+        models: [...cursorModels],
+        model: 'gpt-5',
+        selectedModel: 'gpt-5',
+      }),
+    }))
+    expect(screen.queryByLabelText(/^Fast mode:/)).toBeNull()
+  })
+
+  it('shows the Cursor login banner when login is required and sends /login', async () => {
+    const { client, rerender } = renderChat(chatState({
+      session: session({ provider: 'cursor', login: { state: 'required' } }),
+    }))
+    await settle()
+    expect(screen.getByTestId('cursor-login-banner')).toBeTruthy()
+    expect(screen.getByText('Cursor needs you to log in.')).toBeTruthy()
+    fireEvent.press(screen.getByRole('button', { name: 'Log in to Cursor' }))
+    expect(client.last('chat_send')).toMatchObject({ paneId: '%7', text: '/login' })
+
+    // Custom reason and disconnected state disable the button.
+    rerender(chatState({
+      hostConnected: false,
+      session: session({ provider: 'cursor', login: { state: 'required', reason: 'Session expired' } }),
+    }))
+    expect(screen.getByText('Session expired')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Log in to Cursor' })).toBeDisabled()
+  })
+
+  it('shows pending Cursor login actions, opens safe https URLs, and cancels login', async () => {
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined)
+    const { client, rerender } = renderChat(chatState({
+      session: session({
+        provider: 'cursor',
+        login: { state: 'pending', url: 'https://cursor.com/login?code=abc' },
+      }),
+    }))
+    await settle()
+    expect(screen.getByText('Finish logging in to Cursor in your browser.')).toBeTruthy()
+    fireEvent.press(screen.getByRole('button', { name: 'Open login page' }))
+    expect(openURL).toHaveBeenCalledWith('https://cursor.com/login?code=abc')
+
+    fireEvent.press(screen.getByRole('button', { name: 'Cancel' }))
+    expect(client.last('chat_send')).toMatchObject({ paneId: '%7', text: '/login cancel' })
+
+    // Unsafe non-https URLs must not offer the open button.
+    rerender(chatState({
+      session: session({
+        provider: 'cursor',
+        login: { state: 'pending', url: 'http://cursor.com/login' },
+      }),
+    }))
+    expect(screen.queryByRole('button', { name: 'Open login page' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
+
+    rerender(chatState({
+      hostConnected: false,
+      session: session({
+        provider: 'cursor',
+        login: { state: 'pending', url: 'javascript:alert(1)' },
+      }),
+    }))
+    expect(screen.queryByRole('button', { name: 'Open login page' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    openURL.mockRestore()
   })
 })
 

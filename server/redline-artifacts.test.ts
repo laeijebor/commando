@@ -331,6 +331,20 @@ describe('RedlineArtifactRegistry', () => {
     expect(registry.resolve(id, 'index.html')).toBe(join(dir, 'index.html'))
   })
 
+  it('trims all released overflow registrations and keeps the bound during further insertions', () => {
+    let now = 1000
+    const registry = new RedlineArtifactRegistry({ now: () => now++ }), ids: string[] = []
+    for (let i = 0; i < MAX_ARTIFACT_DIRS + 10; i++) {
+      ids.push(registry.register(realpathSync(artifactDir())).id)
+      registry.retain(ids)
+    }
+    registry.retain([])
+    expect(ids.filter((id) => registry.directory(id))).toHaveLength(MAX_ARTIFACT_DIRS)
+    expect(registry.directory(ids[0])).toBeNull()
+    const newest = registry.register(realpathSync(artifactDir())).id
+    expect(ids.filter((id) => registry.directory(id))).toHaveLength(MAX_ARTIFACT_DIRS - 1)
+    expect(registry.directory(newest)).not.toBeNull()
+  })
   it('unregister removes the entry from the state file too', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
     const registry = new RedlineArtifactRegistry({ statePath })

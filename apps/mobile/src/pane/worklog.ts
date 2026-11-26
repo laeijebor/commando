@@ -8,6 +8,7 @@ import type {
 } from '@commando/protocol'
 
 import { parseMarkdown, type MarkdownBlock } from './markdown'
+import { chatMessageSummary } from '@commando/agent-chat'
 
 /**
  * The Info sheet's worklog section, as data. Everything the desktop
@@ -87,7 +88,7 @@ export function timelineEntries(updates: readonly SessionBriefUpdate[] | undefin
 
 export function buildWorklogView(brief: SessionBrief): WorklogView {
   return {
-    headline: brief.headline,
+    headline: chatMessageSummary(brief.headline),
     state: brief.state,
     headlineSource: brief.headlineSource,
     recap: parseMarkdown(brief.recapMarkdown),
@@ -117,7 +118,7 @@ export function hudDetailsView(status: AgentStatus | undefined): HudDetailsView 
   const activity = details.currentActivity?.label
     ?? details.recentActivities[0]?.label
   return {
-    ...(details.intent ? { intent: details.intent } : {}),
+    ...(details.intent ? { intent: chatMessageSummary(details.intent) } : {}),
     ...(activity ? { activity } : {}),
     checks: details.checks.map((check) => ({ label: check.label, status: check.status })),
     ...(details.changes ? { changes: details.changes } : {}),

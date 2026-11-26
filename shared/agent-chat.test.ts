@@ -141,6 +141,45 @@ describe('chat settings', () => {
     expect(parseChatSessionInfo({ ...session, selectedModel: 'a b' })).toBeNull()
     expect(parseChatSessionInfo({ ...session, contextUsage: { usedTokens: 5, maxTokens: 0 } })).toEqual(session)
   })
+
+  it('parses valid sessionUsage and rejects non-finite or negative numbers', () => {
+    const usage = {
+      inputTokens: 10_000,
+      outputTokens: 2_500,
+      cacheReadTokens: 1_200,
+      cacheWriteTokens: 500,
+      reasoningTokens: 800,
+      totalTokens: 14_200,
+      chargedCents: 4.2,
+      rawCostCents: 5.5,
+      updatedAt: 1_700_000_000_000,
+    }
+    expect(parseChatSessionInfo({ ...session, provider: 'cursor', sessionUsage: { ...usage, extra: 'dropped' } })?.sessionUsage).toEqual(usage)
+
+    const minimal = { inputTokens: 100, outputTokens: 50, totalTokens: 150, updatedAt: 1_000 }
+    expect(parseChatSessionInfo({ ...session, provider: 'cursor', sessionUsage: minimal })?.sessionUsage).toEqual(minimal)
+
+    // Preserves explicit zero costs (e.g. plan-included usage).
+    const planIncluded = { ...minimal, chargedCents: 0, rawCostCents: 12 }
+    expect(parseChatSessionInfo({ ...session, provider: 'cursor', sessionUsage: planIncluded })?.sessionUsage).toEqual(planIncluded)
+
+    // Rejects negative, NaN, Infinity, or non-number values on required and optional fields.
+    for (const bad of [
+      null,
+      {},
+      { ...minimal, inputTokens: -1 },
+      { ...minimal, outputTokens: Number.NaN },
+      { ...minimal, totalTokens: Number.POSITIVE_INFINITY },
+      { ...minimal, updatedAt: -5 },
+      { ...minimal, cacheReadTokens: -1 },
+      { ...minimal, cacheWriteTokens: Number.NaN },
+      { ...minimal, reasoningTokens: Number.POSITIVE_INFINITY },
+      { ...minimal, chargedCents: -0.01 },
+      { ...minimal, rawCostCents: '4.2' },
+    ]) {
+      expect(parseChatSessionInfo({ ...session, sessionUsage: bad })?.sessionUsage).toBeUndefined()
+    }
+  })
 })
 
 describe('richer input', () => {

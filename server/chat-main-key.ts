@@ -13,7 +13,7 @@ export function asideSessionIds(chats: readonly Pick<ChatState, 'paneId' | 'sess
   const ids = new Set(persisted)
   for (const chat of chats) {
     for (const aside of chat.asides ?? []) {
-      if (aside.sessionId) ids.add(aside.sessionId)
+      if (aside.sessionId && aside.status !== 'promoted') ids.add(aside.sessionId)
     }
     if (!isMainChatKey(chat.paneId) && chat.session.sessionId) ids.add(chat.session.sessionId)
   }
@@ -59,7 +59,7 @@ export class PersistedAsideSessions {
           const value: unknown = JSON.parse(await readFile(path, 'utf8'))
           const records = typeof value === 'object' && value !== null && 'version' in value && value.version === 1 && 'asides' in value
             ? parseChatAsideRecords(value.asides) : null
-          ids = records?.flatMap((record) => record.sessionId ? [record.sessionId] : []) ?? []
+          ids = records?.flatMap((record) => record.sessionId && record.status !== 'promoted' ? [record.sessionId] : []) ?? []
         } catch (error) {
           if (!(error instanceof SyntaxError)) return
         }

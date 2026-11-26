@@ -12,6 +12,7 @@ import {
   sortStatusKinds,
   STATUS_PRIORITY,
 } from './selectors'
+import { asideReportText } from '@commando/agent-chat'
 import {
   BRIEFS,
   CHECKING_STATUS,
@@ -65,6 +66,14 @@ describe('attention', () => {
 
 describe('buildAgentRows', () => {
   const rows = buildAgentRows({ statuses: STATUSES, snapshot: SNAPSHOT, briefs: BRIEFS })
+
+  it('cleans report envelopes in task summary fallbacks and saved brief headlines', () => {
+    const text = asideReportText({ asideId: 'aside001', title: 'Layout', body: 'Ready for review\n- Check iPad' })
+    const status = { ...WORKING_STATUS, details: undefined, summary: text }
+    const inputs = { statuses: { [status.paneId]: status }, snapshot: SNAPSHOT }
+    expect(buildAgentRows(inputs)[0]?.headline).toBe('From aside “Layout”: Ready for review')
+    expect(buildAgentRows({ ...inputs, briefs: { [status.paneId]: { ...BRIEFS['%14']!, headline: text } } })[0]?.headline).toBe('From aside “Layout”: Ready for review')
+  })
 
   it('joins each status to its tmux session and window', () => {
     const row = rows.find((candidate) => candidate.paneId === '%14')

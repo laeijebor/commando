@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
-import { NARROW_PANEL_QUERY, panelScrimClipPath, clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, panelPanePrs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { builtinPanelTab, NARROW_PANEL_QUERY, panelScrimClipPath, clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, panelPanePrs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { neighbouringTab, nextWebPaneOrder } from '../shared/web-pane-placement'
 
 function tab(id: string, anchorPaneId = '%12', order = 0): WebPane {
@@ -185,4 +185,8 @@ describe('drawer scrim controls', () => {
       { left: 20, top: 110, right: 20, bottom: 130 },
     ])).toBe('path(evenodd, "M0 0H800V300H0Z M0 0H30V20H0Z")')
   })
+})
+
+it('keeps the persisted session key while displaying Board', () => {
+  expect(builtinPanelTab('%12', 'session')).toMatchObject({ id: 'panel:%12:session', key: 'session', label: 'Board' })
 })

@@ -406,6 +406,7 @@ type PruneWindow = { id: string; sessionId: string; paneIds: readonly string[] }
 
 /** How closed tabs find their owner: the anchor's stable target id, plus a server-side title. */
 export type ClosedTabHooks = {
+  onClosed?: (targetId: string, pane: WebPane, title?: string) => void
   /** Must still answer for an anchor that just left the tmux snapshot. */
   targetIdFor: (paneId: string) => string | undefined
   titleFor?: (pane: WebPane) => string | undefined
@@ -590,7 +591,11 @@ export class WebPaneService {
     if (!hooks || !targetId) return
     let resolved = title?.trim() || undefined
     try { resolved ??= hooks.titleFor?.(pane) } catch { /* The list falls back to the tab's file or URL. */ }
-    this.closedPanes.record(targetId, pane, resolved)
+    if (this.closedPanes.record(targetId, pane, resolved)) {
+      // Additive observers must never prevent a tab from closing.
+      try { hooks.onClosed?.(targetId, pane, resolved) }
+      catch (error) { console.warn('[commando] closed tab observer failed', error) }
+    }
   }
 
   /** Returns true only when a Chromium page title changes. */

@@ -9,7 +9,7 @@ import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type Chat
 import type { ChatCardEvent } from './chat-tile-events.js'
 import { ASK_KEY } from './session-asks.js'
 
-export const AGENT_HOST_PROTOCOL_VERSION = 9
+export const AGENT_HOST_PROTOCOL_VERSION = 10
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -60,14 +60,14 @@ export const CHAT_STEER_ALL_HOST_VERSION = 8
 export function hostTakesSteerAll(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_STEER_ALL_HOST_VERSION
 }
-export const CHAT_ASIDES_HOST_VERSION = 9
+export const CHAT_ASIDES_HOST_VERSION = 10
 
 export function hostTakesAsides(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_ASIDES_HOST_VERSION
 }
 
 export type ChatAsideMode = 'read-only' | 'inherit'
-export interface ChatForkPoint { sessionId: string; at?: string }
+export interface ChatForkPoint { sessionId: string; at?: string; itemId?: string }
 export interface ChatAsideRecord {
   id: string
   title: string
@@ -76,20 +76,70 @@ export interface ChatAsideRecord {
   readOnlyEnforced: boolean
   sessionId?: string
   forkedFrom: ChatForkPoint
-  status: 'open' | 'closed'
+  status: 'open' | 'closed' | 'discarded' | 'promoted'
+  ephemeral?: true
   createdAt: number
   closedAt?: number
   lastError?: string
 }
-export type ChatAsideInfo = { parentPaneId: string } & Pick<ChatAsideRecord, 'id' | 'title' | 'mode' | 'method' | 'readOnlyEnforced' | 'forkedFrom' | 'createdAt'>
+export type ChatAsideInfo = { parentPaneId: string } & Pick<ChatAsideRecord, 'id' | 'title' | 'mode' | 'method' | 'readOnlyEnforced' | 'forkedFrom' | 'createdAt' | 'ephemeral'>
 export type ChatAsideAction =
-  | { action: 'open'; text: string; images?: ChatImageRef[]; mode?: ChatAsideMode }
-  | { action: 'close' | 'reopen' | 'refork'; asideId: string }
+  | { action: 'open'; text: string; images?: ChatImageRef[]; mode?: ChatAsideMode; at?: string; ephemeral?: true }
+  | { action: 'close' | 'reopen' | 'refork' | 'keep' | 'discard' | 'promote'; asideId: string }
   | { action: 'mode'; asideId: string; mode: ChatAsideMode }
-export interface ChatAsideResult { ok: boolean; asideId?: string; error?: string }
+export interface ChatAsideResult { ok: boolean; asideId?: string; promotedPaneId?: string; error?: string }
 
 export function asideKey(paneId: string, asideId: string): string {
   return `${paneId}~${asideId}`
+}
+
+export const ASIDE_REPORT_PROMPT = 'Report to Main: write a short report of this aside for the main conversation — what was asked and what you found or concluded, as a one-line headline and up to 5 short bullets. Include file paths or next steps only if relevant. Reply with only the report: no preamble and no status or 🟢 line.'
+
+export interface AsideReport { asideId: string; title: string; body: string }
+export type AsideMessageSegment = ({ kind: 'report' } & AsideReport) | { kind: 'text'; text: string }
+const ASIDE_REPORT_END = '<!-- /commando-aside -->'
+
+/** Keep the envelope heading on one line even when a title contains newlines. */
+export function asideReportText({ asideId, title, body }: AsideReport): string {
+  const heading = title.replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n')
+  return `**From aside “${heading}”**\n<!-- commando-aside:${encodeURIComponent(asideId)} -->\n\n${body}\n${ASIDE_REPORT_END}`
+}
+
+/** Parse complete, line-delimited envelopes without consuming the following message. */
+export function parseAsideReports(text: string): AsideMessageSegment[] {
+  const segments: AsideMessageSegment[] = []
+  const envelope = /^\*\*From aside “([^\n]*)”\*\*\n<!-- commando-aside:([^\s]+) -->\n\n([\s\S]*?)\n<!-- \/commando-aside -->(?=\n|$)/gm
+  let end = 0
+  for (const match of text.matchAll(envelope)) {
+    let asideId: string
+    try { asideId = decodeURIComponent(match[2]!) } catch { continue }
+    const preceding = text.slice(end, match.index).trim()
+    if (preceding) segments.push({ kind: 'text', text: preceding })
+    segments.push({ kind: 'report', asideId, title: match[1]!.replace(/\\(\\|n|r)/g, (_, char: string) => char === 'n' ? '\n' : char === 'r' ? '\r' : '\\'), body: match[3]! })
+    end = match.index + match[0].length
+  }
+  const remaining = text.slice(end).trim()
+  if (remaining) segments.push({ kind: 'text', text: remaining })
+  return segments
+}
+
+/** Convenience for callers that expect exactly one report and no typed text. */
+export function parseAsideReport(text: string): AsideReport | null {
+  const segments = parseAsideReports(text)
+  const segment = segments[0]
+  if (segments.length !== 1 || segment?.kind !== 'report') return null
+  const { kind: _kind, ...report } = segment
+  return report
+}
+
+/** Human-readable task/queue text; summarise before any surface applies a length limit. */
+export function chatMessageSummary(text: string): string {
+  return parseAsideReports(stripAttachmentNotes(text)).map((segment) => segment.kind === 'report'
+    ? `From aside “${segment.title.replace(/\s+/g, ' ').trim()}”: ${segment.body.trim().split(/\r?\n/)[0] ?? ''}`
+    // Older reports and saved hook summaries have no closing marker. Their body
+    // boundary is unknowable, but their heading and first line can still be displayed cleanly.
+    : segment.text.replace(/\*\*From aside “([^\n]*)”\*\*\s+<!-- commando-aside:[^>]*?(?:-->|$)(?:\s*([\s\S]*))?/g,
+      (_, title: string, body: string | undefined) => `From aside “${title}”${body ? `: ${body.split(/\r?\n/)[0]}` : ''}`)).join('\n\n')
 }
 export function parseAsideKey(key: string): { paneId: string; asideId: string } | null {
   const match = /^(%\d+)~([a-z0-9]{8})$/.exec(key)
@@ -525,6 +575,21 @@ export interface ChatContextUsage {
   categories: { name: string; tokens: number }[]
 }
 
+/** Cumulative token counts and optional billed cost (when context window size isn't reported). */
+export interface ChatSessionUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  totalTokens: number
+  /** Billed cost in USD cents, when reported by the provider. */
+  chargedCents?: number
+  /** Undiscounted model token cost in USD cents, when reported. */
+  rawCostCents?: number
+  updatedAt: number
+}
+
 export type ChatPlanSeverity = 'normal' | 'warning' | 'critical'
 
 /** One of the plan's rate-limit windows, as Claude's `/usage` reports it. */
@@ -590,6 +655,8 @@ export interface ChatSessionInfo {
   sandboxed?: boolean
   models?: ChatModelOption[]
   contextUsage?: ChatContextUsage
+  /** Cumulative token counts and optional billed cost when context window size isn't reported. */
+  sessionUsage?: ChatSessionUsage
   /** Plan rate limits; absent before the first reading and for API-key logins. */
   planUsage?: ChatPlanUsage
   /** Claude config directory (`~/.claudep`, `~/.claudew`); decides the login used. */
@@ -857,6 +924,32 @@ function parseContextUsage(value: unknown): ChatContextUsage | undefined {
   return withOptional({ usedTokens: value.usedTokens, maxTokens: value.maxTokens, autoCompact: value.autoCompact === true, categories } as ChatContextUsage, {
     autoCompactThreshold: finiteCount(value.autoCompactThreshold) ? value.autoCompactThreshold : undefined,
   })
+}
+
+function parseSessionUsage(value: unknown): ChatSessionUsage | undefined {
+  if (!isRecord(value)) return undefined
+  if (!finiteCount(value.inputTokens) || !finiteCount(value.outputTokens) || !finiteCount(value.totalTokens) || !finiteCount(value.updatedAt)) {
+    return undefined
+  }
+  const optionalFields = ['cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'chargedCents', 'rawCostCents'] as const
+  for (const field of optionalFields) {
+    if (value[field] !== undefined && !finiteCount(value[field])) return undefined
+  }
+  return withOptional(
+    {
+      inputTokens: value.inputTokens,
+      outputTokens: value.outputTokens,
+      totalTokens: value.totalTokens,
+      updatedAt: value.updatedAt,
+    } as ChatSessionUsage,
+    {
+      cacheReadTokens: value.cacheReadTokens,
+      cacheWriteTokens: value.cacheWriteTokens,
+      reasoningTokens: value.reasoningTokens,
+      chargedCents: value.chargedCents,
+      rawCostCents: value.rawCostCents,
+    },
+  )
 }
 const PLAN_SEVERITIES = new Set<ChatPlanSeverity>(['normal', 'warning', 'critical'])
 
@@ -1228,6 +1321,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   const login = parseChatLogin(value.login)
   const models = parseChatModelOptions(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
+  const sessionUsage = parseSessionUsage(value.sessionUsage)
   const planUsage = parsePlanUsage(value.planUsage)
   const queue = parseQueue(value.queue)
   return {
@@ -1254,6 +1348,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(login ? { login } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),
+    ...(sessionUsage ? { sessionUsage } : {}),
     ...(planUsage ? { planUsage } : {}),
     ...(queue?.length ? { queue } : {}),
     ...(isChatPermissionMode(value.prePlanPermissionMode) ? { prePlanPermissionMode: value.prePlanPermissionMode } : {}),
@@ -1446,27 +1541,28 @@ function isAsideId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-z0-9]{8}$/.test(value)
 }
 function parseForkPoint(value: unknown): ChatForkPoint | null {
-  if (!isRecord(value) || !shortString(value.sessionId) || !optionalString(value.at, MAX_ID) || value.at === '') return null
-  return { sessionId: value.sessionId, ...(typeof value.at === 'string' ? { at: value.at } : {}) }
+  if (!isRecord(value) || !shortString(value.sessionId) || !optionalString(value.at, MAX_ID) || value.at === '' || !optionalString(value.itemId, MAX_ID) || value.itemId === '') return null
+  return { sessionId: value.sessionId, ...(typeof value.at === 'string' ? { at: value.at } : {}), ...(typeof value.itemId === 'string' ? { itemId: value.itemId } : {}) }
 }
 export function parseChatAsideInfo(value: unknown): ChatAsideInfo | null {
   if (!isRecord(value) || !isPaneId(value.parentPaneId) || !isAsideId(value.id)
     || !shortString(value.title, 60) || !isChatAsideMode(value.mode)
     || (value.method !== 'fork' && value.method !== 'brief') || typeof value.readOnlyEnforced !== 'boolean'
+    || (value.ephemeral !== undefined && value.ephemeral !== true)
     || typeof value.createdAt !== 'number' || !Number.isFinite(value.createdAt) || value.createdAt < 0) return null
   const forkedFrom = parseForkPoint(value.forkedFrom)
   return forkedFrom ? { parentPaneId: value.parentPaneId, id: value.id, title: value.title, mode: value.mode,
-    method: value.method, readOnlyEnforced: value.readOnlyEnforced, forkedFrom, createdAt: value.createdAt } : null
+    method: value.method, readOnlyEnforced: value.readOnlyEnforced, forkedFrom, createdAt: value.createdAt, ...(value.ephemeral === true ? { ephemeral: true } : {}) } : null
 }
 export function parseChatAsideRecord(value: unknown): ChatAsideRecord | null {
   if (!isRecord(value)) return null
   const info = parseChatAsideInfo({ ...value, parentPaneId: '%0' })
-  if (!info || (value.status !== 'open' && value.status !== 'closed')
+  if (!info || !['open', 'closed', 'discarded', 'promoted'].includes(value.status as string)
     || !optionalString(value.lastError, 4096)
     || !optionalString(value.sessionId, MAX_ID) || value.sessionId === ''
     || (value.closedAt !== undefined && (typeof value.closedAt !== 'number' || !Number.isFinite(value.closedAt) || value.closedAt < info.createdAt))) return null
   const { parentPaneId: _parent, ...fields } = info
-  return { ...fields, status: value.status, ...(typeof value.sessionId === 'string' ? { sessionId: value.sessionId } : {}),
+  return { ...fields, status: value.status as ChatAsideRecord['status'], ...(typeof value.sessionId === 'string' ? { sessionId: value.sessionId } : {}),
     ...(typeof value.closedAt === 'number' ? { closedAt: value.closedAt } : {}),
     ...(typeof value.lastError === 'string' ? { lastError: value.lastError } : {}) }
 }
@@ -1481,8 +1577,8 @@ export function parseChatAsideRecords(value: unknown): ChatAsideRecord[] | null 
 }
 export function parseChatAsideResult(value: unknown): ChatAsideResult | null {
   if (!isRecord(value) || typeof value.ok !== 'boolean' || (value.asideId !== undefined && !isAsideId(value.asideId))
-    || !optionalString(value.error, 4096)) return null
-  return { ok: value.ok, ...(typeof value.asideId === 'string' ? { asideId: value.asideId } : {}),
+    || !optionalString(value.error, 4096) || (value.promotedPaneId !== undefined && !isPaneId(value.promotedPaneId))) return null
+  return { ok: value.ok, ...(typeof value.asideId === 'string' ? { asideId: value.asideId } : {}), ...(typeof value.promotedPaneId === 'string' ? { promotedPaneId: value.promotedPaneId } : {}),
     ...(typeof value.error === 'string' ? { error: value.error } : {}) }
 }
 export function parseChatAsideAction(value: unknown): ChatAsideAction | null {
@@ -1490,11 +1586,12 @@ export function parseChatAsideAction(value: unknown): ChatAsideAction | null {
   if (value.action === 'open') {
     const images = value.images === undefined ? undefined : parseChatImageRefs(value.images)
     if (typeof value.text !== 'string' || value.text.length > MAX_TEXT || value.text.includes('\0') || images === null
+      || !optionalString(value.at, MAX_ID) || value.at === '' || (value.ephemeral !== undefined && value.ephemeral !== true)
       || (!value.text.trim() && !images?.length) || (value.mode !== undefined && !isChatAsideMode(value.mode))) return null
-    return { action: 'open', text: value.text, ...(images ? { images } : {}), ...(isChatAsideMode(value.mode) ? { mode: value.mode } : {}) }
+    return { action: 'open', text: value.text, ...(images ? { images } : {}), ...(isChatAsideMode(value.mode) ? { mode: value.mode } : {}), ...(typeof value.at === 'string' ? { at: value.at } : {}), ...(value.ephemeral === true ? { ephemeral: true } : {}) }
   }
   if (!isAsideId(value.asideId)) return null
   if (value.action === 'mode') return isChatAsideMode(value.mode) ? { action: 'mode', asideId: value.asideId, mode: value.mode } : null
-  return value.action === 'close' || value.action === 'reopen' || value.action === 'refork'
+  return value.action === 'close' || value.action === 'reopen' || value.action === 'refork' || value.action === 'keep' || value.action === 'discard' || value.action === 'promote'
     ? { action: value.action, asideId: value.asideId } : null
 }

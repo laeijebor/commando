@@ -35,6 +35,13 @@ function apiFixture(): CloudTasksApi {
     refresh: vi.fn().mockResolvedValue(detail), diff: vi.fn().mockResolvedValue({ text: '', truncated: false }),
     patch: vi.fn().mockResolvedValue(detail), operation: vi.fn(), byKey: vi.fn().mockResolvedValue(null),
     resumeOperation: vi.fn(async () => ({ task: task(), operation: operation('prepared', { state: 'dispatching' }), reused: true })),
+    discoverAgents: vi.fn().mockResolvedValue({ agents: [], sources: [], discoveredAt: '2026-11-24T12:00:00.000Z' }),
+    importDiscovered: vi.fn(async (req, key) => ({
+      kind: 'linked' as const,
+      task: task({ id: 'imported-task', providerTaskId: req.id, title: req.title ?? 'Imported', identityEvidence: 'user_link' }),
+      operation: operation(key ?? 'import-key', { kind: 'link' }),
+      reused: false,
+    })),
   }
 }
 let cleanups: (() => void)[] = []
@@ -509,5 +516,75 @@ describe('shared cloud task store', () => {
     vi.mocked(api.operation).mockResolvedValue(operation('key', { state }))
     await expect(store.resumeOperation('op', { credentialContextId: 'ctx', accountConfirmed: true })).rejects.toThrow('Only a prepared operation')
     expect(api.resumeOperation).not.toHaveBeenCalled()
+  })
+
+  it('discovers external agents, coalesces concurrent refreshes, and marks imported agents tracked', async () => {
+    const api = apiFixture()
+    const discoveredAgent = {
+      id: 'task_ext_1',
+      provider: 'codex' as const,
+      title: 'Started in Codex web',
+      status: 'running' as const,
+      repo: 'acme/app',
+      branch: 'main',
+      alreadyTracked: false,
+      canOpenAsChat: false,
+    }
+    vi.mocked(api.discoverAgents).mockResolvedValue({
+      agents: [discoveredAgent],
+      sources: [
+        { provider: 'cursor', status: 'unauthenticated', message: 'Log in to Cursor to list cloud agents.' },
+        { provider: 'codex', status: 'ok' },
+      ],
+      discoveredAt: '2026-11-24T12:00:00.000Z',
+    })
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+
+    const first = store.refreshDiscovered()
+    const second = store.refreshDiscovered()
+    expect(second).toBe(first)
+    await first
+    expect(api.discoverAgents).toHaveBeenCalledTimes(1)
+    expect(store.getSnapshot()).toMatchObject({
+      discovering: false,
+      discoveredAt: '2026-11-24T12:00:00.000Z',
+      discovered: [discoveredAgent],
+      discoverySources: [
+        { provider: 'cursor', status: 'unauthenticated' },
+        { provider: 'codex', status: 'ok' },
+      ],
+    })
+
+    const imported = await store.importDiscovered(discoveredAgent)
+    expect(imported.kind).toBe('linked')
+    expect(store.getSnapshot().discovered[0].alreadyTracked).toBe(true)
+    expect(store.getSnapshot().tasks.some((t) => t.id === 'imported-task')).toBe(true)
+  })
+
+  it('keeps cloud tasks connected when discovery fails and clears discovery on installation switch', async () => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    vi.mocked(api.discoverAgents).mockRejectedValueOnce(new Error('network'))
+    await store.refreshDiscovered()
+    expect(store.getSnapshot()).toMatchObject({
+      connected: true,
+      discovering: false,
+      discoveryError: expect.stringContaining('Unable to check'),
+    })
+
+    vi.mocked(api.discoverAgents).mockResolvedValueOnce({
+      agents: [{ id: 'bc-1', provider: 'cursor', title: 'Cursor agent', status: 'running', alreadyTracked: false, canOpenAsChat: true }],
+      sources: [{ provider: 'cursor', status: 'ok' }],
+      discoveredAt: '2026-11-24T12:00:00.000Z',
+    })
+    await store.refreshDiscovered()
+    expect(store.getSnapshot().discovered).toHaveLength(1)
+
+    vi.mocked(api.providers).mockResolvedValueOnce({ installationId: 'next-installation', providers: [provider] })
+    await store.refresh()
+    expect(store.getSnapshot().discovered).toEqual([])
+    expect(store.getSnapshot().discoveredAt).toBeNull()
   })
 })

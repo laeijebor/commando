@@ -301,7 +301,7 @@ export class MuseChatSession implements ChatProviderSession {
         await this.applySettings({ permissionMode: options.permissionMode })
       }
       const input = await this.input(trimmed, images, sessionId)
-      if (this.spec.aside) input.unshift({ type: 'text', text: asideInstructions(this.spec.aside.mode) })
+      if (this.spec.aside) input.unshift({ type: 'text', text: asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral) })
       const steer = Boolean(this.activeTurn)
       const commandId = uuidv7()
       this.mapper.expectUser(trimmed, images)
@@ -432,12 +432,35 @@ export class MuseChatSession implements ChatProviderSession {
     if (!id) return
     const key = `${kind}:${id}`
     // The same prompt also arrives as a view notification.
-    if (this.pending.has(key)) return
     if (this.pending.has(key) || this.deciding.has(key)) return
+    if (this.spec.aside?.ephemeral) {
+      void this.declineQuickRequest(key, { kind, params })
+      return
+    }
     if (kind === 'question' && !museQuestions(params.questions).length) return
     // A question shown here waits for the person; this stops Muse's own answer countdown.
     if (kind === 'question') this.client.notify?.('userInput/engaged', { sessionId: this.info.sessionId, userInputId: id })
     this.show(key, { kind, params })
+  }
+  private async declineQuickRequest(key: string, request: PendingRequest): Promise<void> {
+    // Keep the decision until Muse settles it: the RPC prompt is also a notification.
+    this.deciding.set(key, request)
+    const { kind, params } = request
+    const sessionId = this.info.sessionId!
+    try {
+      if (kind === 'question') {
+        await this.call('userInput/cancel', { sessionId, commandId: uuidv7(), userInputId: params.userInputId as string })
+      } else {
+        const choiceId = museChoice(params.availableChoices, 'deny')
+        if (!choiceId) throw new Error('Muse offered no decline choice')
+        await this.call('approval/decide', { sessionId, commandId: uuidv7(), approvalId: params.approvalId as string, choiceId, requirementId: params.currentRequirementId })
+      }
+    } catch (error) {
+      if (this.closing) return
+      this.emitItems(this.mapper.notice('error', `Couldn't decline a quick-answer request: ${errorText(error)}`))
+      // Never fall back to an invisible request card if Muse refuses the decline.
+      await this.interrupt()
+    }
   }
   private show(key: string, request: PendingRequest): void {
     this.pending.set(key, request)

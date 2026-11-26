@@ -110,3 +110,18 @@ it('keeps absolute editor origins and plain URLs without a file', () => {
   expect(url.searchParams.get('folder')).toBe('/w')
   expect(JSON.parse(url.searchParams.get('payload')!)).toEqual([['openFile', 'vscode-remote://127.0.0.1:5000/w/a.ts']])
 })
+
+it('starts a window on a line with the workbench goto-line mode', () => {
+  const url = new URL(ideFrameUrl('http://127.0.0.1:5000/ide/x/?folder=%2Fw', '/w/a b.ts', { line: 12, column: 5 }))
+  expect(JSON.parse(url.searchParams.get('payload')!)).toEqual([
+    ['openFile', 'vscode-remote://127.0.0.1:5000/w/a%20b.ts:12:5'],
+    ['gotoLineMode', 'true'],
+  ])
+  const key = `${ide.id}:${ide.generation}`
+  const { container } = render(<SessionIdeView {...props} initialFiles={{ [key]: { path: '/worktree/a.ts', position: { line: 3 }, revision: 0 } }} />)
+  const src = new URL(container.querySelector('iframe')!.getAttribute('src')!, window.location.href)
+  expect(JSON.parse(src.searchParams.get('payload')!)).toEqual([
+    ['openFile', `vscode-remote://${window.location.host}/worktree/a.ts:3`],
+    ['gotoLineMode', 'true'],
+  ])
+})

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -23,6 +23,25 @@ const items: ChatItem[] = [
   { id: 'u1', turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'user_message', text: 'Hello' },
   { id: 'a1', turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text: 'Hi there' },
 ]
+
+it('keeps Aside from here inside each message block before the next row', () => {
+  const onAsideFromHere = vi.fn()
+  const next: ChatItem = { id: 'u2', turnId: 't2', kind: 'user_message', text: 'Next question', status: 'completed', createdAt: 2, updatedAt: 2 }
+  render(<ChatTimeline items={[...items, next]} cwd="/work" working={false} onAsideFromHere={onAsideFromHere} />)
+  const userMessage = screen.getByText('Hello').closest('[data-chat-item-id]')!
+  const assistantMessage = screen.getByText('Hi there').closest('[data-chat-item-id]')!
+  const nextMessage = screen.getByText('Next question').closest('[data-chat-item-id]')!
+  const userAction = within(userMessage as HTMLElement).getByRole('button', { name: /Aside from here/ })
+  const assistantAction = within(assistantMessage as HTMLElement).getByRole('button', { name: /Aside from here/ })
+  expect(userMessage).toHaveClass('items-end')
+  expect(assistantMessage).toHaveClass('chat-reply')
+  expect(userAction.parentElement).toBe(userMessage)
+  expect(assistantAction.parentElement).toBe(assistantMessage)
+  expect(assistantAction.compareDocumentPosition(nextMessage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  fireEvent.click(userAction)
+  fireEvent.click(assistantAction)
+  expect(onAsideFromHere.mock.calls).toEqual([[items[0]], [items[1]]])
+})
 
 /** Gives the jsdom scroller a size: 1000px of content in a 200px window. */
 function sizeScroller(element: HTMLElement, clientHeight = 200) {
@@ -91,4 +110,19 @@ it('does not re-parse completed replies when other items or the activity clock u
   expect(count()).toBe(before)
   rerender(<ChatTimeline items={initial} cwd="/other" working onResourceAction={onResourceAction} />)
   expect(count()).toBeGreaterThan(before)
+})
+
+describe('ChatTimeline handoff divider', () => {
+  it('renders handoff notices as a centered horizontal separator with arrow notation', () => {
+    const withHandoff: ChatItem[] = [
+      ...items,
+      { id: 'h1', turnId: 'h1', status: 'completed', createdAt: 2, updatedAt: 2, kind: 'notice', level: 'info', text: 'Handed off from Claude to Cursor' },
+      { id: 'n1', turnId: 't2', status: 'completed', createdAt: 3, updatedAt: 3, kind: 'notice', level: 'info', text: 'Interrupted' },
+    ]
+    render(<ChatTimeline items={withHandoff} cwd="/work" working={false} />)
+    const divider = screen.getByRole('separator', { name: 'Handed off from Claude → Cursor' })
+    expect(divider).toBeInTheDocument()
+    expect(divider).toHaveTextContent('Handed off from Claude → Cursor')
+    expect(screen.getByText('Interrupted')).toBeInTheDocument()
+  })
 })

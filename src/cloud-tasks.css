@@ -64,6 +64,31 @@
 .cloud-dialog > header { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .cloud-dialog h2 { flex: 1; margin: 0; font-size: 12px; }
 .cloud-dialog > .cloud-form { padding: 10px 12px 12px; }
+.cloud-discovered { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.cloud-discovered-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+.cloud-tasks .cloud-discovered-toggle { display: flex; align-items: center; gap: 5px; min-height: 24px; padding: 2px 4px; border: 0; background: transparent; color: var(--text-soft); font-size: 10px; }
+.cloud-tasks .cloud-discovered-toggle:hover:not(:disabled) { background: transparent; color: var(--text); }
+.cloud-discovered-caret { font-size: 9px; color: var(--muted); }
+.cloud-discovered-count { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--surface-soft); color: var(--text-soft); font: 600 9px var(--mono); }
+.cloud-tasks .cloud-discovered-refresh { min-height: 22px; padding: 2px 6px; font-size: 10px; }
+.cloud-discovered-body { display: grid; gap: 6px; }
+.cloud-discovered-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.cloud-discovered-row { display: grid; gap: 4px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
+.cloud-discovered-meta { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.cloud-discovered-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
+.cloud-discovered-sub { color: var(--muted); font: 9px/1.4 var(--mono); overflow-wrap: anywhere; }
+.cloud-provider-badge { flex-shrink: 0; padding: 1px 5px; border-radius: 4px; font: 700 8px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .04em; background: var(--surface-soft); color: var(--text-soft); }
+.cloud-provider-badge--cursor { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.cloud-provider-badge--codex { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 14%, var(--surface)); }
+.cloud-provider-badge--claude { color: var(--purple, var(--accent)); background: color-mix(in srgb, var(--purple, var(--accent)) 14%, var(--surface)); }
+.cloud-status-dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.cloud-status-dot--running { background: var(--accent); }
+.cloud-status-dot--completed { background: var(--green, #3fb950); }
+.cloud-status-dot--failed { background: var(--red, #f85149); }
+.cloud-discovered-actions { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.cloud-tasks .cloud-discovered-actions button { min-height: 22px; padding: 2px 7px; font-size: 10px; }
+.cloud-discovered-link { font-size: 10px; }
+.cloud-discovered-hints { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 2px; }
 @media (max-width: 639px) {
   .cloud-content { grid-template-columns: minmax(0, 1fr); }
   .cloud-list { border-right: 0; }

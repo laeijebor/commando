@@ -148,6 +148,7 @@ export class CloudDaemonFixture {
       } })
       if (path === '/api/cloud-providers' && method === 'GET') return this.unavailable ? fail() : reply(this.providerResponse)
       if (path === '/api/cloud-tasks' && method === 'GET') return reply({ tasks: [...this.details.values()].map(({ task: { prompt: _prompt, ...summary } }) => summary) })
+      if (path === '/api/cloud/discovered' && method === 'GET') return reply({ agents: [], sources: [], discoveredAt: timestamp })
       if (path.startsWith('/api/cloud-operations/by-key/') && method === 'GET') {
         const lookup = decodeURIComponent(path.slice('/api/cloud-operations/by-key/'.length))
         const op = [...this.details.values()].flatMap((detail) => detail.operations).find((op) => op.idempotencyKey === lookup)

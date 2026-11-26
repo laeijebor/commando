@@ -5,6 +5,7 @@ import { PrQuickLookView, type PrQuickLookTab } from './PrQuickLook'
 import { prMergeDisabledReason } from '../shared/pr-merge'
 import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient } from './gitApi'
+import type { IdeFilePosition } from '../shared/ide-position'
 import './git-diff.css'
 
 export function PrPanel({ paneId, panePath, source, api, gitApi, visible, selection, onSelectionApplied, onOpenInIde }: {
@@ -16,7 +17,7 @@ export function PrPanel({ paneId, panePath, source, api, gitApi, visible, select
   visible: boolean
   selection?: { tab: PrQuickLookTab; revision: number }
   onSelectionApplied?(): void
-  onOpenInIde?(file: string): void
+  onOpenInIde?(file: string, position?: IdeFilePosition): void
 }) {
   const known = source.preview ?? cachedPrSummary(api, source.repo, source.number)
   const [resolved, setResolved] = useState<{ api: PrsApiClient; repo: string; pr: PrSummary } | null>(null)

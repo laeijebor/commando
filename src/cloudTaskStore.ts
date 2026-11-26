@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import {
-  canonicalCloudRequest, cloudConnectionKey, type CloudCreateInput, type CloudLinkInput, type CloudMessageInput,
+  canonicalCloudRequest, cloudConnectionKey, type CloudCreateInput, type CloudImportDiscoveredInput,
+  type CloudImportDiscoveredResponse, type CloudLinkInput, type CloudMessageInput,
   type CloudOperation, type CloudProvidersResponse, type CloudResumeInput, type CloudTaskAction, type CloudTaskDetail,
-  type CloudTaskSummary,
+  type CloudTaskSummary, type DiscoveredAgentProvider, type DiscoveredExternalAgent, type DiscoverySourceInfo,
 } from '../shared/cloud-tasks'
 import { CloudTasksHttpError, type CloudTaskPatch, type CloudTasksApi } from './cloudTasksApi'
 import { randomUuid } from './randomId'
@@ -30,6 +31,11 @@ export type CloudTasksSnapshot = {
   connected: boolean
   error: string
   lastLoadedAt: number | null
+  discovered: DiscoveredExternalAgent[]
+  discoverySources: DiscoverySourceInfo[]
+  discovering: boolean
+  discoveredAt: string | null
+  discoveryError: string
 }
 
 function browserStorage(): Storage | null {
@@ -67,10 +73,12 @@ export class CloudTaskStore {
   private snapshot: CloudTasksSnapshot = {
     providers: null, tasks: [], details: {}, pending: [], loading: false,
     connected: false, error: '', lastLoadedAt: null,
+    discovered: [], discoverySources: [], discovering: false, discoveredAt: null, discoveryError: '',
   }
   private listeners = new Set<() => void>()
   private watched = new Map<string, number>()
   private flight: Promise<void> | null = null
+  private discoveryFlight: Promise<void> | null = null
   private reads = new Map<string, Promise<CloudTaskDetail>>()
   private retries = new Map<string, Promise<CloudTaskAction | null>>()
   private memory = new Map<string, CloudIntent>()
@@ -148,7 +156,7 @@ export class CloudTaskStore {
     const previousScope = this.snapshot.providers?.installationId
     if (previousScope && previousScope !== providers.installationId) {
       this.memory.clear()
-      this.update({ tasks: [], details: {}, pending: [] })
+      this.update({ tasks: [], details: {}, pending: [], discovered: [], discoverySources: [], discoveredAt: null, discoveryError: '' })
     }
     this.update({ providers })
     const tasks = await this.api.list()
@@ -212,10 +220,69 @@ export class CloudTaskStore {
     const existing = this.snapshot.details[detail.task.id]
     if (existing && existing.task.revision > detail.task.revision) return
     const tasks = this.snapshot.tasks.filter((task) => task.id !== detail.task.id)
+    const providerTaskId = detail.task.providerTaskId
+    const shouldMarkTracked = Boolean(providerTaskId && this.snapshot.discovered.some(
+      (agent) => agent.provider === detail.task.provider && agent.id === providerTaskId && !agent.alreadyTracked,
+    ))
     this.update({
       details: { ...this.snapshot.details, [detail.task.id]: detail },
       tasks: [summary(detail.task), ...tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      ...(shouldMarkTracked ? {
+        discovered: this.snapshot.discovered.map((agent) =>
+          agent.provider === detail.task.provider && agent.id === providerTaskId ? { ...agent, alreadyTracked: true } : agent),
+      } : {}),
     })
+  }
+  refreshDiscovered = (): Promise<void> => {
+    if (this.discoveryFlight) return this.discoveryFlight
+    const scope = this.snapshot.providers?.installationId
+    this.update({ discovering: true, discoveryError: '' })
+    this.discoveryFlight = this.api.discoverAgents().then((result) => {
+      if (scope && scope !== this.snapshot.providers?.installationId) return
+      this.update({
+        discovered: result.agents,
+        discoverySources: result.sources,
+        discoveredAt: result.discoveredAt,
+        discoveryError: '',
+      })
+    }).catch(() => {
+      if (scope && scope !== this.snapshot.providers?.installationId) return
+      this.update({ discoveryError: 'Unable to check agents started elsewhere right now.' })
+    }).finally(() => {
+      this.discoveryFlight = null
+      this.update({ discovering: false })
+    })
+    return this.discoveryFlight
+  }
+  markDiscoveredTracked(provider: DiscoveredAgentProvider, id: string): void {
+    if (!this.snapshot.discovered.some((agent) => agent.provider === provider && agent.id === id && !agent.alreadyTracked)) return
+    this.update({
+      discovered: this.snapshot.discovered.map((agent) =>
+        agent.provider === provider && agent.id === id ? { ...agent, alreadyTracked: true } : agent),
+    })
+  }
+  async importDiscovered(agent: DiscoveredExternalAgent): Promise<CloudImportDiscoveredResponse> {
+    this.requireReady()
+    const input: CloudImportDiscoveredInput = {
+      provider: agent.provider,
+      id: agent.id,
+      title: agent.title,
+      ...(agent.repo ? { repo: agent.repo } : {}),
+      ...(agent.branch ? { branch: agent.branch } : {}),
+      ...(agent.cwd ? { cwd: agent.cwd } : {}),
+      ...(agent.url ? { url: agent.url } : {}),
+      accountConfirmed: true,
+    }
+    const result = await this.api.importDiscovered(input, randomUuid())
+    if (result.kind === 'linked') {
+      const prior = this.snapshot.details[result.task.id]?.operations ?? []
+      this.acceptDetail({
+        task: result.task,
+        operations: [...prior.filter((op) => op.id !== result.operation.id), result.operation],
+      })
+      this.markDiscoveredTracked(agent.provider, agent.id)
+    }
+    return result
   }
   async patch(id: string, patch: CloudTaskPatch) {
     this.requireReady()
