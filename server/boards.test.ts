@@ -332,20 +332,66 @@ describe('artifact lifetime, snapshot and revive', () => {
     expect(f.webPanes.get(fresh.webPaneId!)?.engine).toBe('chromium')
     await f.webPanes.flush()
   })
-  it('keeps exact retained URL identities separate even when Board URL normalization would merge them', async () => {
+  it.each([
+    ['http://localhost/x/', 'http://localhost/x'],
+    ['http://localhost/x?utm_source=chat#notes', 'http://localhost/x'],
+    ['http://localhost/x?b=2&a=1', 'http://localhost/x?a=1&b=2'],
+  ])('merges cosmetic URL aliases %s and %s within one engine', async (first, second) => {
     const f = await fixture()
-    f.webPanes.closedTabHooks = { targetIdFor: () => target }
-    const panes = ['one', 'two'].map((value) => {
-      const pane = f.webPanes.open({ ...anchor, url: `http://localhost/page?utm_source=${value}`, engine: 'chromium', openedBy: 'user' })
+    const panes = [first, second].map((url) => {
+      const pane = f.webPanes.open({ ...anchor, url, engine: 'chromium', openedBy: 'user' })
       f.webPanes.close(pane.id)
       return pane
     })
+    expect(f.s.get(target).items).toHaveLength(1)
+    const card = f.s.get(target).items[0]
+    expect(card.key).toBe(`page:chromium:${second}`)
+    expect(card.ref.webPaneId).toBe(panes[1].id)
+    f.s.remove(target, card.key)
+    expect(f.webPanes.closedEntries()).toEqual([])
     f.s.backfillClosedTabs()
-    expect(f.s.get(target).items).toHaveLength(2)
-    for (const pane of panes) {
-      const item = f.s.get(target).items.find((i) => i.ref.webPaneId === pane.id)!
-      expect(f.s.revive(target, item.key, anchor, 'user').webPaneId).toBe(pane.id)
-    }
+    expect(f.s.get(target).items).toEqual([])
+    await f.webPanes.flush()
+  })
+  it.each(['webkit', 'chromium'] as const)('merges a manual redline URL with a later %s close while preserving user fields', async (engine) => {
+    const f = await fixture(), url = `http://localhost/redline/artifacts/${f.id}/index.html`
+    const manual = f.s.upsert(target, boardInput({ url, title: 'Curated redline', caption: 'Keep this', pinned: true }, 'user', f.artifacts))
+    const pane = f.webPanes.open({ ...anchor, url: `${url}?utm_source=preview#notes`, engine, openedBy: 'user' })
+    f.webPanes.close(pane.id)
+    expect(f.s.get(target).items).toHaveLength(1)
+    expect(f.s.get(target).items[0]).toMatchObject({ key: manual.key, kind: 'redline', source: 'user', title: 'Curated redline', caption: 'Keep this', pinned: true, ref: { engine, webPaneId: pane.id } })
+    expect(f.s.revive(target, manual.key, anchor, 'user').webPaneId).toBe(pane.id)
+    await f.webPanes.flush()
+  })
+  it('migrates raw engine keys and duplicate manual cards while retaining metadata, placements, links and other engines', async () => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const panes = [
+      f.webPanes.open({ ...anchor, url: 'http://localhost/x/?utm_source=one#note', engine: 'webkit', openedBy: 'user' }),
+      f.webPanes.open({ ...anchor, url: 'http://localhost/x', engine: 'webkit', openedBy: 'user' }),
+      f.webPanes.open({ ...anchor, url: 'http://localhost/x/', engine: 'chromium', openedBy: 'user' }),
+    ]
+    for (const pane of panes) f.webPanes.close(pane.id)
+    const cards: BoardItem[] = panes.map((pane, i) => ({ key: `page:${pane.engine}:${pane.url}`, kind: 'page', title: 'Captured', source: 'auto', ref: { url: pane.url, engine: pane.engine, webPaneId: pane.id }, addedAt: 1, updatedAt: 10 + i, closedAt: 10 + i }))
+    const manual: BoardItem = { ...boardInput({ url: 'http://localhost/x', title: 'My page', caption: 'Preserve this', pinned: true }, 'user'), addedAt: 0, updatedAt: 2 }
+    const clip: BoardItem = { key: 'clip:evidence', kind: 'clip', title: 'Evidence', source: 'user', ref: {}, addedAt: 1, updatedAt: 1 }
+    const board: Board = { targetId: target, rev: 1, items: [...cards, manual, clip], groups: [], placements: { [manual.key]: { x: 50, y: 60, fixed: true }, [cards[0].key]: { x: 0, y: 0 } }, links: [{ id: 'evidence', from: cards[0].key, to: clip.key }, { id: 'existing-self-link', from: clip.key, to: clip.key }] }
+    const root = join(f.root, 'boards'); mkdirSync(root)
+    writeFileSync(join(root, `${target}.json`), JSON.stringify({ version: 1, board, observed: { [cards[0].key]: 'old capture' } }))
+    const s = store({ root, now: () => 1000, webPanes: f.webPanes })
+    const migrated = s.get(target), key = 'page:webkit:http://localhost/x'
+    expect(migrated.items).toHaveLength(3)
+    expect(migrated.items.find((i) => i.key === key)).toMatchObject({ title: 'My page', caption: 'Preserve this', source: 'user', pinned: true, addedAt: 0, ref: { engine: 'webkit', webPaneId: panes[1].id } })
+    expect(migrated.items.find((i) => i.ref.engine === 'chromium')?.key).toBe('page:chromium:http://localhost/x')
+    expect(migrated.placements).toEqual({ [key]: { x: 50, y: 60, fixed: true } })
+    expect(migrated.links).toEqual([{ id: 'evidence', from: key, to: clip.key }, { id: 'existing-self-link', from: clip.key, to: clip.key }])
+    s.flush()
+    expect(store({ root, now: () => 1000, webPanes: f.webPanes }).get(target)).toEqual(migrated)
+    const history = JSON.parse(readFileSync(join(root, `${target}.json`), 'utf8')).observed
+    expect(history[cards[0].key]).toBeUndefined()
+    expect(history[key]).toMatch(/^sha256:/)
+    s.remove(target, key)
+    expect(f.webPanes.closedEntries().map((e) => e.pane.id)).toEqual([panes[2].id])
     await f.webPanes.flush()
   })
   it('repairs close timestamps on existing cards, including previously marked migration ids', async () => {

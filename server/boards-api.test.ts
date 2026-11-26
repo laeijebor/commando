@@ -82,6 +82,33 @@ describe('BoardsApi', () => {
     expect((await request(`/items/${key}`, 'DELETE')).status).toBe(200)
     expect((await request()).data).toMatchObject({ rev: 3, items: [] }); expect(changed).toHaveBeenCalledTimes(3)
   })
+  it.each(['page', 'redline'] as const)('merges manual %s URL adds with closed engine-qualified cards in either order', async (kind) => {
+    let url = 'http://localhost/x'
+    if (kind === 'redline') {
+      const dir = join(root, 'artifact'); mkdirSync(dir); writeFileSync(join(dir, 'index.html'), '<h1>Review</h1>')
+      url = `http://localhost/redline/artifacts/${artifacts.register(dir).id}/index.html`
+    }
+    panes.closedTabHooks = { targetIdFor: () => target, onClosed: (t, pane) => store.snapshotOnClose(t, pane) }
+    const openAndClose = (engine: 'webkit' | 'chromium', value = url) => {
+      const pane = panes.open({ anchorPaneId: '%1', sessionId: '$1', windowId: '@1', url: value, engine, openedBy: 'user' })
+      panes.close(pane.id)
+      return pane
+    }
+    const chrome = openAndClose('chromium', `${url}?utm_source=chat#notes`)
+    const added = await request('/items', 'POST', { url, title: 'My page', caption: 'My note', pinned: true })
+    expect(added.status).toBe(201)
+    expect(added.data.key).toBe(`${kind}:chromium:${url}`)
+    expect(store.get(target).items).toHaveLength(1)
+    expect(added.data).toMatchObject({ kind, source: 'user', title: 'My page', caption: 'My note', pinned: true, ref: { webPaneId: chrome.id, engine: 'chromium' } })
+    const webkit = openAndClose('webkit')
+    expect(store.get(target).items).toHaveLength(2)
+    const again = await request('/items', 'POST', { url: `${url}?utm_campaign=second#discard`, title: 'Prefer WebKit' })
+    expect(again.data.ref).toMatchObject({ engine: 'webkit', webPaneId: webkit.id })
+    expect(store.get(target).items).toHaveLength(2)
+    expect((await request(`/items/${encodeURIComponent(again.data.key)}`, 'PATCH', { caption: 'Edited' })).status).toBe(200)
+    expect((await request(`/items/${encodeURIComponent(again.data.key)}`, 'DELETE')).status).toBe(200)
+    expect(store.get(target).items[0].ref.engine).toBe('chromium')
+  })
   it('lets agents create groups, clips, relationships and placements, but protects user drags', async () => {
     const group = await request('/groups', 'POST', { id: 'evidence', title: 'Evidence', tone: 'green' }, agentToken, true)
     expect(group.status).toBe(201)

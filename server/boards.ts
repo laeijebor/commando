@@ -34,6 +34,60 @@ const sourceValid = (v: unknown): v is BoardItemSource => typeof v === 'string' 
 const overlaps = (a: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>, b: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 export const isBoardFileItem = (item: BoardItem) => ['screenshot', 'video', 'file'].includes(item.kind) || (item.kind === 'diagram' && !!item.ref.path)
 
+type UrlItem = Pick<BoardItem, 'key' | 'kind' | 'ref'>
+/** Keys retain the original page identity when a snapshot changes its serving URL. */
+function urlIdentity(item: UrlItem): { url: string; engine?: WebPane['engine'] } | undefined {
+  if (!['page', 'redline', 'link'].includes(item.kind) || !item.ref.url) return
+  const qualified = /^(?:page|redline):(webkit|chromium):(https?:.*)$/.exec(item.key)
+  const legacy = /^(?:page|redline|url):(https?:.*)$/.exec(item.key)
+  return { url: normalizeBoardUrl(qualified?.[2] ?? legacy?.[1] ?? item.ref.url), engine: item.ref.engine ?? qualified?.[1] as WebPane['engine'] | undefined }
+}
+function matchingUrlItem(items: readonly BoardItem[], input: UrlItem): BoardItem | undefined {
+  const identity = urlIdentity(input)
+  if (!identity) return
+  const matches = items.filter((item) => urlIdentity(item)?.url === identity.url)
+  if (identity.engine) return matches.find((item) => urlIdentity(item)?.engine === identity.engine) ?? matches.find((item) => !urlIdentity(item)?.engine)
+  // Manual URL adds do not choose an engine. Prefer WebKit, then an existing
+  // unbound card, then the first other engine; never create a third card.
+  return matches.find((item) => urlIdentity(item)?.engine === 'webkit') ?? matches.find((item) => !urlIdentity(item)?.engine) ?? matches[0]
+}
+
+/** Normalize old raw engine keys and merge their aliases without losing Board references. */
+function migrateUrlItems(board: Board, history: Record<string, string>): boolean {
+  const before = JSON.stringify(board), original = board.items, aliases = new Map<string, string>(), items: BoardItem[] = []
+  const priority = (item: BoardItem) => item.source === 'user' ? 2 : item.source === 'agent' ? 1 : 0
+  // Resolve engine-qualified cards before attaching engine-unspecified manual adds.
+  for (const old of [...original].sort((a, b) => Number(!!urlIdentity(b)?.engine) - Number(!!urlIdentity(a)?.engine))) {
+    const item = clone(old), qualified = /^(page|redline):(webkit|chromium):(https?:.*)$/.exec(item.key)
+    if (qualified) { item.key = `${qualified[1]}:${qualified[2]}:${normalizeBoardUrl(qualified[3])}`; item.ref.engine ??= qualified[2] as WebPane['engine'] }
+    const existing = matchingUrlItem(items, item)
+    if (!existing) { items.push(item); aliases.set(old.key, item.key); continue }
+    const preferred = priority(item) > priority(existing) || priority(item) === priority(existing) && item.updatedAt > existing.updatedAt ? item : existing
+    const other = preferred === item ? existing : item
+    const bindings = [existing, item].filter((i) => i.ref.webPaneId).sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt))
+    const bound = bindings[0] ?? (urlIdentity(existing)?.engine ? existing : item)
+    const merged: BoardItem = { ...other, ...preferred, key: existing.key, kind: bound.kind, ref: { ...other.ref, ...preferred.ref, ...bound.ref }, addedAt: Math.min(existing.addedAt, item.addedAt), updatedAt: Math.max(existing.updatedAt, item.updatedAt) }
+    if (existing.closedAt !== undefined || item.closedAt !== undefined) merged.closedAt = Math.max(existing.closedAt ?? 0, item.closedAt ?? 0)
+    items[items.indexOf(existing)] = merged
+    aliases.set(old.key, existing.key)
+  }
+  const order = new Map<string, number>(), placements: Board['placements'] = {}, scores = new Map<string, number>()
+  original.forEach((item, index) => {
+    const key = aliases.get(item.key)!
+    order.set(key, Math.min(order.get(key) ?? index, index))
+    const placement = board.placements[item.key], score = (placement?.fixed ? 10 : 0) + priority(item)
+    if (placement && score > (scores.get(key) ?? -1)) { placements[key] = placement; scores.set(key, score) }
+  })
+  board.items = items.sort((a, b) => order.get(a.key)! - order.get(b.key)!)
+  board.placements = placements
+  board.links = board.links.map((link) => ({ ...link, from: aliases.get(link.from) ?? link.from, to: aliases.get(link.to) ?? link.to }))
+  for (const [key, value] of Object.entries(history)) {
+    const alias = aliases.get(key)
+    if (alias && alias !== key) { delete history[key]; history[alias] = value }
+  }
+  return JSON.stringify(board) !== before
+}
+
 /** Absolute board coordinates; append into a free cell, including cells occupied by fixed items. */
 export function packBoardItem(board: Board, key: string, groupId: string): { placement: BoardPlacement; group: BoardGroup } {
   const group = board.groups.find((g) => g.id === groupId)
@@ -145,6 +199,7 @@ export class BoardStore {
             this.boards.set(targetId, board)
             if (Array.isArray(data.backfilledClosedTabs)) this.backfilledClosedTabs.set(targetId, new Set(data.backfilledClosedTabs.filter((id): id is string => typeof id === 'string' && /^w-[0-9a-f]{8}$/.test(id))))
             if (record(data.observed)) this.observed.set(targetId, Object.fromEntries(Object.entries(data.observed).filter(([k, v]) => BOARD_ITEM_KEY.test(k) && typeof v === 'string').slice(-MAX_BOARD_HISTORY).map(([k, v]) => [k, fingerprintHash(v as string)])) as Record<string, string>)
+            if (migrateUrlItems(board, this.observed.get(targetId) ?? {})) this.save(board)
           } catch (error) { this.report(error) }
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') options.onError?.(error) }
@@ -264,12 +319,13 @@ export class BoardStore {
     }
   }
   upsert(targetId: string, input: InputItem, group?: string): BoardItem {
-    const b = this.get(targetId), now = this.now(), current = b.items.find((i) => i.key === input.key)
+    const b = this.get(targetId), now = this.now(), current = matchingUrlItem(b.items, input) ?? b.items.find((i) => i.key === input.key)
     if (group && !b.groups.some((g) => g.id === group)) throw new BoardError(404, 'Group does not exist')
-    let next: BoardItem = { ...current, ...input, ref: { ...current?.ref, ...input.ref }, addedAt: current?.addedAt ?? now, updatedAt: now }
+    let next: BoardItem = { ...current, ...input, key: current?.key ?? input.key, ref: { ...current?.ref, ...input.ref }, addedAt: current?.addedAt ?? now, updatedAt: now }
+    if (current?.ref.engine && !input.ref.engine && urlIdentity(input)) next = { ...next, kind: current.kind, ref: { ...input.ref, ...current.ref } }
     if (current && input.source === 'auto' && current.source !== 'auto') next = { ...next, title: current.title, source: current.source, caption: current.caption, pinned: current.pinned }
     if (!validItem(next)) throw new BoardError(400, 'Invalid board item')
-    if (current) b.items[b.items.findIndex((i) => i.key === input.key)] = next
+    if (current) b.items[b.items.indexOf(current)] = next
     else {
       if (b.items.length >= MAX_BOARD_ITEMS) {
         const victim = b.items.filter((i) => !i.pinned && i.source === 'auto').sort((a, z) => a.updatedAt - z.updatedAt || a.addedAt - z.addedAt)[0]
@@ -278,7 +334,7 @@ export class BoardStore {
       }
       b.items.push(next)
     }
-    if (group && !(input.source !== 'user' && b.placements[input.key]?.fixed)) this.pack(b, input.key, group)
+    if (group && !(input.source !== 'user' && b.placements[next.key]?.fixed)) this.pack(b, next.key, group)
     this.save(b)
     return clone(next)
   }
@@ -300,14 +356,20 @@ export class BoardStore {
   }
   remove(targetId: string, key: string): void {
     const item = this.item(targetId, key), b = this.get(targetId)
-    const closed = this.options.webPanes?.closedEntries().find((entry) => entry.targetId === targetId && entry.pane.id === item.ref.webPaneId)
-    if (closed) this.rememberClosedTab(targetId, closed.pane.id)
+    const closed = (this.options.webPanes?.closedEntries() ?? []).filter((entry) => {
+      if (entry.targetId !== targetId) return false
+      if (entry.pane.id === item.ref.webPaneId) return true
+      if (entry.pane.content) return false
+      const identity = urlIdentity(item)
+      return !!identity?.engine && entry.pane.engine === identity.engine && normalizeBoardUrl(entry.pane.url) === identity.url
+    })
+    for (const entry of closed) this.rememberClosedTab(targetId, entry.pane.id)
     this.drop(b, key)
     this.save(b)
-    if (closed) {
-      // Make the removal and marker durable before the separate web-pane write.
+    if (closed.length) {
+      // Make the removal and markers durable before the separate web-pane writes.
       this.flush()
-      this.options.webPanes!.forgetClosed(targetId, closed.pane.id)
+      for (const entry of closed) this.options.webPanes!.forgetClosed(targetId, entry.pane.id)
     }
   }
   private pack(b: Board, key: string, group: string): void {
@@ -376,7 +438,7 @@ export class BoardStore {
       if (p.id !== item.ref.webPaneId && !sameOwner) return false
       if (item.ref.manifest) return p.content?.kind === 'canvas' && p.content.artifactId === item.ref.artifactId && p.content.manifest === item.ref.manifest
       if (item.kind === 'guide') return p.content?.kind === 'guide' && p.content.artifactId === item.ref.artifactId && p.content.file === item.ref.file
-      try { return !p.content && (!item.ref.engine || p.engine === item.ref.engine) && !!item.ref.url && (item.ref.engine ? p.url === item.ref.url : normalizeBoardUrl(p.url) === normalizeBoardUrl(item.ref.url)) } catch { return false }
+      try { return !p.content && (!item.ref.engine || p.engine === item.ref.engine) && !!item.ref.url && normalizeBoardUrl(p.url) === normalizeBoardUrl(item.ref.url) } catch { return false }
     })
   }
   private sourceExists(item: BoardItem): boolean {
@@ -432,7 +494,9 @@ export class BoardStore {
       try { file = decodeURIComponent(new URL(pane.url).pathname.split(`/artifacts/${artifactId}/`)[1] || 'index.html') } catch { return undefined }
     }
     const existing = this.board(targetId).items.find((i) => i.ref.webPaneId === pane.id && i.ref.url === pane.url && i.ref.artifactId === artifactId && i.ref.manifest === manifest && i.ref.file === file)
-    const key = existing?.key ?? (kind === 'canvas' || kind === 'slides' ? boardItemKeyForCanvas(path ?? `artifact:${artifactId}`, manifest) : kind === 'guide' ? boardItemKeyForGuide(path ?? `artifact:${artifactId}`, file!) : `${kind}:${pane.engine}:${pane.url}`)
+    const qualifiedKey = `${kind}:${pane.engine}:${normalizeBoardUrl(pane.url)}`
+    const merged = !content ? matchingUrlItem(this.board(targetId).items, { key: qualifiedKey, kind, ref: { url: pane.url, engine: pane.engine } }) : undefined
+    const key = existing?.key ?? merged?.key ?? (kind === 'canvas' || kind === 'slides' ? boardItemKeyForCanvas(path ?? `artifact:${artifactId}`, manifest) : kind === 'guide' ? boardItemKeyForGuide(path ?? `artifact:${artifactId}`, file!) : qualifiedKey)
     this.capture(targetId, { key, kind, title: (title || pane.title || (manifest ?? file ?? pane.url)).slice(0, 500), ref: { url: pane.url, webPaneId: pane.id, ...(!content ? { engine: pane.engine } : {}), ...(artifactId ? { artifactId } : {}), ...(path ? { path } : {}), ...(manifest ? { manifest } : {}), ...(file ? { file } : {}) }, origin: { at: this.now(), ...(agentSession ? { agentSession } : {}) } }, JSON.stringify([pane.id, pane.url, pane.content, title || pane.title, pane.openRevision]))
     return key
   }
