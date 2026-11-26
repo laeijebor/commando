@@ -69,8 +69,8 @@ const InlineResourceContext = createContext(true)
 function resourceForHref(resources: readonly ChatReplyResource[] | undefined, href: string | undefined) {
   return resources?.find((resource) => resource.ref === href || encodeURI(resource.ref) === href)
 }
-type HastNode = NonNullable<ExtraProps['node']>['children'][number]
-const hastText = (node: HastNode | NonNullable<ExtraProps['node']>): string => node.type === 'text' ? node.value : 'children' in node ? node.children.map(hastText).join('') : ''
+type ReplyHastNode = NonNullable<ExtraProps['node']>['children'][number]
+const hastText = (node: ReplyHastNode | NonNullable<ExtraProps['node']>): string => node.type === 'text' ? node.value : 'children' in node ? node.children.map(hastText).join('') : ''
 function MarkdownLink({ href, children, node, ...props }: ComponentProps<'a'> & ExtraProps) {
   const { resources, onAction } = use(ReplyResourcesContext)
   const resource = resourceForHref(resources, href)
