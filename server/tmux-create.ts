@@ -189,7 +189,7 @@ export function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     const { repoUrl, ref, environment } = cursorCloud as { repoUrl?: unknown; ref?: unknown; environment?: unknown }
     if (environment !== undefined && !isCursorEnvironmentName(environment)) throw new Error('Invalid Cursor cloud environment')
     validateCloudRepoUrl(repoUrl)
-    if (!(ref === undefined && resume !== undefined) && (typeof ref !== 'string' || ref !== ref.trim() || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) throw new Error('Invalid Cursor cloud ref')
+    if (!(ref === undefined && (resume !== undefined || environment !== undefined)) && (typeof ref !== 'string' || ref !== ref.trim() || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) throw new Error('Invalid Cursor cloud ref')
     if (permissionMode !== undefined && permissionMode !== 'bypassPermissions' && permissionMode !== 'plan') throw new Error('Cursor cloud supports only Full access and Plan')
     cloud = { repoUrl, ...(typeof ref === 'string' ? { ref } : {}), ...(isCursorEnvironmentName(environment) ? { environment } : {}) }
   }
@@ -499,7 +499,7 @@ export class TmuxCreator {
     if (!agent?.cursorCloud) return
     if (worktree !== undefined) throw new Error('Cursor cloud cannot create a local worktree')
     if (!cwd) throw new Error('A working directory is required for Cursor cloud')
-    if (!agent.resume) await new GitCursorCloud().assertPushed(cwd, agent.cursorCloud.repoUrl, agent.cursorCloud.ref!)
+    if (!agent.resume && !agent.cursorCloud.environment) await new GitCursorCloud().assertPushed(cwd, agent.cursorCloud.repoUrl, agent.cursorCloud.ref!)
   }
 
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */

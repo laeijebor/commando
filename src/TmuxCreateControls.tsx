@@ -818,8 +818,10 @@ export function TmuxCreateControls({
           </div>
           {cursorCloud && repo?.github ? (
             <>
-              <p className="tmux-create__cloud-repo">{repo.github.repoUrl.replace('https://github.com/', '')} · from {repo.github.ref}</p>
-              {!repo.github.pushed || repo.github.ahead > 0 || repo.github.behind > 0 ? <p className="tmux-create__message is-warning">Cursor's cloud starts from {repo.github.remote}/{repo.github.ref}; local commits that aren't pushed won't be there.</p> : null}
+              {cursorEnvironment ? <p className="tmux-create__cloud-repo">Repos and starting branches come from {cursorEnvironment}.</p> : <>
+                <p className="tmux-create__cloud-repo">{repo.github.repoUrl.replace('https://github.com/', '')} · from {repo.github.ref}</p>
+                {!repo.github.pushed || repo.github.ahead > 0 || repo.github.behind > 0 ? <p className="tmux-create__message is-warning">Cursor's cloud starts from {repo.github.remote}/{repo.github.ref}; local commits that aren't pushed won't be there.</p> : null}
+              </>}
             </>
           ) : null}
         </div>

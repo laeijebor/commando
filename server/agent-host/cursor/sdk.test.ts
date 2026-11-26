@@ -190,11 +190,11 @@ describe('cloud SDK wiring', () => {
     const run = cloudRun('run-cloud', 1, [turn('Cloud prompt')])
     const listRuns = vi.fn(async () => ({ items: [run] }))
     const getRun = vi.fn(async () => run)
-    const get = vi.fn(async () => ({ agentId: 'bc-agent', env: { type: 'cloud', name: 'App Dev' } }))
+    const get = vi.fn(async () => ({ agentId: 'bc-agent', env: { type: 'cloud', name: 'App Dev' }, repos: ['https://github.com/actual/environment'] }))
     vi.doMock('@cursor/sdk', () => ({ Agent: { listRuns, getRun, get }, Cursor: {} }))
     try {
       const sdk = await loadCursorSdk()
-      expect(await sdk.get('bc-agent')).toMatchObject({ env: { name: 'App Dev' } })
+      expect(await sdk.get('bc-agent')).toMatchObject({ env: { name: 'App Dev' }, repos: ['https://github.com/actual/environment'] })
       expect(get).toHaveBeenCalledExactlyOnceWith('bc-agent')
       expect(await sdk.cloudHistory('bc-agent')).toEqual({ turns: [turn('Cloud prompt')], skipped: 0, runIds: ['run-cloud'], skippedRunning: [] })
       expect(listRuns).toHaveBeenCalledWith('bc-agent', { runtime: 'cloud', limit: 100 })

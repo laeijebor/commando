@@ -183,15 +183,15 @@ export function NewSessionEnvironmentPicker({ environments, selected, repoUrl, m
   ]
   const pick = (name?: string) => { setOpen(false); onPick(name) }
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger disabled={disabled} className={cn(PILL, open && 'is-open')} aria-label={`Environment: ${selected ?? 'Cursor default for this repo'}`}>
-      <span className="tmux-create__pill-text">{selected ?? 'Environment'}</span><ChevronDown aria-hidden="true" />
+    <PopoverTrigger disabled={disabled} className={cn(PILL, open && 'is-open')} aria-label={`Environment: ${selected ?? 'Cursor default for this repo'}`} title={selected ?? 'Cursor default for this repo'}>
+      <span className="tmux-create__pill-text min-w-0 truncate">{selected ?? 'Environment'}</span><ChevronDown aria-hidden="true" />
     </PopoverTrigger>
     <PopoverPopup className="w-[300px]" side="bottom" aria-label="Environment">
       <div role="menu" aria-label="Environment">
-        <MenuOption checked={!selected} label="Cursor default for this repo" onSelect={() => pick()} />
+        <MenuOption truncateLabel checked={!selected} label="Cursor default for this repo" onSelect={() => pick()} />
         {groups.map(({ label, items }) => items.length ? <div key={label} role="group" aria-label={label}>
           <SectionLabel>{label}</SectionLabel>
-          {items.map((environment) => <MenuOption key={environment.id} label={environment.name} checked={selected === environment.name} onSelect={() => pick(environment.name)} />)}
+          {items.map((environment) => <MenuOption truncateLabel key={environment.id} label={environment.name} checked={selected === environment.name} onSelect={() => pick(environment.name)} />)}
         </div> : null)}
       </div>
       {message ? <p className="tmux-create__menu-foot" role="status">{message}</p> : null}

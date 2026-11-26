@@ -32,18 +32,18 @@ export function SectionLabel({ children }: { children: ReactNode }) {
   return <h5 className="mx-2 mt-1 mb-0.5 text-2xs font-semibold uppercase tracking-wide text-icon-muted">{children}</h5>
 }
 
-export function MenuOption({ checked, label, description, onSelect }: { checked: boolean; label: string; description?: string; onSelect: () => void }) {
+export function MenuOption({ checked, label, description, truncateLabel, onSelect }: { checked: boolean; label: string; description?: string; truncateLabel?: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
       role="menuitemradio"
       aria-checked={checked}
-      title={description}
+      title={description ?? (truncateLabel ? label : undefined)}
       onClick={onSelect}
       className={cn('flex w-full min-w-0 items-baseline gap-2 rounded-[5px] px-2 py-1 text-left', checked ? 'bg-accent text-foreground' : 'text-secondary-label hover:bg-accent')}
     >
       <span className="w-3 shrink-0 self-center text-primary">{checked ? <Check className="size-3" aria-hidden="true" /> : null}</span>
-      <span className="shrink-0">{label}</span>
+      <span className={truncateLabel ? 'min-w-0 flex-1 truncate' : 'shrink-0'}>{label}</span>
       {description ? <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{description}</span> : null}
     </button>
   )

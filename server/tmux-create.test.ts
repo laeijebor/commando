@@ -1327,6 +1327,18 @@ describe('Cursor cloud creation', () => {
 })
 
 describe('Cursor cloud environment validation', () => {
+  it.each([undefined, 'unpublished'])('skips pushed-branch checks for a named environment with ref %j', async (ref) => {
+    const agent = { provider: 'cursor-chat' as const, cursorCloud: { repoUrl: 'https://github.com/acme/app', environment: 'App Dev', ...(ref ? { ref } : {}) } }
+    expect(validatedAgent(agent)).toEqual(agent)
+    const pushed = vi.spyOn(GitCursorCloud.prototype, 'assertPushed').mockRejectedValue(new Error('This local branch is not pushed'))
+    try {
+      const run = runner()
+      await new TmuxCreator(run, [], undefined, async () => '/host/commando-agent').createSession({ name: 'environment-chat', cwd: '/repo', agent })
+      expect(pushed).not.toHaveBeenCalled()
+      expect(run.mock.calls[0][0].at(-1)).toContain('--cloud-env')
+    } finally { pushed.mockRestore() }
+  })
+
   const cursorCloud = { repoUrl: 'https://github.com/acme/app', ref: 'main' }
   it.each(['App Dev', 'x', 'x'.repeat(200), '開発'])('whitelists environment %j and drops unknown fields', (environment) => {
     expect(validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, environment, extra: true } })?.cursorCloud).toEqual({ ...cursorCloud, environment })

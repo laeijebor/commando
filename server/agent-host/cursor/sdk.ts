@@ -48,7 +48,7 @@ export interface CursorSdk {
   authStatus(): Promise<{ status: 'logged-in' | 'logged-out'; email?: string }>
   login(options: { onLoginUrl: (url: string) => void; signal: AbortSignal }): Promise<{ email?: string }>
   listModels(): Promise<ModelListItem[]>
-  get(agentId: string): Promise<{ agentId?: string; env?: { name?: string } }>
+  get(agentId: string): Promise<{ agentId?: string; env?: { name?: string }; repos?: string[] }>
   create(options: AgentOptions): Promise<CursorAgent>
   resume(agentId: string, options: AgentOptions): Promise<CursorAgent>
   history(agentId: string, cwd: string): Promise<CursorHistory>

@@ -1,3 +1,4 @@
+import { normaliseGithubUrl } from '../../git-cursor-cloud.js'
 import { isCursorEnvironmentName } from '../../../shared/cursor-cloud-agents.js'
 import { randomUUID } from 'node:crypto'
 import type { AgentOptions, ModelListItem, ModelSelection, SDKImage, SettingSource } from '@cursor/sdk'
@@ -82,7 +83,7 @@ export class CursorChatSession implements ChatProviderSession {
   private loginController?: AbortController
   private loginFinishing = false
   private readonly apiKey?: string
-  private environmentLoaded = false
+  private cloudMetadataLoaded = false
   private historyLoaded = false
   private readyToSend = false
   private ranUnsandboxed = false
@@ -180,7 +181,16 @@ export class CursorChatSession implements ChatProviderSession {
     return cursorModelSelection(option, this.info.effort, this.info.fast)
   }
   private agentOptions(resume = false): AgentOptions {
-    if (this.spec.cursorCloud) return { model: this.model(), ...(!resume ? { cloud: { ...(this.spec.cursorCloud.environment ? { env: { type: 'cloud' as const, name: this.spec.cursorCloud.environment } } : {}), repos: [{ url: this.spec.cursorCloud.repoUrl, startingRef: this.spec.cursorCloud.startingRef }], autoCreatePR: true, metadata: { commando: 'chat' } } } : {}) }
+    if (this.spec.cursorCloud) {
+      const { environment, repoUrl, startingRef } = this.spec.cursorCloud
+      return {
+        model: this.model(),
+        ...(!resume ? { cloud: {
+          ...(environment ? { env: { type: 'cloud' as const, name: environment } } : { repos: [{ url: repoUrl, startingRef }] }),
+          autoCreatePR: true, metadata: { commando: 'chat' },
+        } } : {}),
+      }
+    }
     // Local runs silently refuse askQuestion; the agent should ask in plain text instead.
     return {
       model: this.model(),
@@ -191,6 +201,17 @@ export class CursorChatSession implements ChatProviderSession {
         ...cursorPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.info.prePlanPermissionMode),
       },
     }
+  }
+  private async loadCloudMetadata(): Promise<void> {
+    if (!this.info.cloud || !this.agent || this.cloudMetadataLoaded) return
+    this.cloudMetadataLoaded = true
+    try {
+      const details = await this.sdk!.get(this.agent.agentId)
+      if (this.closing) return
+      const environment = this.info.cloud.environment ?? (isCursorEnvironmentName(details.env?.name) ? details.env.name : undefined)
+      const repoUrl = environment && details.repos?.[0] ? normaliseGithubUrl(details.repos[0]) : undefined
+      this.update({ cloud: { ...this.info.cloud, ...(environment ? { environment } : {}), ...(repoUrl ? { repoUrl } : {}) } })
+    } catch { /* Cloud metadata is optional; keep the chat usable. */ }
   }
   private async ready(): Promise<void> {
     await this.reloadModels()
@@ -203,13 +224,8 @@ export class CursorChatSession implements ChatProviderSession {
       this.agent = agent
       this.agentId(agent.agentId)
     }
-    if (id && this.info.cloud && !this.info.cloud.environment && !this.environmentLoaded) {
-      this.environmentLoaded = true
-      try {
-        const environment = (await this.sdk!.get(id)).env?.name
-        if (!this.closing && isCursorEnvironmentName(environment)) this.update({ cloud: { ...this.info.cloud, environment } })
-      } catch { /* Environment metadata is optional; keep the chat usable. */ }
-    }
+    if (id) await this.loadCloudMetadata()
+    if (this.closing) return
     this.stale = false
     if (this.spec.resume && !this.historyLoaded) {
       this.historyLoaded = true
@@ -441,6 +457,7 @@ export class CursorChatSession implements ChatProviderSession {
       this.agent = agent
       this.stale = false
       this.agentId(agent.agentId)
+      if (this.info.cloud?.environment) void this.loadCloudMetadata()
     }
     const turnId = `turn-${++this.turnCounter}`
     this.mapper.begin(turnId)
