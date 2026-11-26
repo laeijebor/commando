@@ -31,7 +31,7 @@ import { providerPresentation } from '../ui/providerPresentation'
 import { withAlpha } from '../ui/primitives'
 import { useTheme } from '../theme'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
-import { ContextMeter, IconButton, Pill, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
+import { ContextMeter, IconButton, Pill, QueueList, SessionUsageBadge, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
 import { spliceDictation, useDictation } from './dictation'
 import { chatImageUri } from './images'
@@ -497,7 +497,11 @@ export function ChatComposer({ active = true, host, session, hostConnected, comm
               onModelSheetShown={() => input.current?.blur()}
               session={session}
             /> : null}
-            {session.contextUsage ? <ContextMeter usage={session.contextUsage} /> : null}
+            {session.contextUsage ? (
+              <ContextMeter usage={session.contextUsage} />
+            ) : session.sessionUsage && session.sessionUsage.totalTokens > 0 ? (
+              <SessionUsageBadge usage={session.sessionUsage} />
+            ) : null}
           </ScrollView>
         </View>
         <View testID="chat-composer-controls" style={styles.bar}>

@@ -19,6 +19,7 @@ import { CURSOR_BUILTIN_COMMANDS, discoverCursorCommands } from './commands.js'
 import { CursorItemMapper, parseCursorTranscriptJsonl, record, string } from './items.js'
 import { CursorMcpController, cursorDataDir, type CursorMcpCli } from './mcp.js'
 import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from './sdk.js'
+import { CursorUsageTracker } from './usage.js'
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
 
@@ -95,7 +96,7 @@ export function cursorImageMime(data: Buffer): string | undefined {
   return undefined
 }
 
-interface ActiveRun { run: CursorRun; turnId: string; text: string; images: ChatImageRef[] }
+interface ActiveRun { run: CursorRun; agent: CursorAgent; turnNumber: number; turnId: string; text: string; images: ChatImageRef[] }
 export class CursorChatSession implements ChatProviderSession {
   private commandList: ChatCommand[] = [...CURSOR_BUILTIN_COMMANDS]
   private commandsRead = 0
@@ -103,6 +104,8 @@ export class CursorChatSession implements ChatProviderSession {
   private agent?: CursorAgent
   private readonly mapper = new CursorItemMapper()
   private readonly asideTimeline: AsideTimeline
+  private readonly usage = new CursorUsageTracker()
+  private usageGeneration = 0
   /** The folder attached videos are copied to; Cursor's agent id isn't known before its first run. */
   private readonly attachmentFolder = randomUUID()
   private readonly files: WorkspaceFileIndex
@@ -339,8 +342,10 @@ export class CursorChatSession implements ChatProviderSession {
     this.stale = false
     this.ranUnsandboxed = false
     this.historyLoaded = false
+    this.usage.reset()
+    this.usageGeneration++
     this.setQueue([])
-    this.update({ sessionId: undefined, title: undefined, error: undefined })
+    this.update({ sessionId: undefined, title: undefined, error: undefined, sessionUsage: undefined })
     this.mapper.clear()
     const notice = this.mapper.notice('info', 'Context cleared: Cursor starts a new conversation from here')
     this.emitItems(notice, true)
@@ -424,36 +429,67 @@ export class CursorChatSession implements ChatProviderSession {
       this.stale = false
       this.update({ sessionId: agent.agentId })
     }
-    const turnId = `turn-${++this.turnCounter}`
+    const turnNumber = ++this.turnCounter
+    const turnId = `turn-${turnNumber}`
+    const agent = this.agent
     this.mapper.begin(turnId)
+    this.usage.beginRun()
     this.emitItems(this.mapper.expectUser(text, images))
     if (!sandboxed) this.ranUnsandboxed = true
-    const run = await this.agent.send({ text: [...(this.spec.aside ? [asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral)] : []), text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
+    const run = await agent.send({ text: [...(this.spec.aside ? [asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral)] : []), text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
       model, mode: this.info.permissionMode === 'plan' ? 'plan' : 'agent',
-      onDelta: ({ update }) => { if (!this.closing) this.emitItems(this.mapper.delta(update)) },
+      onDelta: ({ update }) => {
+        if (this.closing) return
+        this.emitItems(this.mapper.delta(update))
+        if (update.type === 'turn-ended' && update.usage && this.turnCounter === turnNumber) {
+          const sessionUsage = this.usage.recordTurnDelta(update.usage)
+          if (sessionUsage) this.update({ sessionUsage })
+        }
+      },
     })
     if (this.closing) { await run.cancel().catch(() => {}); return }
-    this.active = { run, turnId, text, images }
+    this.active = { run, agent, turnNumber, turnId, text, images }
     this.update({ status: 'running', model: model.id, ...(!this.info.title && text ? { title: text.slice(0, 80) } : {}) })
     void this.wait(this.active)
   }
   private async wait(active: ActiveRun): Promise<void> {
+    let completed = false
     try {
       const result = await active.run.wait()
       if (this.closing) return
+      const sessionUsage = this.usage.finishRun(result.usage)
+      if (sessionUsage) this.update({ sessionUsage })
       this.emitItems(this.mapper.settle(active.turnId, result.status === 'finished' ? 'completed' : result.status === 'cancelled' ? 'interrupted' : 'failed'))
+      if (result.status === 'finished') completed = true
       if (result.status === 'error') {
         if (isCursorAuthError(result)) { this.authRequired(); this.enqueue(active.text, active.images, true) }
         else this.emitItems(this.mapper.notice('error', this.safeError(result.error ?? 'Cursor run failed')))
       }
     } catch (error) {
       if (this.closing) return
+      const sessionUsage = this.usage.commitInFlight()
+      if (sessionUsage) this.update({ sessionUsage })
       this.emitItems(this.mapper.settle(active.turnId, 'failed'))
       if (isCursorAuthError(error)) { this.authRequired(); this.enqueue(active.text, active.images, true) }
       else this.emitItems(this.mapper.notice('error', this.safeError(error)))
     } finally {
       if (this.active === active) this.active = undefined
-      if (!this.closing) { this.update({ status: 'idle' }); this.flushQueue() }
+      if (!this.closing) {
+        this.update({ status: 'idle' })
+        if (completed) void this.refreshUsage(active.agent, active.turnNumber, this.usageGeneration)
+        this.flushQueue()
+      }
+    }
+  }
+  private async refreshUsage(agent: CursorAgent, expectedTurn: number, expectedGeneration: number): Promise<void> {
+    if (!agent.getUsage) return
+    try {
+      const serverUsage = await agent.getUsage()
+      if (this.closing || this.agent !== agent || this.turnCounter !== expectedTurn || this.usageGeneration !== expectedGeneration) return
+      const sessionUsage = this.usage.applyServerUsage(serverUsage)
+      if (sessionUsage) this.update({ sessionUsage })
+    } catch {
+      // Usage refresh is best-effort and must never disrupt a turn.
     }
   }
   private enqueue(text: string, images: ChatImageRef[], front = false): void {

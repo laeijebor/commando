@@ -36,7 +36,7 @@ import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
 import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
-import { ContextMeter, ModelPicker, PermissionPicker, PlanUsageMeter, type ChatHandoffTarget } from './ComposerControls'
+import { ContextMeter, ModelPicker, PermissionPicker, PlanUsageMeter, SessionUsageBadge, type ChatHandoffTarget } from './ComposerControls'
 import { usePlanUsage } from './planUsage'
 import { implementPermissionMode } from './turnFlow'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
@@ -1131,6 +1131,8 @@ export function ChatComposer({
           {planUsage ? <PlanUsageMeter usage={planUsage} profile={profile} /> : null}
           {session.contextUsage ? (
             <ContextMeter usage={session.contextUsage} canCompact={(session.provider === 'claude' || session.provider === 'deepseek') && !disabled && !running} onCompact={() => onSend('/compact')} />
+          ) : session.sessionUsage && session.sessionUsage.totalTokens > 0 ? (
+            <SessionUsageBadge usage={session.sessionUsage} />
           ) : null}
           {running ? (
             <Button size="icon-sm" variant="outline" aria-label="Stop" title={queue.length ? 'Stop (Esc): queued messages come back here' : 'Stop (Esc)'} onClick={interrupt} disabled={!hostConnected}>

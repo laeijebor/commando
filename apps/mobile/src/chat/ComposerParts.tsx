@@ -13,9 +13,10 @@ import {
   type ChatQueueAction,
   type ChatQueuedMessage,
   type ChatSessionInfo,
+  type ChatSessionUsage,
   type ChatSettingsChange,
 } from '@commando/agent-chat'
-import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatTokens, modelLabel, modelMenuAvailable } from '@commando/chat-composer'
+import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatSessionUsageSummary, formatTokens, modelLabel, modelMenuAvailable } from '@commando/chat-composer'
 
 import { settingsPresentation } from './settingsPresentation'
 import { providerPresentation } from '../ui/providerPresentation'
@@ -298,6 +299,22 @@ export function ContextMeter({ usage }: { usage: ChatContextUsage }): React.JSX.
   )
 }
 
+/** Cumulative session tokens and optional billed cost; read-only on the phone. */
+export function SessionUsageBadge({ usage }: { usage: ChatSessionUsage }): React.JSX.Element {
+  const theme = useTheme()
+  const summary = formatSessionUsageSummary(usage)
+  return (
+    <View
+      accessibilityLabel={`Session usage: ${summary}`}
+      accessible
+      style={[styles.usagePill, { borderColor: theme.border }]}
+      testID="session-usage-badge"
+    >
+      <Text numberOfLines={1} style={[styles.usagePillText, { color: theme.textDim }]}>{summary}</Text>
+    </View>
+  )
+}
+
 export function IconButton({ icon, label, onPress, disabled, ref }: { icon: React.ComponentProps<typeof Feather>['name']; label: string; onPress: () => void; disabled?: boolean; ref?: React.Ref<View> }): React.JSX.Element {
   const theme = useTheme()
   return (
@@ -364,6 +381,8 @@ const styles = StyleSheet.create({
   meterTrack: { width: 22, height: 4, borderRadius: 2, overflow: 'hidden' },
   meterFill: { height: 4 },
   meterText: { fontSize: 11, fontVariant: ['tabular-nums'] },
+  usagePill: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
+  usagePillText: { fontSize: 11, fontVariant: ['tabular-nums'] },
   iconButton: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
   smallButton: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5 },
   smallButtonText: { fontSize: 12.5, fontWeight: '600' },
