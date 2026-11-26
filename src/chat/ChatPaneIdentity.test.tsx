@@ -47,7 +47,7 @@ it('keeps the resource handler stable across new tile callbacks and calls the la
     expect(vi.mocked(ChatTimeline).mock.calls.at(-1)![0].onResourceAction).toBe(action)
   }
   await action('/work/.redline/page.html', 'tile')
-  expect(resourceAction).toHaveBeenCalledWith('%5', '/work/.redline/page.html', 'tile', undefined)
+  expect(resourceAction).toHaveBeenCalledWith('%5', '/work/.redline/page.html', 'tile', undefined, undefined)
   expect(latest).toHaveBeenCalledWith('w-12345678')
   expect(first).not.toHaveBeenCalled()
 })

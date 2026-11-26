@@ -2,10 +2,12 @@ import type { PaneMarkTone } from '../shared/protocol'
 
 export type ResourceAction = 'open' | 'reveal' | 'editor' | 'tile'
 export type ResourceActionResult = { ok: true; performed: ResourceAction; webPaneId?: string }
-export type ResourceActionHandler = (path: string, action: ResourceAction, line?: number) => Promise<ResourceActionResult>
+/** `engine: 'chromium'` opens a tile for redline review. */
+export type ResourceActionOptions = { engine?: 'chromium' }
+export type ResourceActionHandler = (path: string, action: ResourceAction, line?: number, options?: ResourceActionOptions) => Promise<ResourceActionResult>
 
 export interface PaneManagementApiClient {
-  resourceAction(paneId: string, path: string, action: ResourceAction, line?: number): Promise<ResourceActionResult>
+  resourceAction(paneId: string, path: string, action: ResourceAction, line?: number, options?: ResourceActionOptions): Promise<ResourceActionResult>
   renamePane(paneId: string, title: string): Promise<void>
   deletePane(paneId: string): Promise<void>
   openPanePath(paneId: string): Promise<void>
@@ -57,9 +59,9 @@ export function createPaneManagementApi(
   const send = async (path: string, init: RequestInit): Promise<void> => { await request(path, init) }
 
   return {
-    resourceAction: async (paneId, path, action, line) => {
+    resourceAction: async (paneId, path, action, line, options) => {
       const body = await request(`/panes/${encodeURIComponent(paneId)}/resource`, {
-        method: 'POST', body: JSON.stringify({ path, action, ...(line !== undefined ? { line } : {}) }),
+        method: 'POST', body: JSON.stringify({ path, action, ...(line !== undefined ? { line } : {}), ...(options?.engine ? { engine: options.engine } : {}) }),
       }) as Partial<ResourceActionResult> | null
       if (body?.ok !== true || !['open', 'reveal', 'editor', 'tile'].includes(body.performed ?? '') ||
         (body.performed === 'tile' && typeof body.webPaneId !== 'string')) throw new Error('The daemon did not report a resource action')
