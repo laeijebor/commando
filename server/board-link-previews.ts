@@ -83,6 +83,8 @@ const pinnedFetch: PreviewFetch = (url, init, address) => new Promise((resolve, 
   req.on('error', reject); guardPinnedSocket(req, address); req.end()
 })
 class PrivateUrl extends Error { constructor(readonly url: string) { super('Private preview URL') } }
+// A link's thumb is exclusively a fallback screenshot; downloaded OG images
+// belong in preview.image, so preferring OG may safely clear the thumb.
 type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb']; capture?: 'public' | 'private'; shotExpires?: number; shotRetryAt?: number; shotFailures?: number; dnsRetryAt?: number; dnsFailures?: number }
 type Options = {
   store: BoardStore; thumbs: BoardThumbCache; statePath: string
@@ -176,6 +178,7 @@ export class BoardLinkPreviews {
     if (!this.options.thumbs.canCapture(url)) return
     await this.load()
     let entry = this.entries.get(url)
+    if (entry && this.clearFallbackForImage(entry)) await this.save().catch(() => {})
     if (entry?.dnsRetryAt && entry.dnsRetryAt > this.now()) { this.applyEntry(targetId, item, entry); return }
     let destination: CaptureDestination
     try { destination = await this.options.thumbs.destination(url, this.options.resolve) } catch {
@@ -193,7 +196,7 @@ export class BoardLinkPreviews {
     }
     // Classification is fresh and explicit; a failed public fetch never upgrades
     // a previously public job to private-network authority.
-    if (entry && (entry.capture || (entry.preview && !entry.preview.image) || destination.policy === 'private')) entry.capture = destination.policy
+    if (entry && !entry.preview?.image && (entry.capture || entry.preview || destination.policy === 'private')) entry.capture = destination.policy
     const previousShot = entry
     if (entry && entry.expires > this.now()) {
       const hashes = new Set([entry.preview?.image, entry.preview?.favicon, ...(entry.shotRetryAt && entry.shotRetryAt > this.now() ? [] : [entry.thumb?.hash])].filter((hash): hash is string => !!hash))
@@ -211,7 +214,7 @@ export class BoardLinkPreviews {
           if (!asset) continue
           try { const data = await this.download(asset, IMAGE_LIMIT, true); const hash = await this.options.thumbs.image(data.bytes); if (hash) preview[key] = hash } catch { /* Metadata is useful even when an image fails. */ }
         }
-        entry = { expires: this.now() + 7 * DAY, preview, ...(!image ? { capture: 'public' as const } : {}) }
+        entry = { expires: this.now() + 7 * DAY, preview, ...(!preview.image ? { capture: 'public' as const } : {}) }
       } catch (error) {
         entry = { expires: this.now() + 3600_000 }
         // A public URL redirecting into a private network is not a dev-server link.
@@ -244,11 +247,21 @@ export class BoardLinkPreviews {
     }
     this.applyEntry(targetId, item, entry)
   }
+  private clearFallbackForImage(entry: Entry): boolean {
+    if (!entry.preview?.image) return false
+    const changed = [entry.thumb, entry.capture, entry.shotExpires, entry.shotRetryAt, entry.shotFailures].some((value) => value !== undefined)
+    delete entry.thumb; delete entry.capture; delete entry.shotExpires; delete entry.shotRetryAt; delete entry.shotFailures
+    return changed
+  }
   private applyEntry(targetId: string, item: BoardItem, entry: Entry): void {
-    if (entry.preview || entry.thumb) this.apply(targetId, item, { ...(entry.preview ? { preview: entry.preview } : {}), ...(entry.thumb ? { thumb: entry.thumb } : {}) })
+    if (entry.preview || entry.thumb) this.apply(targetId, item, { ...(entry.preview ? { preview: entry.preview } : {}), ...(entry.preview?.image ? { thumb: undefined } : entry.thumb ? { thumb: entry.thumb } : {}) })
   }
   private apply(target: string, item: BoardItem, patch: Pick<Partial<BoardItem>, 'preview' | 'thumb'>): void {
-    if ((!patch.preview || JSON.stringify(item.preview) === JSON.stringify(patch.preview)) && (!patch.thumb || JSON.stringify(item.thumb) === JSON.stringify(patch.thumb))) return
-    try { if (this.options.store.item(target, item.key).ref.url === item.ref.url) this.options.store.setPreview(target, item.key, patch) } catch { /* Deleted while fetching. */ }
+    try {
+      const current = this.options.store.item(target, item.key)
+      if (current.kind !== 'link' || current.ref.url !== item.ref.url) return
+      if ((!Object.hasOwn(patch, 'preview') || JSON.stringify(current.preview) === JSON.stringify(patch.preview)) && (!Object.hasOwn(patch, 'thumb') || JSON.stringify(current.thumb) === JSON.stringify(patch.thumb))) return
+      this.options.store.setPreview(target, item.key, patch)
+    } catch { /* Deleted while fetching. */ }
   }
 }
