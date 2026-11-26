@@ -446,6 +446,14 @@ export class CodexChatSession implements ChatProviderSession {
       this.client.reject(request.id, -32602, 'Invalid or inactive thread request')
       return true
     }
+    if (this.spec.aside?.ephemeral) {
+      this.client.respond(request.id, request.method === 'item/tool/requestUserInput'
+        ? { answers: Object.fromEntries(inputQuestions(params.questions).map(({ id }) => [id, { answers: [] }])) }
+        : request.method === 'item/permissions/requestApproval'
+          ? { permissions: {}, scope: 'turn' }
+          : { decision: 'decline' })
+      return true
+    }
     if (request.method === 'item/tool/requestUserInput' && (!inputQuestions(params.questions).length || list(params.questions).some((value) => record(value).isSecret === true))) {
       this.client.reject(request.id, -32602, 'Empty or secret questions cannot be rendered by this chat')
       this.emitItems(this.mapper.notice('error', 'Codex requested unsupported empty or secret user input.'))

@@ -121,6 +121,13 @@ async function running(spec: Partial<AgentSessionSpec> = {}) {
 }
 
 describe('Cursor helpers', () => {
+  it.each([true, undefined] as const)('keeps questions disabled for quick and kept asides (ephemeral=%s)', async (ephemeral) => {
+    const { session, sdk } = await running({ aside: { parentPaneId: '%3', id: 'abcd1234', title: 'Quick', mode: 'read-only', method: 'brief', readOnlyEnforced: false, forkedFrom: { sessionId: 'main' }, createdAt: 1, ephemeral } })
+    expect(sdk.create).toHaveBeenCalledWith(expect.objectContaining({ disallowedTools: ['askQuestion'] }))
+    if (ephemeral) expect(sdk.sends[0].message.text).toContain("Quick answers can't ask questions or run tools that need approval")
+    expect(session.snapshot().items.some((item) => item.kind === 'request')).toBe(false)
+    session.close()
+  })
   it('always declares sandbox policy and rejects unsupported modes', () => {
     expect(cursorPermissions('bypassPermissions')).toEqual({ sandboxOptions: { enabled: false } })
     expect(cursorPermissions('default')).toEqual({ sandboxOptions: { enabled: true } })

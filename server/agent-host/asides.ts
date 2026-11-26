@@ -343,17 +343,17 @@ export class ChatAsides {
         }
         const record = this.records.find((entry) => entry.id === action.asideId)
         if (!record) throw new Error('No such aside')
-        if (record.status === 'discarded') throw new Error('That quick answer was discarded')
+        if (record.status === 'discarded') {
+          if (action.action === 'discard' || action.action === 'close') { await this.save(); return { ok: true, asideId: record.id } }
+          throw new Error('That quick answer was discarded')
+        }
         if (record.status === 'promoted') {
           if (action.action === 'promote') { await this.save(); return { ok: true, asideId: record.id } }
           throw new Error('That aside was opened as chat')
         }
         if (record.ephemeral && !['keep', 'discard', 'close'].includes(action.action)) throw new Error('Keep this quick answer as an aside first')
-        if (action.action === 'keep') {
-          if (record.ephemeral) {
-            this.room()
-            delete record.ephemeral
-          }
+        if (action.action === 'keep' && !record.ephemeral) {
+          // Retrying Keep on an ordinary aside is already complete.
         } else if (action.action === 'promote') {
           if (!record.sessionId) throw new Error('This aside has no saved conversation yet')
           await this.end(record)
@@ -371,7 +371,9 @@ export class ChatAsides {
             const point = action.action === 'refork' ? this.forkPoint() : undefined
             if (!point && !record.sessionId) throw new Error('This aside has no saved conversation yet; refork it to start again')
             if (action.action === 'reopen' && this.sessions.has(record.id)) return { ok: true, asideId: record.id }
+            if (action.action === 'keep') this.room()
             await this.end(record)
+            if (action.action === 'keep') delete record.ephemeral
             if (action.action === 'mode') record.mode = action.mode
             if (point) { record.forkedFrom = point; delete record.sessionId }
             record.status = 'open'

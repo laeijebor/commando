@@ -4,7 +4,7 @@ import { requestKey } from './protocol.js'
 import type { CodexTransport } from './client.js'
 import { CodexChatSession, codexContextUsage, codexModels, codexPermissions, codexTuiSwitchCommand } from './session.js'
 import type { AgentSessionSpec } from '../session.js'
-import { MAX_CHAT_ITEMS, parseChatSessionInfo } from '../../../shared/agent-chat.js'
+import { MAX_CHAT_ITEMS, parseChatSessionInfo, type ChatItem } from '../../../shared/agent-chat.js'
 import { asideInstructions } from '../aside-brief.js'
 
 const model = (id: string, efforts = ['low', 'medium', 'high'], fast = false) => ({ id, model: id, upgrade: null, upgradeInfo: null, availabilityNux: null, displayName: id, description: 'Test model', modelSpecialty: null, hidden: false, supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], supportsPersonality: false, multiAgentVersion: null, additionalSpeedTiers: fast ? ['fast'] : [], serviceTiers: fast ? [{ id: 'priority', name: 'Fast', description: '2x speed, increased usage' }] : [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: id === 'test-model' })
@@ -515,6 +515,33 @@ describe('Codex aside forks', () => {
     session.close()
   })
   const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
+  it.each([true, undefined] as const)('declines quick-answer requests and restores interaction after keeping (ephemeral=%s)', async (ephemeral) => {
+    const { session, client } = await running({ readOnly: true, aside: { ...aside, ephemeral } })
+    const items: ChatItem[] = []
+    session.on('items', (changed) => items.push(...changed))
+    const requests = [
+      { method: 'item/commandExecution/requestApproval', params: {}, result: { decision: 'decline' } },
+      { method: 'item/fileChange/requestApproval', params: {}, result: { decision: 'decline' } },
+      { method: 'item/permissions/requestApproval', params: { permissions: { network: { enabled: true } } }, result: { permissions: {}, scope: 'turn' } },
+      { method: 'item/tool/requestUserInput', params: { questions: [{ id: 'q', question: 'Which?', options: [{ label: 'A' }] }] }, result: { answers: { q: { answers: [] } } } },
+    ]
+    for (const { method, params, result } of requests) {
+      expect(client.server(method, method, params)).toBe(true)
+      if (ephemeral) {
+        expect(client.replies.at(-1)).toEqual({ id: method, result })
+        expect(session.answer(requestKey(method), { kind: 'approval', decision: 'deny' })).toBe(false)
+      } else {
+        expect(session.snapshot().session.status).toBe('waiting')
+        expect(session.answer(requestKey(method), { kind: 'approval', decision: 'deny' })).toBe(true)
+      }
+    }
+    expect(session.snapshot().session.status).toBe('running')
+    if (ephemeral) {
+      expect(items.some((item) => item.kind === 'request')).toBe(false)
+      expect(session.snapshot().items.some((item) => item.kind === 'request')).toBe(false)
+    }
+    session.close()
+  })
   const messageTurn = (id: string, question: string, answer: string) => turn(id, 'completed', [
     { type: 'userMessage', id: `${id}-user`, content: [{ type: 'text', text: question }] },
     { type: 'agentMessage', id: `${id}-reply`, text: answer },

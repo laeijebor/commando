@@ -57,6 +57,15 @@ beforeEach(() => { localStorage.clear(); HTMLElement.prototype.scrollIntoView = 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('Report to Main', () => {
+  it.each(['Ready code word IBIS', 'Own investigation'])('uses the aside’s own title in report headings and deliveries (session title: %s)', (title) => {
+    const mainTitle = 'Ready code word IBIS'
+    const expected = title === mainTitle ? record.title : title
+    const view = setup({ ...main, session: { ...main.session, title: mainTitle } }, { ...aside, session: { ...aside.session, title } })
+    manualReport()
+    expect(screen.getByText(`From aside “${expected}”`)).toBeInTheDocument()
+    sendReport()
+    expect(view.onSend).toHaveBeenCalledWith(asideReportText({ asideId: record.id, title: expected, body }), undefined, { delivery: 'queue' })
+  })
   it('sends the drafting prompt to the aside and fills only after its completed turn, even on another tab', () => {
     const view = setup()
     clickReport()

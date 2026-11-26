@@ -107,6 +107,23 @@ describe('chat asides', () => {
     expect(manager.list().at(-1)?.ephemeral).toBeUndefined()
     expect((await store.load('main-session')).at(-1)?.ephemeral).toBeUndefined()
     expect(created.at(-1)!.session.close).not.toHaveBeenCalled()
+    expect(created[5]!.session.close).toHaveBeenCalledOnce()
+    expect(factory.mock.calls.at(-1)?.[1]).toMatchObject({ resume: `child-${quick.asideId}`, fork: undefined, readOnly: true, aside: { mode: 'read-only' } })
+    expect(factory.mock.calls.at(-1)?.[1].aside?.ephemeral).toBeUndefined()
+    expect(created.at(-1)!.session.send).not.toHaveBeenCalled()
+    const calls = factory.mock.calls.length
+    expect((await manager.act({ action: 'keep', asideId: quick.asideId! })).ok).toBe(true)
+    expect(factory).toHaveBeenCalledTimes(calls)
+  })
+  it('keeps a failed quick-answer conversion closed and resumable as an ordinary aside', async () => {
+    const { manager, factory, store } = await setup()
+    const { asideId } = await manager.act({ action: 'open', text: 'Quick?', ephemeral: true })
+    factory.mockRejectedValueOnce(new Error('Resume failed'))
+    expect(await manager.act({ action: 'keep', asideId: asideId! })).toEqual({ ok: false, error: 'Resume failed' })
+    expect((await store.load('main-session'))[0]).toMatchObject({ status: 'closed', sessionId: `child-${asideId}`, lastError: 'Resume failed' })
+    expect(manager.list()[0]?.ephemeral).toBeUndefined()
+    expect((await manager.act({ action: 'reopen', asideId: asideId! })).ok).toBe(true)
+    expect(factory.mock.calls.at(-1)?.[1].aside?.ephemeral).toBeUndefined()
   })
   it('discards quick answers durably and never resurrects them after restart', async () => {
     const { manager, main, spec, host, store, factory, created } = await setup()
@@ -120,6 +137,15 @@ describe('chat asides', () => {
     const restored = new ChatAsides(main.session, spec, host, store, factory)
     await restored.sync()
     expect(restored.list().map((record) => record.status)).toEqual(['discarded', 'discarded'])
+    expect(factory).toHaveBeenCalledTimes(2)
+    const closedAt = restored.list()[1]!.closedAt
+    const save = vi.spyOn(store, 'save').mockRejectedValueOnce(new Error('Disk full'))
+    expect(await restored.act({ action: 'discard', asideId: restored.list()[1]!.id })).toEqual({ ok: false, error: 'Disk full' })
+    for (const action of ['discard', 'close'] as const) {
+      expect(await restored.act({ action, asideId: restored.list()[1]!.id })).toEqual({ ok: true, asideId: restored.list()[1]!.id })
+    }
+    expect(restored.list()[1]).toMatchObject({ status: 'discarded', closedAt })
+    expect(save).toHaveBeenCalledTimes(3)
     expect(factory).toHaveBeenCalledTimes(2)
     restored.stop()
   })

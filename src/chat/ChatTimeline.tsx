@@ -394,6 +394,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
             {row.item.tileEvents.map((event) => event.kind === 'autofix'
               ? <AutofixCard key={event.id} event={event} {...(context.onOpenPr ? { onOpenPr: context.onOpenPr } : {})} />
               : <TileEventCard key={event.id} event={event} {...(context.onOpenTile ? { onOpenTile: context.onOpenTile } : {})} />)}
+            <AsideFromHere item={row.item} />
           </div>
         )
       }
@@ -420,6 +421,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
               <UserText text={segment.text} />
             </div>
           ))}
+          <AsideFromHere item={row.item} />
         </div>
       )
     }
@@ -430,7 +432,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
     case 'assistant': {
       const asks = context.askMarkers?.get(row.item.id)
       return (
-        <div className="chat-reply pb-3" {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
+        <div className="chat-reply pb-3" data-chat-item-id={row.item.id} {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
           <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
@@ -438,6 +440,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
               Asked you {asks === 1 ? '1 thing' : `${asks} things`}: see Waiting on you
             </button>
           ) : null}
+          <AsideFromHere item={row.item} />
         </div>
       )
     }
@@ -588,9 +591,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
               ) : rows.map((row, index) => <Fragment key={row.id}>
                 <div className="chat-message-row">
                   {row.kind === 'user' && row.item.id === userMessageCard?.itemId
-                    ? <div data-chat-item-id={row.item.id}>{userMessageCard.content}</div>
+                    ? <div className="flex flex-col items-end" data-chat-item-id={row.item.id}>{userMessageCard.content}<AsideFromHere item={row.item} /></div>
                     : <Row row={row} cwd={cwd} highlighted={row.kind === 'user' && row.item.id === highlightedItemId} />}
-                  {row.kind === 'user' || row.kind === 'assistant' ? <AsideFromHere item={row.item} /> : null}
                 </div>
                 {markersByRow.get(index)?.map((marker) => <button key={marker.id} type="button" className={`chat-aside-marker${marker.status === 'closed' || marker.status === 'Opened as chat' ? ' is-closed' : ''}`} onClick={marker.onSelect}>↳ Aside: {marker.title} · {marker.status}</button>)}
               </Fragment>)}
