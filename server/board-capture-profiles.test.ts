@@ -29,6 +29,18 @@ describe('stale Board capture profiles (stub processes only)', () => {
     expect(proc.killGroup).toHaveBeenCalledExactlyOnceWith(200)
     await expect(access(path)).rejects.toThrow()
   })
+  it('matches the non-resolved user-data-dir under a symlinked temp root before killing an owned orphan', async () => {
+    const path = await profile('symlink-root', { ownerPid: 100, browserPid: 200, ownerUid: uid })
+    const alias = join(root, 'temp-root-alias'); await symlink(root, alias)
+    const commandPath = join(alias, 'commando-board-browser-symlink-root')
+    expect(commandPath).not.toBe(path)
+    expect(await realpath(commandPath)).toBe(path)
+    const proc = fakeProcesses(new Set([200]))
+    proc.inspect.mockReturnValue({ uid, group: 200, command: `Chromium --headless=new --user-data-dir=${commandPath} about:blank` })
+    expect(await sweepStaleBoardCaptureProfiles({ root: alias, uid, processes: proc })).toEqual({ removed: 1, errors: [] })
+    expect(proc.killGroup).toHaveBeenCalledExactlyOnceWith(200)
+    await expect(access(path)).rejects.toThrow()
+  })
   it('preserves active daemons, foreign owners, reused pids, wrong process groups and profile-prefix lookalikes', async () => {
     const live = await profile('live', { ownerPid: 101, browserPid: 201, ownerUid: uid })
     const foreign = await profile('foreign', { ownerPid: 102, browserPid: 202, ownerUid: uid + 1 })

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { lstat, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 // Written by spawnChromiumLauncher immediately after spawning the detached group.
 export const BOARD_CAPTURE_OWNER_FILE = '.commando-browser-owner.json'
@@ -24,7 +24,13 @@ const processes: Processes = {
   killGroup: (pid) => { process.kill(-pid, 'SIGKILL') },
 }
 const validPid = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 1
-const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+async function commandProfile(command: string): Promise<string | undefined> {
+  const match = /(?:^|\s)--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))(?=\s|$)/.exec(command)
+  const value = match?.[1] ?? match?.[2] ?? match?.[3]
+  if (!value) return
+  // macOS ps retains /var/... even when the sweep root resolves to /private/var/....
+  return realpath(value).catch(() => resolve(value))
+}
 
 /** Cleanup is scoped to our owned capture prefix and never live-tile profiles.
  * A live daemon owner, foreign uid, reused pid, non-leader group or mismatched
@@ -66,7 +72,7 @@ export async function sweepStaleBoardCaptureProfiles(options: {
           const browser = proc.inspect(owner.browserPid)
           if (!browser || browser.uid !== uid || browser.group !== owner.browserPid
             || !/(?:^|\s)--headless(?:=\S+)?(?:\s|$)/.test(browser.command)
-            || !new RegExp(`(?:^|\\s)--user-data-dir=${escapeRegex(profile)}(?:\\s|$)`).test(browser.command)) {
+            || await commandProfile(browser.command) !== profile) {
             result.errors.push(`Refusing unverified capture browser ${owner.browserPid} at ${profile}`); continue
           }
           proc.killGroup(owner.browserPid)
