@@ -360,6 +360,8 @@ export class AgentSession implements ChatProviderSession {
   private contextReads = 0
   /** Set for logins without Anthropic plan limits (DeepSeek). */
   private planUsageOff = false
+  /** When a rate-limit event last changed the reading; a daemon reading requested before it is older. */
+  private planEventAt = 0
   /** Set by interrupt(); the turn's error result then reads as interrupted. */
   private interruptRequested = false
   /**
@@ -1157,7 +1159,7 @@ export class AgentSession implements ChatProviderSession {
    * (the usage endpoint is rate limited per account). Rate-limit events fold into it.
    */
   applyPlanUsage(usage: ChatPlanUsage): void {
-    if (this.planUsageOff || this.info.status === 'closed') return
+    if (this.planUsageOff || this.info.status === 'closed' || usage.updatedAt < this.planEventAt) return
     this.info = { ...this.info, planUsage: usage }
     this.emitSession()
   }
@@ -1338,6 +1340,7 @@ export class AgentSession implements ChatProviderSession {
       if (this.planUsageOff) return
       const usage = applyRateLimitEvent(this.info.planUsage, message.rate_limit_info, this.now())
       if (usage && usage !== this.info.planUsage) {
+        this.planEventAt = this.now()
         this.info = { ...this.info, planUsage: usage }
         this.emitSession()
       }

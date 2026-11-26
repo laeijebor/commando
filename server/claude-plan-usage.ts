@@ -285,7 +285,8 @@ export class ClaudePlanUsage {
       this.backOff(login, 0, 'error', `${label}: unreadable response`)
       return
     }
-    const usage = toPlanUsage({ rate_limits: body, ...(credentials.plan ? { subscription_type: credentials.plan } : {}) }, this.now())
+    // Stamped when the request went out: a chat's rate-limit event after that is newer and wins.
+    const usage = toPlanUsage({ rate_limits: body, ...(credentials.plan ? { subscription_type: credentials.plan } : {}) }, now)
     if (!usage || usage === 'no_plan_limits') {
       // An answer without windows; the next one is due on the usual schedule.
       this.setStatus(login, 'error', `${label}: no limits in the answer`)

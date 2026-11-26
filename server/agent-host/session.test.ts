@@ -486,6 +486,26 @@ describe('AgentSession state from Claude', () => {
     session.close()
   })
 
+  it('keeps a rate-limit event over a daemon reading requested before it', async () => {
+    const fake = fakeQuery()
+    let now = 1_000
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    now = 5_000
+    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
+    await tick()
+    const reading = (updatedAt: number) => ({ updatedAt, limits: [{ kind: 'session', title: 'Current session', percent: 40, severity: 'normal' as const }] })
+    // Requested at 4 s, answered after the event.
+    session.applyPlanUsage(reading(4_000))
+    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 100, reached: true })
+    session.applyPlanUsage(reading(6_000))
+    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 40 })
+    session.close()
+  })
+
   it('logs, rather than shows, a model list or meter it cannot read', async () => {
     const log = vi.fn()
     const fake = fakeQuery()

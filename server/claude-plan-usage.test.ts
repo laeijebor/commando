@@ -179,6 +179,19 @@ describe('claude plan usage', () => {
     expect(logins).toEqual([])
   })
 
+  it('stamps a reading with when it was asked for, so events a chat saw meanwhile stay newer', async () => {
+    let now = 50_000
+    const usage = new ClaudePlanUsage({
+      logins: () => ['/home/me/.claudep'],
+      deliver: () => {},
+      readCredentials: async () => ({ accessToken: 't' }),
+      now: () => now,
+      fetch: async () => { now += 4_000; return new Response(JSON.stringify(BODY), { status: 200 }) },
+    })
+    await usage.tick()
+    expect(usage.reading('/home/me/.claudep')?.updatedAt).toBe(50_000)
+  })
+
   it('shows the Island why there is no reading', () => {
     expect(toProviderUsage({ status: 'signed_out' }, 5)).toMatchObject({ state: 'unavailable', message: 'Sign in to Claude Code to show usage' })
     expect(toProviderUsage({ status: 'rate_limited' }, 5)).toMatchObject({ state: 'error', message: expect.stringContaining('rate limited') })
