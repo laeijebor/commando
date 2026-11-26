@@ -1095,7 +1095,7 @@ async function main(): Promise<void> {
     handoffs: chatHandoffs,
     replyResources: (items, cwd) => replyResources.attach(items, cwd),
     replyImages: (items, cwd) => replyImages.attach(items, cwd),
-    replyDiagrams: (items, cwd, onRendered) => replyDiagrams.attach(items, cwd, onRendered),
+    replyDiagrams: (items, cwd, wait) => replyDiagrams.attach(items, cwd, wait),
     onHandoffsChange: () => publishChatHandoffs(),
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {

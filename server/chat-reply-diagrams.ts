@@ -193,13 +193,21 @@ export class ChatReplyDiagrams {
    * render: one that isn't done yet runs in the background, and `onRendered`
    * names the replies to attach again once it is.
    */
-  async attach(items: readonly ChatItem[], cwd: string, onRendered?: (itemIds: string[]) => void): Promise<ChatItem[]> {
+  async attach(items: readonly ChatItem[], cwd: string, wait: { onRendered?: (itemIds: string[]) => void; waitMs?: number } = {}): Promise<ChatItem[]> {
     if (!items.some((item) => item.kind === 'assistant_message' && OPENING_FENCE.test(item.text))) {
       return items.map((item) => item.kind === 'assistant_message' && item.diagrams ? this.without(item) : item)
     }
     await this.load()
     const renderer = await this.renderer()
-    return Promise.all(items.map((item) => item.kind === 'assistant_message' ? this.attachTo(item, cwd, renderer, onRendered) : item))
+    const started: Promise<Result>[] = []
+    const pass = () => Promise.all(items.map((item) => item.kind === 'assistant_message' ? this.attachTo(item, cwd, renderer, wait.onRendered, started) : item))
+    const attached = await pass()
+    if (!wait.waitMs || !started.length) return attached
+    // A one-off reply (a subagent transcript) waits a little for its renders, then takes what is ready.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([Promise.all(started), new Promise<void>((resolve) => { timer = setTimeout(resolve, wait.waitMs) })])
+    clearTimeout(timer)
+    return pass()
   }
 
   /** Writes the index now rather than after the usual delay. */
@@ -234,7 +242,7 @@ export class ChatReplyDiagrams {
 
   private async attachTo(
     item: Extract<ChatItem, { kind: 'assistant_message' }>, cwd: string,
-    renderer: { bin: string | null; version: string }, onRendered?: (itemIds: string[]) => void,
+    renderer: { bin: string | null; version: string }, onRendered?: (itemIds: string[]) => void, started?: Promise<Result>[],
   ): Promise<ChatItem> {
     const rest = this.without(item)
     const diagrams: ChatReplyDiagram[] = []
@@ -254,6 +262,7 @@ export class ChatReplyDiagrams {
         continue
       }
       const task = this.start(key, renderer.bin, fence.document)
+      started?.push(task)
       if (onRendered) void task.then(() => onRendered([item.id]))
     }
     return diagrams.length ? { ...rest, diagrams } : rest

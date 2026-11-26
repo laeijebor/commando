@@ -103,7 +103,7 @@ describe('ChatReplyDiagrams', () => {
   async function settled(renderer: ChatReplyDiagrams, items: ChatItem[], cwd = '/work') {
     let rendered!: () => void
     const done = new Promise<void>((resolve) => { rendered = resolve })
-    const first = await renderer.attach(items, cwd, () => rendered())
+    const first = await renderer.attach(items, cwd, { onRendered: () => rendered() })
     await done
     return { first, second: await renderer.attach(items, cwd) }
   }
@@ -113,7 +113,7 @@ describe('ChatReplyDiagrams', () => {
     const { calls, execute } = stub(() => new Promise<void>((resolve) => { finish = resolve }))
     const renderer = diagrams({ execute })
     const rendered: string[][] = []
-    const [first] = await renderer.attach([reply(fence(DOC))], '/work', (ids) => rendered.push(ids))
+    const [first] = await renderer.attach([reply(fence(DOC))], '/work', { onRendered: (ids) => rendered.push(ids) })
     expect(first).not.toHaveProperty('diagrams')
     await expect.poll(() => calls.length).toBe(1)
     expect(rendered).toEqual([])
@@ -153,7 +153,7 @@ describe('ChatReplyDiagrams', () => {
     await first.flush()
     await rm(join(images, SVG_ID))
     const restarted = diagrams({ execute })
-    const [item] = await restarted.attach([reply(fence(DOC))], '/work', () => {})
+    const [item] = await restarted.attach([reply(fence(DOC))], '/work', { onRendered: () => {} })
     expect(item).not.toHaveProperty('diagrams')
     await expect.poll(() => calls.length).toBe(2)
   })
@@ -222,6 +222,17 @@ describe('ChatReplyDiagrams', () => {
     expect(calls).toBe(2)
   })
 
+  it('lets a one-off reply wait a little for its renders, and takes what is ready after the cap', async () => {
+    const { execute } = stub()
+    const [ready] = await diagrams({ execute }).attach([reply(fence(DOC))], '/work', { waitMs: 3000 })
+    expect(ready).toMatchObject({ diagrams: [{ id: SVG_ID }] })
+    const slow = stub(() => new Promise<void>(() => {}))
+    const started = Date.now()
+    const [late] = await diagrams({ execute: slow.execute }).attach([reply(fence(DOC))], '/work', { waitMs: 50 })
+    expect(late).not.toHaveProperty('diagrams')
+    expect(Date.now() - started).toBeLessThan(5000)
+  })
+
   it('reports a timeout, and tries that document again once the retry window passes', async () => {
     let now = 0
     let calls = 0
@@ -256,7 +267,7 @@ describe('ChatReplyDiagrams', () => {
     const later = join(temp, 'later.mjs')
     const { calls, execute } = stub()
     const renderer = diagrams({ candidates: () => [later], execute, now: () => now })
-    expect((await renderer.attach([reply(fence(DOC))], '/w', () => {}))[0]).toMatchObject({ diagrams: [{ error: 'renderer_missing' }] })
+    expect((await renderer.attach([reply(fence(DOC))], '/w', { onRendered: () => {} }))[0]).toMatchObject({ diagrams: [{ error: 'renderer_missing' }] })
     expect(calls).toHaveLength(0)
     await writeFile(later, '')
     now += 31_000
@@ -286,7 +297,7 @@ describe('ChatReplyDiagrams', () => {
     let pending = 2
     let done!: () => void
     const finished = new Promise<void>((resolve) => { done = resolve })
-    await renderer.attach(items, '/w', () => { if (--pending === 0) done() })
+    await renderer.attach(items, '/w', { onRendered: () => { if (--pending === 0) done() } })
     await finished
     const [item] = await renderer.attach(items, '/w')
     expect(item).toMatchObject({ diagrams: [{ id: SVG_ID }, { error: 'invalid', message: 'title: is required' }] })
