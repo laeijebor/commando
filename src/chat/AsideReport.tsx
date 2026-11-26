@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { ASIDE_REPORT_PROMPT, asideKey, asideReportText, type AsideReport, type ChatAsideRecord } from '../../shared/agent-chat'
+import { ASIDE_REPORT_PROMPT, asideKey, asideReportText, type AsideReport, type ChatAsideRecord, type ChatState } from '../../shared/agent-chat'
 import type { ChatAsideServices, ChatThreadBindings } from './ChatPane'
 import { Button } from './ui/button'
 import { CHAT_SEND_REFUSAL_MS, type ChatSendError } from './ChatComposer'
 import { useHost } from '../HostContext'
-import { appendDraftText, loadDraft, updateDraftReports, type PendingAsideReference } from './draftStore'
+import { appendDraftText, loadDraft, loadReportSends, updateDraftReports, type PendingAsideReference } from './draftStore'
 
 type Delivery = 'queue' | 'draft' | 'reference'
 type Report = AsideReport & {
@@ -20,7 +20,8 @@ type Report = AsideReport & {
 export type AsideReportDraft = { id: number; text: string; savedText: string }
 
 /** Owned by the Main pane, not the mounted thread: drafting continues across tab switches. */
-export function useAsideReports(asides: ChatAsideServices | undefined, paneId: string, sessionId: string | undefined, records: ChatAsideRecord[] | undefined, sendError?: ChatSendError) {
+export function useAsideReports(asides: ChatAsideServices | undefined, chat: ChatState, sendError?: ChatSendError) {
+  const { paneId, asides: records, items, session: { sessionId, queue } } = chat
   const [reports, setReports] = useState<Record<string, Report>>({})
   const [draft, setDraft] = useState<AsideReportDraft>()
   const { activeHost } = useHost()
@@ -45,13 +46,20 @@ export function useAsideReports(asides: ChatAsideServices | undefined, paneId: s
   useEffect(() => {
     // Report sends survive a pane remount; their text is recovered here once.
     for (const { requestId } of sendError?.refused ?? []) {
-      const sends = loadDraft(draftId).reportSends ?? []
+      const sends = loadReportSends(draftId)
       const report = sends.find((send) => send.requestId === requestId)
       if (!report || Date.now() - report.at > CHAT_SEND_REFUSAL_MS) continue
       updateDraftReports(draftId, { reportSends: sends.filter((send) => send.requestId !== requestId) })
       appendDraft(report.text)
     }
   }, [sendError, draftId])
+  useEffect(() => {
+    // The protocol has no send ack: a new queue entry or user message is its echo.
+    const echoes = [...items.flatMap((item) => item.kind === 'user_message' && !item.parentToolUseId ? [{ id: item.id, text: item.text }] : []), ...(queue ?? [])]
+    const sends = loadReportSends(draftId)
+    const pending = sends.filter((send) => !echoes.some((item) => item.text === send.text && !send.before?.includes(item.id)))
+    if (pending.length !== sends.length) updateDraftReports(draftId, { reportSends: pending })
+  }, [draftId, items, queue])
   const update = (id: string, change: Partial<Report>) => setReports((current) => current[id] ? { ...current, [id]: { ...current[id]!, ...change } } : current)
   const cancel = (id: string) => setReports((current) => {
     const next = { ...current }
@@ -105,8 +113,9 @@ export function useAsideReports(asides: ChatAsideServices | undefined, paneId: s
     } }))
   }
   const rememberSend = (requestId: string | void, text: string) => {
-    const sends = (loadDraft(draftId).reportSends ?? []).filter((send) => Date.now() - send.at <= CHAT_SEND_REFUSAL_MS)
-    if (requestId) updateDraftReports(draftId, { reportSends: [...sends, { requestId, text, at: Date.now() }] })
+    const sends = loadReportSends(draftId)
+    const before = [...items.filter((item) => item.kind === 'user_message' && !item.parentToolUseId && item.text === text), ...(queue ?? []).filter((item) => item.text === text)].map((item) => item.id)
+    if (requestId) updateDraftReports(draftId, { reportSends: [...sends, { requestId, text, at: Date.now(), before }] })
   }
   const deliver = (report: Report, onSend: ChatThreadBindings['onSend']) => {
     const text = asideReportText(report)

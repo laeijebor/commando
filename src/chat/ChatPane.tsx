@@ -119,7 +119,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   const [pendingAction, setPendingAction] = useState<ChatAsideAction>()
   const beforeOpen = useRef(new Set<string>())
   const [reforks, setReforks] = useState<Record<string, number>>({})
-  const reporting = useAsideReports(asides, props.chat.paneId, props.chat.session.sessionId, props.chat.asides, props.sendError)
+  const reporting = useAsideReports(asides, props.chat, props.sendError)
   const [reportSource, setReportSource] = useState<AsideReport>()
   const [focusMain, setFocusMain] = useState(false)
   const available = asides && hostTakesAsides(props.chat.session)
