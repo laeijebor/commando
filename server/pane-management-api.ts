@@ -14,7 +14,7 @@ import type { PaneScreenshotRegistry } from './pane-screenshots.js'
 import { runCommand, validateRunCommand } from './run-command.js'
 import { validatePaneMarkInput, type PaneMarkInput } from './pane-marks.js'
 import type { PaneMark } from '../shared/protocol.js'
-import { parseDeck } from '../shared/deck.js'
+import { isDeckPath, parseDeck } from '../shared/deck.js'
 
 const API_ROOT = '/api/pane-management'
 const MAX_REQUEST_BYTES = 16 * 1024
@@ -266,7 +266,8 @@ export class PaneManagementApi {
     const folder = directory ? path : dirname(path)
     const manifest = directory ? 'deck.html' : basename(path)
     const notDeck = new HttpError(400, 'Only a slides deck can be presented')
-    if (!/\.html?$/i.test(manifest) || manifest.startsWith('.')) throw notDeck
+    // The slides tile reads only lowercase .html pages as decks (`isDeckPath`).
+    if (!isDeckPath(manifest) || manifest.startsWith('.')) throw notDeck
     let text: string
     try {
       if (!(await stat(join(folder, 'deck.html'))).isFile()) throw notDeck

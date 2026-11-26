@@ -338,7 +338,7 @@ it('keeps a valid slides deck on a reply resource and drops a malformed one', ()
     return parsed?.kind === 'assistant_message' ? parsed.resources?.[0] : undefined
   }
   expect(resources(deck)).toEqual({ ...folder, deck })
-  for (const bad of [{ ...deck, folder: 'talk' }, { ...deck, manifest: '../x.html' }, { ...deck, manifest: 'deck.js' }, { ...deck, manifest: '.deck.html' }, { ...deck, slides: 0 }, { ...deck, title: '' }, 'deck']) {
+  for (const bad of [{ ...deck, folder: 'talk' }, { ...deck, manifest: '../x.html' }, { ...deck, manifest: 'deck.js' }, { ...deck, manifest: 'deck.htm' }, { ...deck, manifest: 'DECK.HTML' }, { ...deck, manifest: '.deck.html' }, { ...deck, slides: 0 }, { ...deck, title: '' }, 'deck']) {
     expect(resources(bad)).toEqual(folder)
   }
 })

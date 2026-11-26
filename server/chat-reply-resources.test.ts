@@ -179,6 +179,8 @@ describe('reply resources', () => {
     await writeFile(join(deck, 'deck.html'), page('Launch plan', ['Why now', 'Numbers', 'Ask']))
     await writeFile(join(deck, 'onepager.html'), page('One pager', ['Summary']))
     await writeFile(join(deck, 'notes.html'), '<p>Not a deck</p>')
+    await writeFile(join(deck, 'summary.htm'), page('Htm', ['A']))
+    await writeFile(join(deck, 'Brief.HTML'), page('Upper', ['A']))
     await writeFile(join(dir, 'loose.html'), page('Loose', ['A']))
     const read = vi.fn(async (path: string, encoding: 'utf8') => (await import('node:fs/promises')).readFile(path, encoding))
     const resolver = new ChatReplyResources(dir, undefined, markdownResourceReferences, { stat, opendir, readFile: read })
@@ -187,11 +189,14 @@ describe('reply resources', () => {
       return item.kind === 'assistant_message' ? item.resources : undefined
     }
     const expected = { folder: deck, manifest: 'deck.html', title: 'Launch plan', slides: 3, first: 'Why now' }
-    expect(await attach('`./talk` `talk/deck.html` `talk/onepager.html` `talk/notes.html` `loose.html` `README.md`')).toEqual([
+    expect(await attach('`./talk` `talk/deck.html` `talk/onepager.html` `talk/notes.html` `loose.html` `README.md` `talk/summary.htm` `talk/Brief.HTML`')).toEqual([
       expect.objectContaining({ ref: './talk', kind: 'folder', deck: expected }),
       expect.objectContaining({ ref: 'talk/deck.html', kind: 'file', deck: expected }),
       expect.objectContaining({ ref: 'talk/onepager.html', deck: { folder: deck, manifest: 'onepager.html', title: 'One pager', slides: 1, first: 'Summary' } }),
       expect.not.objectContaining({ deck: expect.anything() }),
+      expect.not.objectContaining({ deck: expect.anything() }),
+      expect.not.objectContaining({ deck: expect.anything() }),
+      // The slides tile reads only lowercase .html pages as decks.
       expect.not.objectContaining({ deck: expect.anything() }),
       expect.not.objectContaining({ deck: expect.anything() }),
     ])

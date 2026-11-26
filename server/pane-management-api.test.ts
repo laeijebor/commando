@@ -617,8 +617,12 @@ describe('resource actions', () => {
       expect((await request({ path: join(deck, 'onepager.html'), action: 'slides' })).status).toBe(200)
       expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', expect.objectContaining({ manifest: 'onepager.html' }))
       const calls = register.mock.calls.length
-      // Not a deck: no slides, no deck.html beside it, or not HTML.
+      // Not a deck: no slides, no deck.html beside it, or not a lowercase .html page (what the slides tile reads).
       expect((await request({ path: join(deck, 'plain.html'), action: 'slides' })).status).toBe(400)
+      for (const name of ['onepager.htm', 'Summary.HTML']) {
+        await writeFile(join(deck, name), page)
+        expect((await request({ path: join(deck, name), action: 'slides' })).status).toBe(400)
+      }
       await writeFile(join(cwd, 'loose.html'), page)
       expect((await request({ path: join(cwd, 'loose.html'), action: 'slides' })).status).toBe(400)
       await writeFile(join(deck, 'notes.txt'), 'x')

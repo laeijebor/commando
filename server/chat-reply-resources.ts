@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import type { ChatItem, ChatReplyDeck, ChatReplyResource } from '../shared/agent-chat.js'
-import { parseDeck } from '../shared/deck.js'
+import { isDeckPath, parseDeck } from '../shared/deck.js'
 import { localImagePath } from './chat-reply-images.js'
 
 const parser = unified().use(remarkParse).use(remarkGfm)
@@ -147,7 +147,8 @@ export class ChatReplyResources {
   private async deck(path: string, kind: 'file' | 'folder'): Promise<ChatReplyDeck | undefined> {
     const folder = kind === 'folder' ? path : dirname(path)
     const manifest = kind === 'folder' ? 'deck.html' : basename(path)
-    if (kind === 'file' && !/\.html?$/i.test(manifest)) return undefined
+    // The slides tile reads only lowercase .html pages as decks (`isDeckPath`).
+    if (kind === 'file' && !isDeckPath(manifest)) return undefined
     const html = join(folder, manifest)
     try {
       if (manifest !== 'deck.html' && !(await this.files.stat(join(folder, 'deck.html'))).isFile()) return undefined

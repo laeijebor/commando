@@ -944,7 +944,7 @@ function parseChatReplyDeck(value: unknown): ChatReplyDeck | undefined {
   if (!isRecord(value)) return undefined
   const { folder, manifest, title, slides, first } = value
   if (typeof folder !== 'string' || !folder.startsWith('/') || folder.length > 4096 || /[\u0000-\u001f\u007f-\u009f]/u.test(folder) ||
-    typeof manifest !== 'string' || !/^[^/\\\u0000-\u001f]{1,255}\.html?$/i.test(manifest) || manifest.startsWith('.') ||
+    typeof manifest !== 'string' || !/^[^/\\\u0000-\u001f]{1,250}\.html$/.test(manifest) || manifest.startsWith('.') ||
     typeof title !== 'string' || !title || title.length > 200 ||
     typeof slides !== 'number' || !Number.isSafeInteger(slides) || slides < 1 || slides > 10_000) return undefined
   return withOptional({ folder, manifest, title, slides }, { first: typeof first === 'string' && first && first.length <= 200 ? first : undefined })
