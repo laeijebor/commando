@@ -47,6 +47,29 @@ it('ignores the momentum end of its own scrollToEnd, so following never loops', 
   act(() => jest.advanceTimersByTime(30))
   expect(scroll).not.toHaveBeenCalled()
 })
+it('cancels scheduled scrolling while hidden and preserves a scrolled-back position on return', async () => {
+  const scroll = jest.spyOn(FlatList.prototype, 'scrollToEnd').mockImplementation(() => undefined)
+  const timeline = (active: boolean) => <ThemeProvider><ChatTimeline active={active} baseUrl="http://studio" cwd="/tmp"
+    items={[item('user_message', { text: 'Hi' })]} working={false} /></ThemeProvider>
+  const view = render(timeline(true))
+  await act(async () => undefined)
+  // Hide before the opening animation frame runs.
+  view.rerender(timeline(false))
+  const list = screen.getByTestId('chat-timeline')
+  fireEvent(list, 'contentSizeChange', 390, 1500)
+  fireEvent(list, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 0, height: 0 } } })
+  act(() => jest.advanceTimersByTime(30))
+  expect(scroll).not.toHaveBeenCalled()
+  view.rerender(timeline(true))
+  fireEvent(list, 'scrollBeginDrag')
+  fireEvent(list, 'scrollEndDrag', scrollEvent(300))
+  view.rerender(timeline(false))
+  view.rerender(timeline(true))
+  fireEvent(list, 'contentSizeChange', 390, 1600)
+  act(() => jest.advanceTimersByTime(30))
+  expect(scroll).not.toHaveBeenCalled()
+  expect(screen.getByLabelText('Jump to the newest turn')).toBeTruthy()
+})
 it('marks an attached video with a film tile instead of loading it as an image', async () => {
   const video = `${'e'.repeat(64)}.mov`
   const image = `${'a'.repeat(64)}.png`

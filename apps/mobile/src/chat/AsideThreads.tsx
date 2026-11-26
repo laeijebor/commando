@@ -16,7 +16,7 @@ import { useNow } from './Subagents'
 import { ASIDE_REPORT_PROMPT } from './asideReport'
 
 export type ThreadOptions = {
-  threadKey?: string
+  active?: boolean
   newAside?: boolean
   composerDisabled?: boolean
   onStartAside?: (text: string, images: ChatImageRef[]) => Promise<boolean>
@@ -130,7 +130,13 @@ function AsideBanner({ aside, disabled, reportDisabled, onAction, onReport }: {
   </View>
 }
 
-/** Owns selection and reports above the mounted thread, just as the web's ChatPane does. */
+/** Hide a thread without losing its channel's pending sends or its composer's recovery drafts. */
+function ThreadSlot({ active, children }: { active: boolean; children: ReactNode }) {
+  return <View style={[styles.root, !active && styles.hiddenThread]} accessibilityElementsHidden={!active}
+    importantForAccessibility={active ? 'auto' : 'no-hide-descendants'} pointerEvents={active ? 'auto' : 'none'}>{children}</View>
+}
+
+/** Owns selection, visited threads and reports, just as the web's ChatPane does. */
 export function AsideThreads({ host, main, client, phase, renderThread }: {
   host: Host; main: ChatState; client?: DaemonClient; phase: ConnectionPhase
   renderThread: (chat: ChatState, options: ThreadOptions) => ReactNode
@@ -147,7 +153,8 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
   const awaitingRecord = useRef<string | undefined>(undefined)
   const seenRecord = useRef<string | undefined>(undefined)
   const [error, setError] = useState<string>()
-  const [reforks, setReforks] = useState<Record<string, number>>({})
+  // Keep an initial snapshot too: a temporarily missing stream must not unmount a pending send.
+  const [visited, setVisited] = useState<ChatState[]>([])
   const [report, setReport] = useState<Report>()
   const [draft, setDraft] = useState<{ id: number; text: string }>()
   const sequence = useRef(0)
@@ -158,6 +165,16 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
   const { channel: reportChannel, sendError: reportError } = useChatChannel(client, reportKey)
   const record = main.asides?.find((entry) => entry.id === selected && isSavedAside(entry) && entry.status === 'open')
   const chat = record ? chats[asideKey(main.paneId, record.id)] : undefined
+  const isOpen = (thread: ChatState) => main.asides?.some((entry) => asideKey(main.paneId, entry.id) === thread.paneId && isSavedAside(entry) && entry.status === 'open')
+  const threads = visited.filter(isOpen)
+  if (chat && !threads.some((thread) => thread.paneId === chat.paneId)) threads.push(chat)
+  useEffect(() => {
+    setVisited((current) => {
+      const next = current.filter(isOpen)
+      if (chat && !next.some((thread) => thread.paneId === chat.paneId)) next.push(chat)
+      return next.length === current.length && next.every((thread, index) => thread === current[index]) ? current : next
+    })
+  }, [main.asides, chat])
   const connected = phase === 'live' && main.hostConnected
   const disabled = busy || !connected || Boolean(main.session.claudeCodeSwitch) || main.session.status === 'closed' || main.session.status === 'error'
   const addDraft = (text: string) => setDraft((current) => ({ id: ++sequence.current, text: [current?.text, text].filter(Boolean).join('\n\n') }))
@@ -188,8 +205,10 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
         awaitingRecord.current = id
         setSelection(id)
       }
-      if (action.action === 'close') setSelection((current) => current === action.asideId ? undefined : current)
-      if (action.action === 'refork') setReforks((current) => ({ ...current, [action.asideId]: (current[action.asideId] ?? 0) + 1 }))
+      if (action.action === 'close') {
+        setSelection((current) => current === action.asideId ? undefined : current)
+        setVisited((current) => current.filter((thread) => thread.paneId !== asideKey(main.paneId, action.asideId)))
+      }
       return true
     } finally { lock.current = false; setBusy(false) }
   }
@@ -256,14 +275,21 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
     {available && (main.asides?.some(isSavedAside) || main.asidesError || selected || busy) ? <AsideTabs main={main} chats={chats} selected={selected} onSelect={setSelection} onAction={request} disabled={disabled} /> : null}
     {error ? <View accessibilityRole="alert" style={styles.section}><Text style={{ color: theme.red }}>{error}</Text><Button label="Dismiss aside error" onPress={() => setError(undefined)} /></View> : null}
     {record ? <AsideBanner aside={record} disabled={disabled} reportDisabled={!chat?.hostConnected || chat.session.status !== 'idle' || Boolean(report)} onAction={request} onReport={startReport} /> : null}
+    <ThreadSlot active={!selected}>
+      {renderThread(main, { active: !selected, onStartAside: open, onOpenReport, reportDraft: draft, onReportDraftTaken: () => setDraft(undefined) })}
+    </ThreadSlot>
+    {threads.map((initial) => {
+      const thread = chats[initial.paneId] ?? initial
+      const active = Boolean(chat && chat.paneId === thread.paneId)
+      return <ThreadSlot key={thread.paneId} active={active}>{renderThread(thread, { active })}</ThreadSlot>
+    })}
     {selected === 'new' ? <>
       <Text style={[styles.note, { color: theme.cyan }]}>New aside · fresh context from Main’s latest finished turn · Read-only</Text>
-      {renderThread(newChat, { threadKey: `${main.paneId}:new-aside`, newAside: true, composerDisabled: busy, onStartAside: open })}
+      {renderThread(newChat, { active: true, newAside: true, composerDisabled: busy, onStartAside: open })}
     </> : selected && !chat ? <View style={styles.section}>
       <Text accessibilityRole="alert" style={{ color: theme.red }}>{record && !busy ? `This aside stopped: ${record.lastError || 'The aside session closed unexpectedly'}` : 'Loading aside…'}</Text>
       {record && !busy ? <Button label="Reopen" disabled={disabled} onPress={() => { void request({ action: 'reopen', asideId: record.id }) }} /> : null}
-    </View> : chat ? renderThread(chat, { threadKey: `${chat.paneId}:${reforks[record!.id] ?? 0}` })
-      : renderThread(main, { onStartAside: open, onOpenReport, reportDraft: draft, onReportDraftTaken: () => setDraft(undefined) })}
+    </View> : null}
     {report ? <AsideSheet title="Report to Main" onClose={() => setReport(undefined)}>
       <Text style={{ color: theme.muted }}>From aside “{report.title}”</Text>
       {report.error ? <Text accessibilityRole="alert" style={{ color: theme.red }}>{report.error}</Text> : null}
@@ -279,6 +305,7 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
 
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
+  hiddenThread: { display: 'none' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   button: { borderWidth: 1, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 9, minHeight: 40 },
   strip: { flexGrow: 0, paddingHorizontal: 12, paddingVertical: 6 },

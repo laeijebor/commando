@@ -1,4 +1,4 @@
-import { createContext, memo, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, memo, use, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
@@ -68,7 +68,8 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
  * follows the newest turn on open/send and while already near the bottom.
  * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled, onOpenTile, openTileIds, onOpenReport }: {
+export function ChatTimeline({ active = true, items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled, onOpenTile, openTileIds, onOpenReport }: {
+  active?: boolean
   sendVersion?: number
   /** Older items the daemon left on the Mac (a bounded replay), and how to fetch them. */
   omittedItems?: number
@@ -113,7 +114,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   const frame = useRef<number | null>(null)
   const previousSend = useRef(sendVersion)
   const follow = useCallback((reason: TimelineScrollReason) => {
-    if (!shouldFollowTimeline(reason, following.current, userScrolling.current)) return
+    if (!active || !shouldFollowTimeline(reason, following.current, userScrolling.current)) return
     following.current = true
     userScrolling.current = false
     setScrolledBack(false)
@@ -123,10 +124,12 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
       frame.current = null
       list.current?.scrollToEnd({ animated: false })
     })
-  }, [])
-  useEffect(() => {
-    follow('open')
-    return () => { if (frame.current !== null) cancelAnimationFrame(frame.current) }
+  }, [active])
+  const opened = useRef(false)
+  useLayoutEffect(() => {
+    if (active && !opened.current) { opened.current = true; follow('open') }
+    // Cancel before a frame can scroll a thread that has just been hidden.
+    return () => { if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null } }
   }, [follow])
   useLayoutEffect(() => {
     if (sendVersion === previousSend.current) return
@@ -134,11 +137,13 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
     follow('send')
   }, [sendVersion, follow])
   const trackPosition = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!active) return
     following.current = isNearTimelineEnd(event.nativeEvent)
     setScrolledBack(!following.current)
   }
 
   const beginUserScroll = () => {
+    if (!active) return
     userScrolling.current = true
     following.current = false
     if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null }
@@ -146,7 +151,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   const endUserScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     // iOS also ends a programmatic scrollToEnd with onMomentumScrollEnd; following it
     // would scroll again every frame and swallow taps on the rows.
-    if (!userScrolling.current) return
+    if (!active || !userScrolling.current) return
     trackPosition(event)
     userScrolling.current = false
     follow('content')

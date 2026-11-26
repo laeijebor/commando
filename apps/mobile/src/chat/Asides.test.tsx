@@ -22,14 +22,14 @@ const KEY = asideKey('%7', OPEN.id)
 const mainChat = () => chatState({ asides: [OPEN, CLOSED], session: session({ hostVersion: CHAT_ASIDES_HOST_VERSION, sessionId: 'main-session' }), items: [item('user_message', { text: 'Main question' })] })
 const asideChat = () => chatState({ paneId: KEY, session: session({ aside: { ...OPEN, parentPaneId: '%7' }, paneId: KEY, hostVersion: CHAT_ASIDES_HOST_VERSION, title: OPEN.title, sessionId: 'aside-session' }), items: [item('assistant_message', { text: 'Aside answer' })] })
 
-function setup(main = mainChat(), aside: ChatState | null = asideChat()) {
+function setup(main = mainChat(), aside: ChatState | null = asideChat(), host = HOST) {
   const client = fakeClient()
   const emit = (message: ServerMessage) => act(() => client.emit(message))
-  client.subscribe((message) => useChatStore.getState().ingest(HOST.id, message))
-  useChatStore.getState().ingest(HOST.id, { type: 'chat_snapshot', chats: [main, ...(aside ? [aside] : [])] })
+  client.subscribe((message) => useChatStore.getState().ingest(host.id, message))
+  useChatStore.getState().ingest(host.id, { type: 'chat_snapshot', chats: [main, ...(aside ? [aside] : [])] })
   function Harness({ phase = 'live' }: { phase?: ConnectionPhase }) {
-    const chat = useChat(HOST.id, '%7')!
-    return <ThemeProvider><ChatView host={HOST} chat={chat} client={client} phase={phase} /></ThemeProvider>
+    const chat = useChat(host.id, '%7')!
+    return <ThemeProvider><ChatView host={host} chat={chat} client={client} phase={phase} /></ThemeProvider>
   }
   const view = render(<Harness />)
   return { client, emit, setPhase: (phase: ConnectionPhase) => view.rerender(<Harness phase={phase} />) }
@@ -51,6 +51,81 @@ function finishReport(emit: (message: ServerMessage) => void, body = 'A concrete
 }
 beforeEach(() => { jest.useFakeTimers({ now: 180_000 }); useChatStore.setState({ byHost: {}, externalRuns: {}, tileEvents: {} }) })
 afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks() })
+
+it.each(['aside', 'Main'] as const)('restores a refused %s send with attachments after switching away', async (source) => {
+  const image = { id: `${'a'.repeat(64)}.png`, name: `${source}-refused.png` }
+  const carried = { id: `switch-refusal-${source}`, text: '', images: [image] }
+  const main = mainChat(), aside = asideChat()
+  if (source === 'Main') main.carried = carried
+  else aside.carried = carried
+  const { client, emit } = setup(main, aside, { ...HOST, id: `switch-refusal-${source}` })
+  if (source === 'aside') selectAside()
+  await settle()
+  const field = screen.getByTestId('chat-input')
+  fireEvent.changeText(field, `Pending ${source} message`)
+  expect(screen.getByLabelText(`Remove ${image.name}`)).toBeTruthy()
+  fireEvent.press(screen.getByLabelText('Send'))
+  const sent = client.last('chat_send')!
+  expect(sent).toMatchObject({ paneId: source === 'aside' ? KEY : '%7', images: [image] })
+  expect(field.props.value).toBe('')
+
+  if (source === 'aside') fireEvent.press(screen.getByLabelText('Main, idle'))
+  else selectAside()
+  const otherField = screen.getByTestId('chat-input')
+  fireEvent.changeText(otherField, 'Other thread draft')
+  expect(field.props.editable).toBe(false)
+  expect(field.props.autoFocus).toBe(false)
+  const subscriptions = jest.spyOn(client, 'subscribe')
+  emit({ type: 'error', code: 'chat_unavailable', message: 'Send refused while hidden', requestId: sent.requestId })
+  expect(screen.queryByText('Send refused while hidden')).toBeNull()
+  expect(otherField.props.value).toBe('Other thread draft')
+  // The original composer already recovered while hidden, before revisiting it.
+  expect(field.props.value).toBe(`Pending ${source} message`)
+  expect(screen.getAllByTestId('chat-input', { includeHiddenElements: true })).toHaveLength(2)
+
+  if (source === 'aside') selectAside()
+  else fireEvent.press(screen.getByLabelText('Main, idle'))
+  expect(screen.getByTestId('chat-input')).toBe(field)
+  expect(field.props.editable).toBe(true)
+  expect(otherField.props.editable).toBe(false)
+  expect(screen.getByText('Send refused while hidden')).toBeTruthy()
+  expect(screen.getByLabelText(`Remove ${image.name}`)).toBeTruthy()
+  // Revisiting again must neither remount nor restore the same refusal twice.
+  if (source === 'aside') { fireEvent.press(screen.getByLabelText('Main, idle')); selectAside() }
+  else { selectAside(); fireEvent.press(screen.getByLabelText('Main, idle')) }
+  expect(screen.getByTestId('chat-input')).toBe(field)
+  expect(field.props.value).toBe(`Pending ${source} message`)
+  expect(screen.getAllByLabelText(`Remove ${image.name}`)).toHaveLength(1)
+  expect(subscriptions).not.toHaveBeenCalled()
+})
+
+it.each(['closed', 'discarded'] as const)('unmounts a visited aside when it is %s, keeping Main mounted', (status) => {
+  const { emit } = setup()
+  const mainField = screen.getByTestId('chat-input')
+  selectAside()
+  fireEvent.press(screen.getByLabelText('Main, idle'))
+  expect(screen.getAllByTestId('chat-input', { includeHiddenElements: true })).toHaveLength(2)
+  emit({ type: 'chat_asides', paneId: '%7', asides: [{ ...OPEN, status }] })
+  expect(screen.getAllByTestId('chat-input', { includeHiddenElements: true })).toHaveLength(1)
+  expect(screen.getByTestId('chat-input')).toBe(mainField)
+})
+
+it('keeps a queued edit across switches without leaving its hidden editor focusable', () => {
+  const main = mainChat()
+  main.session = { ...main.session, status: 'running', queue: [{ id: 'queued', text: 'Queued follow-up' }] }
+  setup(main)
+  fireEvent.press(screen.getByLabelText('Edit queued message'))
+  const editor = screen.getByLabelText('Edit queued message')
+  fireEvent.changeText(editor, 'Half-edited follow-up')
+  selectAside()
+  expect(editor.props.autoFocus).toBe(false)
+  expect(editor.props.editable).toBe(false)
+  expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+  fireEvent.press(screen.getByLabelText('Main, running'))
+  expect(screen.getByLabelText('Edit queued message')).toBe(editor)
+  expect(editor.props.editable).toBe(true)
+  expect(editor.props.value).toBe('Half-edited follow-up')
+})
 
 it('folds asides and read errors into Main, clearing an old error on success', () => {
   const first = applyChatMessage({ '%7': mainChat() }, { type: 'chat_asides', paneId: '%7', asides: [CLOSED], error: 'Unreadable file' })

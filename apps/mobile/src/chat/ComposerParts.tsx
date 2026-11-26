@@ -26,7 +26,8 @@ import { withAlpha } from '../ui/primitives'
  * Messages the host holds until Claude's turn ends (the web's QueuedMessages):
  * edit, remove, or steer one in now.
  */
-export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider }: {
+export function QueueList({ active = true, queue, disabled, onChange, onEditOrphaned, provider }: {
+  active?: boolean
   provider?: string
   queue: ChatQueuedMessage[]
   disabled: boolean
@@ -36,6 +37,8 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
 }): React.JSX.Element {
   const theme = useTheme()
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const input = useRef<TextInput>(null)
+  useEffect(() => { if (!active) input.current?.blur() }, [active])
   const latest = useRef({ editing, onEditOrphaned })
   latest.current = { editing, onEditOrphaned }
   useEffect(() => {
@@ -59,9 +62,11 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
               <View style={styles.queuedEdit}>
                 <TextInput
                   accessibilityLabel="Edit queued message"
-                  autoFocus
+                  autoFocus={active}
+                  editable={active}
                   multiline
                   onChangeText={(text) => setEditing({ id: queued.id, text })}
+                  ref={input}
                   style={[styles.queuedInput, { color: theme.text, borderColor: theme.borderMid, backgroundColor: theme.surface }]}
                   value={editing.text}
                 />

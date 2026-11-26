@@ -113,7 +113,8 @@ function menuFor(
  * queue while Claude works), Steer and Stop, the queue, images, the `/` and
  * `@` menus and the settings pills. Open requests sit above it.
  */
-export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay, onStartAside, newAside = false, composerDisabled = false, reportDraft, onReportDraftTaken }: {
+export function ChatComposer({ active = true, host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay, onStartAside, newAside = false, composerDisabled = false, reportDraft, onReportDraftTaken }: {
+  active?: boolean
   onStartAside?: (text: string, images: ChatImageRef[]) => Promise<boolean>
   newAside?: boolean
   composerDisabled?: boolean
@@ -148,6 +149,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const [dismissed, setDismissed] = useState<ComposerTrigger | null>(null)
   const [modelSheet, setModelSheet] = useState(0)
   const input = useRef<TextInput>(null)
+  useEffect(() => { if (!active) input.current?.blur() }, [active])
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
 
@@ -172,7 +174,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     // A dismissed menu stays closed until the caret leaves its token.
     if (dismissed && !blocked) setDismissed(null)
   }, [dismissed, blocked])
-  const trigger = !disabled && candidate && !blocked && (candidate.kind === 'slash' || (candidate.kind === 'mention' && richInput)) ? candidate : null
+  const trigger = active && !disabled && candidate && !blocked && (candidate.kind === 'slash' || (candidate.kind === 'mention' && richInput)) ? candidate : null
   const files = useFileSearch(trigger?.kind === 'mention' ? trigger.query : null, channel)
   const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files, !newAside) : null), [trigger, session, commands, files, newAside])
 
@@ -236,7 +238,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   }
 
   // The clipboard's image is offered while it holds one; a paste uses it up until the clipboard changes.
-  const clipboardImage = useClipboardImage(richInput && !disabled)
+  const clipboardImage = useClipboardImage(active && richInput && !disabled)
   const pasteImage = (data: ClipboardImageData) => {
     // Kept on offer when there's no room, so it can come in once an image is removed.
     if (!roomForImages()) return
@@ -287,7 +289,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     rewriteDraft((current) => [current.trim(), reportDraft.text].filter(Boolean).join('\n\n'))
     onReportDraftTaken?.()
   }, [reportDraft])
-  const canDictate = dictation.available && !closed && !switching
+  const canDictate = active && dictation.available && !closed && !switching
   // The mic leaves mid-hold when the session ends or switches; its release would never come.
   useEffect(() => {
     if (!canDictate) dictation.cancel()
@@ -417,7 +419,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       <View style={[styles.box, { backgroundColor: theme.surface, borderColor: theme.borderMid }]} testID="chat-composer">
         {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} provider={providerPresentation(session.provider).name} /> : null}
         {queue.length ? (
-          <QueueList provider={session.provider}
+          <QueueList active={active} provider={session.provider}
             disabled={!hostConnected}
             onChange={(change) => channel.queue(change)}
             onEditOrphaned={(edit) => {
@@ -455,10 +457,10 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
         <TextInput
           accessibilityLabel={`Message ${providerPresentation(session.provider).name}`}
           autoCapitalize="sentences"
-          autoFocus={newAside}
+          autoFocus={active && newAside}
           // A dropped connection only stops sending: making the field read-only
           // would resign it, so a reconnect would close the keyboard mid-sentence.
-          editable={!closed && !switching}
+          editable={active && !closed && !switching}
           multiline
           onChangeText={(next) => {
             // Typing wins over a take still finishing, whose last result would overwrite it.
