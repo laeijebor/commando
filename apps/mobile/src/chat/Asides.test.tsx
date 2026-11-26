@@ -10,6 +10,8 @@ import { parseNotificationData, notificationRoute } from '../notifications/routi
 import { PaneView } from '../terminal/PaneView'
 import { AsideThreads, threadStatus } from './AsideThreads'
 import { ChatView } from './ChatView'
+import * as attachments from './attachments'
+import * as images from './images'
 import { applyChatMessage, useChat, useChatStore } from './store'
 import { chatState, fakeClient, item, session } from './testing'
 
@@ -217,6 +219,37 @@ it.each(['new', 'toggle', 'prefix'])('starts an aside using %s without sending t
   expect(screen.getByTestId('chat-input').props.value).toContain('Check layout')
   expect(screen.getByText('Fork failed')).toBeTruthy()
 })
+it.each(['new', 'toggle', 'prefix'].flatMap((method) => ['unchanged', 'text', 'attachments'].map((change) => ({ method, change }))))(
+  'clears only the submitted $method draft when $change changes during aside creation', async ({ method, change }) => {
+    const refs = ['a', 'b'].map((letter) => ({ id: `${letter.repeat(64)}.png`, name: `${letter}.png` }))
+    jest.spyOn(attachments, 'pickFromSheet').mockResolvedValue(refs.map((ref) => ({ uri: `file:///${ref.name}`, name: ref.name, type: 'image/png', width: 10, height: 10 })))
+    jest.spyOn(images, 'prepareImage').mockImplementation(async (image) => ({ ok: true, image: { ...image, type: 'image/png' } }))
+    jest.spyOn(images, 'uploadChatImage').mockResolvedValueOnce(refs[0]!).mockResolvedValueOnce(refs[1]!)
+    const { client, emit } = setup(mainChat(), asideChat(), { ...HOST, id: `opening-${method}-${change}` })
+    if (method === 'new') fireEvent.press(screen.getByLabelText('+ Aside'))
+    if (method === 'toggle') fireEvent.press(screen.getByLabelText('Send as aside: Send as aside'))
+    const submitted = method === 'prefix' ? '  /aside Check layout  ' : '  Check layout  '
+    fireEvent.changeText(screen.getByTestId('chat-input'), submitted)
+    fireEvent.press(screen.getByLabelText('Attach images'))
+    await settle()
+    expect(screen.getByLabelText('Remove a.png')).toBeTruthy()
+    expect(screen.getByLabelText('Remove b.png')).toBeTruthy()
+    fireEvent.press(screen.getByLabelText(method === 'prefix' ? 'Send' : 'Send aside'))
+    const request = client.last('chat_aside')!
+    expect(request).toMatchObject({ action: { action: 'open', text: 'Check layout', images: refs } })
+    expect(screen.getByTestId('chat-input')).toHaveProp('editable', true)
+    expect(screen.getByLabelText(method === 'prefix' ? 'Send' : 'Send aside')).toBeDisabled()
+    if (change === 'text') fireEvent.changeText(screen.getByTestId('chat-input'), 'Newer draft')
+    if (change === 'attachments') fireEvent.press(screen.getByLabelText('Remove a.png'))
+    emit({ type: 'chat_aside_result', paneId: '%7', requestId: request.requestId, ok: true, asideId: OPEN.id })
+    await settle()
+    fireEvent.press(screen.getByLabelText(method === 'new' ? '+ Aside' : 'Main, idle'))
+    expect(screen.getByTestId('chat-input')).toHaveProp('value', change === 'unchanged' ? '' : change === 'text' ? 'Newer draft' : submitted)
+    expect(Boolean(screen.queryByLabelText('Remove a.png'))).toBe(change === 'text')
+    expect(Boolean(screen.queryByLabelText('Remove b.png'))).toBe(change !== 'unchanged')
+    expect(client.last('chat_send')).toBeUndefined()
+  },
+)
 it('requires Alert confirmation for refork, and changes permissions through Main', async () => {
   const alert = jest.spyOn(Alert, 'alert')
   const { client, emit } = setup()
@@ -340,6 +373,73 @@ it('waits for the drafting turn to finish and ignores unrelated assistant messag
   expect(screen.getByText('Drafting…')).toBeTruthy()
   emit({ type: 'chat_session', paneId: KEY, session: asideChat().session, hostConnected: true })
   expect(screen.getByLabelText('Report text').props.value).toBe('Completed report')
+})
+it.each([
+  { level: 'error', text: 'Report generation failed' },
+  { level: 'info', text: 'Interrupted' },
+] as const)('ends drafting immediately when an idle turn has a $text notice', async (notice) => {
+  const { client, emit } = setup()
+  await report()
+  emit({ type: 'chat_session', paneId: KEY, session: { ...asideChat().session, status: 'running' }, hostConnected: true })
+  emit({ type: 'chat_items', paneId: KEY, items: [
+    item('user_message', { text: ASIDE_REPORT_PROMPT, turnId: 'failed-report' }),
+    item('assistant_message', { text: 'Incomplete report', turnId: 'failed-report', status: 'interrupted' }),
+    item('notice', { ...notice, turnId: 'failed-report' }),
+  ] })
+  expect(screen.getByText('Drafting…')).toBeTruthy()
+  emit({ type: 'chat_session', paneId: KEY, session: asideChat().session, hostConnected: true })
+  const sheet = within(screen.getByTestId('aside-sheet'))
+  expect(sheet.queryByText('Drafting…')).toBeNull()
+  expect(sheet.getByRole('alert')).toHaveTextContent(notice.text)
+  expect(sheet.getByLabelText('Report text')).toHaveProp('value', '')
+  expect(sheet.getByLabelText('Send to Main')).toBeDisabled()
+  fireEvent.press(sheet.getByLabelText('Write it myself'))
+  expect(sheet.queryByRole('alert')).toBeNull()
+  fireEvent.changeText(sheet.getByLabelText('Report text'), 'Manually written report')
+  act(() => jest.advanceTimersByTime(125_000))
+  expect(sheet.getByLabelText('Report text')).toHaveProp('value', 'Manually written report')
+  expect(sheet.queryByText(/taking too long/)).toBeNull()
+  fireEvent.press(sheet.getByLabelText('Send to Main'))
+  expect(client.last('chat_send')).toMatchObject({ paneId: '%7', delivery: 'queue', text: asideReportText({ asideId: OPEN.id, title: OPEN.title, body: 'Manually written report' }) })
+})
+it.each([
+  { status: 'interrupted', text: 'Partial report' },
+  { status: 'failed', text: 'Failed report' },
+  { status: 'completed', text: '' },
+  { status: 'completed', text: '   \n' },
+] as const)('ends drafting on an idle $status reply without usable text or a notice ($text)', async (reply) => {
+  const { emit } = setup()
+  await report()
+  emit({ type: 'chat_session', paneId: KEY, session: { ...asideChat().session, status: 'running' }, hostConnected: true })
+  emit({ type: 'chat_items', paneId: KEY, items: [
+    item('user_message', { text: ASIDE_REPORT_PROMPT, turnId: 'failed-report' }),
+    item('assistant_message', { text: 'Earlier reply', turnId: 'failed-report' }),
+    item('assistant_message', { ...reply, turnId: 'failed-report' }),
+  ] })
+  expect(screen.getByText('Drafting…')).toBeTruthy()
+  emit({ type: 'chat_session', paneId: KEY, session: asideChat().session, hostConnected: true })
+  const sheet = within(screen.getByTestId('aside-sheet'))
+  expect(sheet.queryByText('Drafting…')).toBeNull()
+  expect(sheet.getByRole('alert')).toHaveTextContent('Drafting failed or was interrupted. Write the report yourself.')
+  expect(sheet.getByLabelText('Report text')).toHaveProp('value', '')
+  expect(sheet.getByLabelText('Send to Main')).toBeDisabled()
+  fireEvent.press(sheet.getByLabelText('Write it myself'))
+  expect(sheet.queryByRole('alert')).toBeNull()
+  fireEvent.changeText(sheet.getByLabelText('Report text'), 'Manual report')
+  act(() => jest.advanceTimersByTime(125_000))
+  expect(sheet.getByLabelText('Report text')).toHaveProp('value', 'Manual report')
+  expect(sheet.getByLabelText('Send to Main')).not.toBeDisabled()
+  expect(sheet.queryByRole('alert')).toBeNull()
+})
+it('ignores old failure notices and subagent errors while drafting a report', async () => {
+  const aside = asideChat()
+  aside.items.push(item('notice', { level: 'error', text: 'An earlier failure' }))
+  const { emit } = setup(mainChat(), aside)
+  await report()
+  emit({ type: 'chat_items', paneId: KEY, items: [item('notice', { level: 'error', text: 'Subagent failure', parentToolUseId: 'tool' })] })
+  expect(screen.getByText('Drafting…')).toBeTruthy()
+  finishReport(emit)
+  expect(screen.getByLabelText('Report text')).toHaveProp('value', 'A concrete finding')
 })
 it('waits when the report source disappears, and does not deliver when cancelled', async () => {
   const { client, emit } = setup()

@@ -143,6 +143,9 @@ export function ChatComposer({ active = true, host, session, hostConnected, comm
   const [openingAside, setOpeningAside] = useState(false)
   const [attachError, setAttachError] = useState<string | null>(null)
   const { attachments, setAttachments, add: addImages, remove: removeAttachment, uploading } = useAttachmentUploads(host, setAttachError, () => drafts.get(draftKey)?.attachments ?? [])
+  // Aside creation can outlast further edits; its completion must read the latest draft.
+  const currentDraft = useRef<Draft>({ text, attachments })
+  currentDraft.current = { text, attachments }
   const [selection, setSelection] = useState({ start: text.length, end: text.length })
   /** Set for one render after a pick rewrites the text, to move the caret. */
   const [forcedSelection, setForcedSelection] = useState<{ start: number; end: number } | undefined>()
@@ -362,7 +365,11 @@ export function ChatComposer({ active = true, host, session, hostConnected, comm
       if (!question && !images.length) { setAttachError('Write a question for the aside'); return }
       setOpeningAside(true)
       try {
-        if (await onStartAside(question, images)) { clearDraft(); setSendAsAside(false) }
+        if (await onStartAside(question, images)) {
+          const current = currentDraft.current
+          if (current.text === text && current.attachments.length === attachments.length && current.attachments.every((attachment, index) => attachment === attachments[index])) clearDraft()
+          setSendAsAside(false)
+        }
       } catch (error) { setAttachError(error instanceof Error ? error.message : String(error)) }
       finally { setOpeningAside(false) }
       return

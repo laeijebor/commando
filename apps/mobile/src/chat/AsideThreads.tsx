@@ -239,8 +239,13 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
     const replies = prompt ? source.items.slice(promptIndex + 1).filter((item) => item.kind === 'assistant_message' && !item.parentToolUseId && item.turnId === prompt.turnId && !report.before.has(item.id)) : []
     const reply = replies.at(-1)
     const failure = source.items.find((item) => !report.before.has(item.id) && !item.parentToolUseId && item.kind === 'notice' && (item.level === 'error' || item.text === 'Interrupted'))
-    if (source.session.status === 'idle' && !failure && reply?.kind === 'assistant_message' && reply.status === 'completed' && reply.text.trim()) {
-      setReport((current) => current ? { ...current, drafting: false, body: reply.text } : current)
+    if (source.session.status === 'idle') {
+      if (failure?.kind === 'notice') fail(failure.text)
+      else if (reply?.kind === 'assistant_message' && reply.status === 'completed' && reply.text.trim()) {
+        setReport((current) => current ? { ...current, drafting: false, body: reply.text } : current)
+      } else if (prompt && reply && reply.status !== 'running') {
+        fail('Drafting failed or was interrupted. Write the report yourself.')
+      }
     }
   }, [chats, connected, report, reportKey, reportError])
   useEffect(() => {
@@ -294,7 +299,8 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
       <Text style={{ color: theme.muted }}>From aside “{report.title}”</Text>
       {report.error ? <Text accessibilityRole="alert" style={{ color: theme.red }}>{report.error}</Text> : null}
       {report.drafting ? <><Text accessibilityLiveRegion="polite" style={{ color: theme.text }}>{!connected || !chats[asideKey(main.paneId, report.asideId)]?.hostConnected ? 'Waiting for the aside to reconnect…' : 'Drafting…'}</Text><Button label="Write it myself" onPress={() => setReport({ ...report, drafting: false })} /></>
-        : <TextInput accessibilityLabel="Report text" multiline value={report.body} onChangeText={(body) => setReport({ ...report, body })} style={[styles.reportInput, { color: theme.text, borderColor: theme.border }]} />}
+        : <><TextInput accessibilityLabel="Report text" multiline value={report.body} onChangeText={(body) => setReport({ ...report, body })} style={[styles.reportInput, { color: theme.text, borderColor: theme.border }]} />
+          {report.error ? <Button label="Write it myself" onPress={() => setReport({ ...report, error: undefined, body: '' })} /> : null}</>}
       <Button label="Queue for Main after its current turn" selected={report.delivery === 'queue'} onPress={() => setReport({ ...report, delivery: 'queue' })} />
       <Button label="Put in Main's composer as a draft" selected={report.delivery === 'draft'} onPress={() => setReport({ ...report, delivery: 'draft' })} />
       <View style={styles.row}><Switch accessibilityLabel="Close aside after sending" value={report.close} onValueChange={(close) => setReport({ ...report, close })} trackColor={{ true: theme.cyan }} /><Text style={{ color: theme.textSoft, flex: 1 }}>Close aside after sending</Text></View>
