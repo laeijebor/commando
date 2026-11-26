@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatItem } from '../shared/agent-chat.js'
 import { ChatReplyEmbeds } from './chat-reply-embeds.js'
-import { RedlineArtifactRegistry } from './redline-artifacts.js'
+import { MAX_ARTIFACT_DIRS, RedlineArtifactRegistry } from './redline-artifacts.js'
 
 let root: string
 let home: string
@@ -113,6 +113,33 @@ describe('ChatReplyEmbeds', () => {
     const again = await attached('![Board](.canvas/settings)')
     expect(register).toHaveBeenCalledTimes(3)
     expect(artifacts.directory(again![0].url!.split('/')[3])).toBe(canvas)
+  })
+
+  it('keeps every published board serving past the registry capacity, with the same URLs on re-attach', async () => {
+    const changes = vi.fn()
+    embeds = new ChatReplyEmbeds({ artifacts, home, tempRoots: [], onRetainedChange: changes })
+    const count = MAX_ARTIFACT_DIRS + 6
+    const replies: ChatItem[] = []
+    for (let index = 0; index < count; index += 10) {
+      const names = Array.from({ length: Math.min(10, count - index) }, (_, offset) => `b${index + offset}`)
+      for (const name of names) await file(join(cwd, '.canvas', name, 'canvas.json'), manifest([{ id: 'a', title: 'A', src: 'A.html', x: 0, y: 0 }]))
+      replies.push(reply(names.map((name) => `![${name}](.canvas/${name})`).join(' '), `a${index}`))
+    }
+    const urls = async () => (await embeds.attach(replies, cwd)).flatMap((item) => item.kind === 'assistant_message' ? item.embeds ?? [] : []).map((embed) => embed.url!)
+    const first = await urls()
+    expect(first).toHaveLength(count)
+    // Other registrations arrive meanwhile (tiles, other chats); none of the published ones is evicted.
+    for (let index = 0; index < MAX_ARTIFACT_DIRS; index++) artifacts.register(await realpath(await mkdtemp(join(root, 'other-'))))
+    for (const url of first) expect(artifacts.directory(url.split('/')[3])).toMatch(/\/\.canvas\/b\d+$/)
+    expect(await urls()).toEqual(first)
+    expect(new Set(embeds.retainedIds())).toEqual(new Set(first.map((url) => url.split('/')[3])))
+    expect(changes).toHaveBeenCalledTimes(count)
+  })
+
+  it('shows a chip rather than a URL the registry no longer serves', async () => {
+    await file(join(cwd, '.redline', 'page.html'))
+    embeds = new ChatReplyEmbeds({ artifacts: { ensure: () => ({ id: '0123456789abcdef' }), directory: () => null }, home, tempRoots: [] })
+    expect(await attached('![p](.redline/page.html)')).toEqual([{ src: '.redline/page.html', kind: 'html', path: join(cwd, '.redline', 'page.html'), error: 'not-embeddable' }])
   })
 
   it('attaches at most ten embeds a reply, and drops stale ones when the text changes', async () => {

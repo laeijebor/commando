@@ -713,10 +713,12 @@ async function main(): Promise<void> {
 
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port), retainedIds: [...boards.artifactIds(), ...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? [])] })
   boardOptions.artifacts = redlineArtifacts
-  /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
+  /** The registrations inline reply embeds show; set once the embed resolver exists (below). */
+  let embedArtifactIds = (): readonly string[] => []
+  /** Keeps artifact registrations alive while a live, parked or closed tab, a board or a chat reply points at them. */
   const retainTabArtifacts = (): void => {
     boards.prune()
-    redlineArtifacts.retain([...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []), ...boards.artifactIds()])
+    redlineArtifacts.retain([...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []), ...boards.artifactIds(), ...embedArtifactIds()])
   }
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
@@ -1132,7 +1134,21 @@ async function main(): Promise<void> {
   const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
   const replyResources = new ChatReplyResources(undefined, (message) => console.warn(`[chat-resources] ${message}`))
   const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
-  const replyEmbeds = new ChatReplyEmbeds({ artifacts: redlineArtifacts, log: (message) => console.warn(`[chat-embeds] ${message}`) })
+  // A new embed is retained as it registers; the shared retain set catches up shortly after, once per burst.
+  let embedRetainTimer: ReturnType<typeof setTimeout> | undefined
+  const replyEmbeds = new ChatReplyEmbeds({
+    artifacts: redlineArtifacts,
+    log: (message) => console.warn(`[chat-embeds] ${message}`),
+    onRetainedChange: () => {
+      if (embedRetainTimer) return
+      embedRetainTimer = setTimeout(() => {
+        embedRetainTimer = undefined
+        try { retainTabArtifacts() } catch (error) { console.warn('[chat-embeds] Could not retain embed registrations', error) }
+      }, 1000)
+      embedRetainTimer.unref?.()
+    },
+  })
+  embedArtifactIds = () => replyEmbeds.retainedIds()
   const replyDiagrams = new ChatReplyDiagrams(chatImages, { log: (message) => console.warn(`[chat-diagrams] ${message}`) })
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined

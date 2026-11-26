@@ -20,6 +20,8 @@ import type { RedlineArtifactRegistry } from './redline-artifacts.js'
 const MAX_MANIFEST_BYTES = 1024 * 1024
 const MAX_FRAMES = 50
 const MAX_REMEMBERED = 500
+/** Embed registrations the registry keeps whatever its capacity (see `retainedIds`). */
+const MAX_PUBLISHED = 256
 const IMAGE_EXTENSION = /\.(?:svg|png|jpe?g|gif|webp|avif|heic|bmp|ico|tiff?|pdf)$/i
 
 
@@ -36,13 +38,35 @@ export class ChatReplyEmbeds {
   private readonly parsed = new Map<string, { text: string; sources: string[] }>()
   private loggedFailure = false
 
+  /** Artifact ids replies show, most recently published last: the registry keeps these (`retainedIds`). */
+  private readonly published = new Set<string>()
+
   constructor(private readonly options: {
     artifacts: Pick<RedlineArtifactRegistry, 'ensure' | 'directory'>
+    /** The set `retainedIds` returns gained or lost an id; the owner passes it to the registry's `retain` again. */
+    onRetainedChange?: () => void
     home?: string
     /** Extra temporary roots the folder rule treats as broad, for tests. */
     tempRoots?: readonly string[]
     log?: (message: string) => void
   }) {}
+
+  /**
+   * The artifact ids of the embeds replies show, so the registry's capacity
+   * never evicts a URL a reply has published. Bounded: the least recently
+   * shown fall out first.
+   */
+  retainedIds(): string[] {
+    return [...this.published]
+  }
+
+  private publish(id: string): void {
+    const known = this.published.delete(id)
+    this.published.add(id)
+    if (this.published.size > MAX_PUBLISHED) this.published.delete(this.published.values().next().value!)
+    else if (known) return
+    this.options.onRetainedChange?.()
+  }
 
   /** The items with each reply's embeds attached; never rejects. */
   attach(items: readonly ChatItem[], cwd: string): Promise<ChatItem[]> {
@@ -79,6 +103,18 @@ export class ChatReplyEmbeds {
       this.report(error)
       return rest
     }
+  }
+
+  /**
+   * Registers a folder an embed serves from, retained from the start, and
+   * publishes its id; undefined (a chip instead) if the registry won't serve
+   * it, so a reply never shows a URL that 404s.
+   */
+  private register(directory: string): string | undefined {
+    const { id } = this.options.artifacts.ensure(directory, { retain: true })
+    if (this.options.artifacts.directory(id) !== directory) return undefined
+    this.publish(id)
+    return id
   }
 
   private report(error: unknown): void {
@@ -138,13 +174,15 @@ export class ChatReplyEmbeds {
     const stamp = stampOf(target)
     const known = this.remembered.get(key)
     if (known?.stamp === stamp && (!known.registration || this.options.artifacts.directory(known.registration.id) === known.registration.directory)) {
+      if (known.registration) this.publish(known.registration.id)
       return known.resolved
     }
     const folder = await servableArtifactFolder(directory, { cwd, home: this.home, tempRoots: this.options.tempRoots })
     let remembered: Remembered
     if (!folder) remembered = { stamp, resolved: refused }
     else if (html) {
-      const { id } = this.options.artifacts.ensure(folder)
+      const id = this.register(folder)
+      if (!id) return refused
       const file = relative(folder, real).split(sep).map(encodeURIComponent).join('/')
       remembered = { stamp, resolved: { kind, path, url: `/redline/artifacts/${id}/${file}` }, registration: { id, directory: folder } }
     } else {
@@ -154,7 +192,8 @@ export class ChatReplyEmbeds {
       if (errors.some((error) => error.startsWith('canvas.json:'))) remembered = { stamp, resolved: { kind, path, error: 'invalid' } }
       else {
         // The canvas folder itself is registered, as `scripts/commando-canvas` does, so frame sources resolve inside it.
-        const { id } = this.options.artifacts.ensure(directory)
+        const id = this.register(directory)
+        if (!id) return refused
         const frames = canvas.frames.slice(0, MAX_FRAMES).map((frame) => ({
           id: frame.id, title: frame.title, url: `/redline/artifacts/${id}/${encodeCanvasPath(frame.src)}`, w: frame.w, h: frame.h,
         }))

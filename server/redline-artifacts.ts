@@ -60,17 +60,30 @@ export class RedlineArtifactRegistry {
    * reading a transcript (chat-reply-embeds.ts) never outranks the tabs that
    * actually show an artifact.
    */
-  ensure(dir: string): { id: string } {
+  ensure(dir: string, options: { retain?: boolean } = {}): { id: string } {
     let real: string | undefined
     try { real = typeof dir === 'string' && isAbsolute(dir) ? realpathSync(dir) : undefined } catch { real = undefined }
     const cutoff = this.now() - REDLINE_ARTIFACT_TTL_MS
     if (real) {
-      for (const [id, entry] of this.entries) if (entry.dir === real && entry.registeredAt >= cutoff) return { id }
+      for (const [id, entry] of this.entries) {
+        if (entry.dir !== real || entry.registeredAt < cutoff) continue
+        if (options.retain) this.retained.add(id)
+        return { id }
+      }
     }
-    return this.register(dir)
+    return this.add(dir, options.retain === true)
   }
 
   register(dir: string): { id: string } {
+    return this.add(dir, false)
+  }
+
+  /**
+   * Registers `dir`. With `retain`, the id joins the retained set before the
+   * capacity trim, so the registration can't evict itself; the owner then
+   * keeps it in the ids it passes to `retain` (server/index.ts).
+   */
+  private add(dir: string, retain: boolean): { id: string } {
     if (typeof dir !== 'string' || !isAbsolute(dir)) {
       throw new RedlineArtifactError(400, 'dir must be an absolute path')
     }
@@ -90,6 +103,7 @@ export class RedlineArtifactRegistry {
       if (entry.dir === real) {
         // Same directory keeps its id (and its URLs) across re-registrations.
         nextEntries.set(id, { ...entry, registeredAt })
+        if (retain) this.retained.add(id)
         this.trim(nextEntries)
         this.commit(nextEntries)
         return { id }
@@ -100,6 +114,7 @@ export class RedlineArtifactRegistry {
       id = randomBytes(8).toString('hex')
     } while (this.entries.has(id))
     nextEntries.set(id, { dir: real, registeredAt })
+    if (retain) this.retained.add(id)
     this.trim(nextEntries)
     this.commit(nextEntries)
     return { id }
