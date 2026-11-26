@@ -8,8 +8,10 @@
 }
 /* Beats the global icon sizing (`svg { width: 18px }`) and panel icon rules. */
 div.markdown-mermaid > svg {
+  display: block;
   width: 100%;
   height: auto;
+  margin: 0 auto;
   stroke-width: initial;
 }
 .markdown-mermaid-fallback small {
