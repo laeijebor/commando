@@ -3,6 +3,7 @@ import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, t
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
 import { PLAN_IMPLEMENTATION_PREFIX, parseAsideReports, type AsideReport, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { handoffDividerLabel, isHandoffNotice } from '../../shared/chat-handoff'
 import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
@@ -447,6 +448,21 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
     case 'activity':
       return <ActivityGroup row={row} cwd={cwd} />
     case 'notice':
+      if (row.item.level === 'info' && isHandoffNotice(row.item.text)) {
+        const label = handoffDividerLabel(row.item.text)
+        return (
+          <div
+            role="separator"
+            aria-label={label}
+            data-testid="chat-handoff-divider"
+            className="my-3 flex items-center gap-3 text-2xs font-medium text-muted-foreground"
+          >
+            <span className="h-px flex-1 bg-border" aria-hidden="true" />
+            <span className="shrink-0 whitespace-nowrap">{label}</span>
+            <span className="h-px flex-1 bg-border" aria-hidden="true" />
+          </div>
+        )
+      }
       return (
         <div className={cn('flex items-start gap-1.5 pb-2 text-xs', row.item.level === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
           {row.item.level === 'error' ? <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> : <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />}

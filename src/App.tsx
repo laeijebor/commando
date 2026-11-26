@@ -185,15 +185,17 @@ import { HudPinnedNote } from './HudPinnedNote'
 import { BoardTile } from './BoardTile'
 import { publishBoardChange } from './boardsApi'
 import { ChatPane, type ChatFlowServices, type ChatAsideServices } from './chat/ChatPane'
+import type { ChatHandoffTarget } from './chat/ComposerControls'
 import { paneAsks } from './chat/sessionAsks'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
-import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
+import { handoffChatPane, openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch, type SessionCreation } from '../shared/tmux-create'
+import { availableProviderModels } from '../shared/chat-handoff'
+import { chatLaunchPermission, chatProfileConfigDir, type ModelCatalogs, type SessionAgentLaunch, type SessionCreation } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   asideKey,
@@ -210,6 +212,7 @@ import {
   type ChatFileSearchResult,
   type ChatHandoffInfo,
   type ChatImageRef,
+  type ChatModelOption,
   type ChatSendOptions,
   type ChatSessionPermissionMode,
   type ChatSettingsChange,
@@ -438,6 +441,8 @@ type TerminalPaneProps = {
   onChatInterrupt?: (dropQueued?: string[]) => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
+  chatProviderModels?: Partial<Record<ChatProvider, ChatModelOption[]>>
+  onChatHandoff?: (target: ChatHandoffTarget) => Promise<void>
   onChatRestart?: () => void
   onChatOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   onChatDismissPrs?: (prs: PanePrSummary[]) => void
@@ -541,6 +546,8 @@ export function TerminalPaneCard({
   onChatInterrupt,
   onChatAnswer,
   onChatConfigure,
+  chatProviderModels,
+  onChatHandoff,
   onChatRestart,
   onChatOpenPr,
   onChatDismissPrs,
@@ -857,6 +864,8 @@ export function TerminalPaneCard({
             onInterrupt={(dropQueued) => onChatInterrupt?.(dropQueued)}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
             onConfigure={(change) => onChatConfigure?.(change)}
+            {...(chatProviderModels ? { providerModels: chatProviderModels } : {})}
+            {...(onChatHandoff ? { onHandoff: onChatHandoff } : {})}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
             {...(onChatOpenPr ? { onOpenPr: onChatOpenPr } : {})}
             {...(onChatDismissPrs ? { onDismissPrs: onChatDismissPrs } : {})}
@@ -2810,6 +2819,20 @@ function HostApp() {
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token, daemonFetch)
+  const [modelCatalogs, setModelCatalogs] = useState<ModelCatalogs | null>(null)
+  useEffect(() => {
+    if (!connected) return
+    let cancelled = false
+    void createTmuxHttpApi(token, daemonFetch).models().then(
+      (catalogs) => { if (!cancelled) setModelCatalogs(catalogs) },
+      () => undefined,
+    )
+    return () => { cancelled = true }
+  }, [connected, token, daemonFetch])
+  const chatModelsKey = Object.values(chats).map(({ session }) => `${session.provider}:${session.models?.length ?? 0}`).join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const providerModels = useMemo(() => availableProviderModels(modelCatalogs, Object.values(chats).map((chat) => chat.session)), [modelCatalogs, chatModelsKey])
+  const handoffChat = useCallback((paneId: string, target: ChatHandoffTarget) => handoffChatPane(token, paneId, target, daemonFetch), [token, daemonFetch])
   const sessionNamingApi = useMemo(() => createSessionNamingApi(token, daemonFetch), [token])
   const sessionNamingSettings = useMemo(() => ({ api: sessionNamingApi, loadModels: createTmuxHttpApi(token, daemonFetch).models }), [sessionNamingApi, token])
   const chatConversationsApi = useMemo(() => createChatConversationsApi(token, daemonFetch), [token])
@@ -3133,6 +3156,8 @@ function HostApp() {
           onInterrupt={(dropQueued) => interruptChat(row.paneId, dropQueued)}
           onAnswer={(chatRequestId, answer) => answerChat(row.paneId, chatRequestId, answer)}
           onConfigure={(settings) => configureChat(row.paneId, settings)}
+          providerModels={providerModels}
+          onHandoff={(target) => handoffChat(row.paneId, target)}
           onRestart={() => restartChat(row.paneId)}
           onOpenPr={(repo, number, tab) => { void revealPrTab(row.paneId, repo, number, tab) }}
           onDismissPrs={(prs) => closePrTabs(row.paneId, prs)}
@@ -4751,6 +4776,8 @@ function HostApp() {
                             onChatInterrupt={(dropQueued) => interruptChat(pane.id, dropQueued)}
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
+                            chatProviderModels={providerModels}
+                            onChatHandoff={(target) => handoffChat(pane.id, target)}
                             onChatRestart={() => restartChat(pane.id)}
                             onChatOpenPr={(repo, number, tab) => { void revealPrTab(pane.id, repo, number, tab) }}
                             onChatDismissPrs={(prs) => closePrTabs(pane.id, prs)}

@@ -1,7 +1,19 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Check, ChevronDown, Minimize2, Zap } from 'lucide-react'
-import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatPlanLimit, type ChatPlanUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
+import { ArrowRightLeft, Check, ChevronDown, Minimize2, Zap } from 'lucide-react'
+import {
+  hostTakesSettings,
+  providerName,
+  selectedModelOption,
+  type ChatContextUsage,
+  type ChatModelOption,
+  type ChatPlanLimit,
+  type ChatPlanUsage,
+  type ChatProvider,
+  type ChatSessionInfo,
+  type ChatSettingsChange,
+} from '../../shared/agent-chat'
 import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
+import { HANDOFF_PROVIDERS } from '../../shared/chat-handoff'
 import { cn } from './cn'
 import { formatDuration, formatReadingAge, formatResetTime, headlineLimits, isLimitReached, isPlanUsageStale, reachedLimit, shortLimitLabel } from './planUsage'
 import { Button } from './ui/button'
@@ -49,18 +61,135 @@ export function MenuOption({ checked, label, description, onSelect }: { checked:
   )
 }
 
-/** Model, effort and fast mode, after t3code's ProviderModelPicker and TraitsPicker. */
-export function ModelPicker({ session, disabled, onConfigure, open: controlledOpen, onOpenChange }: {
+export type ChatHandoffTarget = { provider: ChatProvider; model?: string }
+
+type PendingHandoff = {
+  provider: ChatProvider
+  model?: string
+  modelLabel?: string
+}
+
+function HandoffConfirmStrip({
+  pending,
+  turnBusy,
+  handingOff,
+  onConfirm,
+  onCancel,
+}: {
+  pending: PendingHandoff
+  turnBusy: boolean
+  handingOff: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const targetLabel = pending.modelLabel
+    ? `${providerName(pending.provider)} (${pending.modelLabel})`
+    : providerName(pending.provider)
+  return (
+    <div className="sticky bottom-0 z-10 mx-1 my-1.5 flex flex-col gap-1.5 rounded-md border border-border bg-card p-2 text-xs shadow-sm" role="region" aria-label="Confirm provider handoff" data-testid="handoff-confirm">
+      <p className="text-foreground">
+        Hand off to <span className="font-medium">{targetLabel}</span> in this worktree? Sends a brief of this chat.
+      </p>
+      {turnBusy ? (
+        <p className="text-2xs text-warning">Wait for the current turn to finish before handing off.</p>
+      ) : null}
+      <div className="flex items-center gap-1.5">
+        <Button size="xs" disabled={handingOff || turnBusy} onClick={onConfirm}>
+          {handingOff ? 'Handing off…' : 'Hand off'}
+        </Button>
+        <Button size="xs" variant="outline" disabled={handingOff} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function HandoffProviderSection({
+  currentProvider,
+  providerModels,
+  pending,
+  disabled,
+  onSelect,
+}: {
+  currentProvider: ChatProvider
+  providerModels?: Partial<Record<ChatProvider, ChatModelOption[]>>
+  pending: PendingHandoff | null
+  disabled: boolean
+  onSelect: (choice: PendingHandoff) => void
+}) {
+  const providers = HANDOFF_PROVIDERS.filter((provider) => provider !== currentProvider)
+  return (
+    <div role="group" aria-label="Hand off to another provider">
+      <SectionLabel>Hand off to another provider</SectionLabel>
+      {providers.map((provider) => {
+        const models = providerModels?.[provider] ?? []
+        const choices: PendingHandoff[] = models.length
+          ? models.map((model) => ({
+              provider,
+              ...(model.value !== 'default' ? { model: model.value, modelLabel: model.displayName } : {}),
+            }))
+          : [{ provider }]
+        return (
+          <div key={provider} className="mt-1">
+            <div className="mx-2 mb-0.5 text-2xs font-medium text-muted-foreground">{providerName(provider)}</div>
+            <div role="menu" aria-label={`Hand off to ${providerName(provider)}`}>
+              {choices.map((choice, index) => {
+                const option = models[index]
+                const label = option ? option.displayName : 'Default'
+                const description = option?.description ?? (models.length ? undefined : `Start with ${providerName(provider)}'s default`)
+                const selected = pending?.provider === choice.provider && pending.model === choice.model
+                return (
+                  <button
+                    key={`${provider}:${choice.model ?? 'default'}`}
+                    type="button"
+                    role="menuitem"
+                    disabled={disabled}
+                    title={description}
+                    onClick={() => onSelect(choice)}
+                    className={cn(
+                      'flex w-full min-w-0 items-baseline gap-2 rounded-[5px] px-2 py-1 text-left disabled:opacity-60',
+                      selected ? 'bg-accent text-foreground' : 'text-secondary-label hover:bg-accent',
+                    )}
+                  >
+                    <span className="w-3 shrink-0 self-center text-icon-muted">
+                      <ArrowRightLeft className="size-3" aria-hidden="true" />
+                    </span>
+                    <span className="shrink-0">{label}</span>
+                    {description ? <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{description}</span> : null}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Model, effort, fast mode and cross-provider handoff, after t3code's ProviderModelPicker and TraitsPicker. */
+export function ModelPicker({ session, disabled, onConfigure, providerModels, onHandoff, open: controlledOpen, onOpenChange }: {
   session: ChatSessionInfo
   disabled: boolean
   onConfigure: (change: ChatSettingsChange) => void
+  /** Cached models per provider for the cross-provider handoff section. */
+  providerModels?: Partial<Record<ChatProvider, ChatModelOption[]>>
+  /** Hands this pane over to another provider in the same worktree. */
+  onHandoff?: (target: ChatHandoffTarget) => Promise<void>
   /** Lets the composer's `/model` open the menu. */
   open?: boolean
   onOpenChange?: (open: boolean) => void
 }) {
   const [ownOpen, setOwnOpen] = useState(false)
+  const [pendingHandoff, setPendingHandoff] = useState<PendingHandoff | null>(null)
+  const [handingOff, setHandingOff] = useState(false)
   const open = controlledOpen ?? ownOpen
-  const setOpen = onOpenChange ?? setOwnOpen
+  const setOpenRaw = onOpenChange ?? setOwnOpen
+  const setOpen = (next: boolean) => {
+    if (!next && !handingOff) setPendingHandoff(null)
+    setOpenRaw(next)
+  }
   const label = modelLabel(session)
   if (!label) return null
   const fast = fastModeOn(session)
@@ -68,15 +197,30 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
   if (!session.models?.length || !modelMenuAvailable(session)) return <Pill title={session.model}>{pill}{fast ? ' · Fast' : ''}</Pill>
   const selected = selectedModelOption(session)
   const efforts = selected?.efforts ?? []
+  const turnBusy = session.status === 'running' || session.status === 'starting' || session.status === 'waiting'
   const pick = (change: ChatSettingsChange) => {
     setOpen(false)
     onConfigure(change)
+  }
+  const confirmHandoff = async () => {
+    if (!pendingHandoff || !onHandoff || handingOff || turnBusy) return
+    setHandingOff(true)
+    try {
+      await onHandoff({ provider: pendingHandoff.provider, ...(pendingHandoff.model ? { model: pendingHandoff.model } : {}) })
+      setPendingHandoff(null)
+      setOpenRaw(false)
+    } catch {
+      setPendingHandoff(null)
+      setOpenRaw(false)
+    } finally {
+      setHandingOff(false)
+    }
   }
   return (
     <>
       <Popover open={open} onOpenChange={setOpen}>
         <PillTrigger label={pill} open={open} disabled={disabled} />
-        <PopoverPopup className="w-[300px]" aria-label="Model and effort">
+        <PopoverPopup className="max-h-[min(70vh,460px)] w-[320px] overflow-y-auto" aria-label="Model and effort">
           <SectionLabel>Model</SectionLabel>
           <div role="menu" aria-label="Model">
             {session.models.map((model) => (
@@ -126,6 +270,27 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
                   <span className={cn('absolute top-0.5 size-2.5 rounded-full bg-background transition-[left]', fast ? 'left-3' : 'left-0.5')} />
                 </span>
               </button>
+            </>
+          ) : null}
+          {onHandoff ? (
+            <>
+              <div className="mx-0.5 my-1.5 h-px bg-border" />
+              <HandoffProviderSection
+                currentProvider={session.provider}
+                {...(providerModels ? { providerModels } : {})}
+                pending={pendingHandoff}
+                disabled={handingOff}
+                onSelect={setPendingHandoff}
+              />
+              {pendingHandoff ? (
+                <HandoffConfirmStrip
+                  pending={pendingHandoff}
+                  turnBusy={turnBusy}
+                  handingOff={handingOff}
+                  onConfirm={() => void confirmHandoff()}
+                  onCancel={() => setPendingHandoff(null)}
+                />
+              ) : null}
             </>
           ) : null}
         </PopoverPopup>

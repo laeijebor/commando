@@ -17,6 +17,7 @@ import {
   type ChatClaudeCodeSwitch,
   type ChatImageRef,
   type ChatItem,
+  type ChatModelOption,
   type ChatQueueAction,
   type ChatSendOptions,
   type ChatSessionPermissionMode,
@@ -39,7 +40,7 @@ import { AskTray } from './AskTray'
 import { askAnchors, askMarkerCounts } from './sessionAsks'
 import { askAnswerText } from '../../shared/session-asks'
 import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError, type ComposerInsert } from './ChatComposer'
-import { providerLabel } from './ComposerControls'
+import { providerLabel, type ChatHandoffTarget } from './ComposerControls'
 import { ChatTimeline, Markdown, type ChatFocusMessageRequest } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
@@ -306,6 +307,8 @@ function ChatColumn({
   onInterrupt,
   onAnswer,
   onConfigure,
+  providerModels,
+  onHandoff,
   onRestart,
   onOpenPr,
   onDismissPrs,
@@ -367,6 +370,10 @@ function ChatColumn({
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   /** Switches the model, effort or permission mode while the chat runs. */
   onConfigure: (change: ChatSettingsChange) => void
+  /** Cached models per provider for the model picker's cross-provider handoff menu. */
+  providerModels?: Partial<Record<ChatProvider, ChatModelOption[]>>
+  /** Hands this chat pane over to another provider in the same worktree. */
+  onHandoff?: (target: ChatHandoffTarget) => Promise<void>
   /** Restarts the host on the same conversation, to run the current code. */
   onRestart?: () => void
   /** Opens a linked PR in this pane's side panel. */
@@ -477,6 +484,17 @@ function ChatColumn({
         flow.implementInNewPane!(plan.text, implementPermissionMode(chat.session)).catch((error: unknown) => {
           setFlowError(`Couldn't start a new chat pane: ${error instanceof Error ? error.message : String(error)}`)
         })
+      }
+    : undefined
+  const handleHandoff = onHandoff
+    ? async (target: ChatHandoffTarget) => {
+        setFlowError(null)
+        try {
+          await onHandoff(target)
+        } catch (error: unknown) {
+          setFlowError(error instanceof Error ? error.message : String(error))
+          throw error
+        }
       }
     : undefined
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -687,6 +705,8 @@ function ChatColumn({
         onInterrupt={onInterrupt}
         onAnswer={onAnswer}
         onConfigure={onConfigure}
+        {...(providerModels ? { providerModels } : {})}
+        {...(handleHandoff ? { onHandoff: handleHandoff } : {})}
         {...(plan ? { plan: { item: plan, implementMode: implementPermissionMode(chat.session) }, onImplement: implement } : {})}
         {...(implementInNewPane ? { onImplementInNewPane: implementInNewPane } : {})}
         {...(turnFlow && flow ? { onQueue: flow.queue } : {})}
