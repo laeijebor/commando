@@ -171,6 +171,8 @@ svg.chat-block-icon { flex-shrink: 0; width: 14px; height: 14px; color: var(--ac
 
 /* Canvas boards: a strip of scaled frame thumbnails; maximised, frame tabs over one live frame. */
 .chat-embed-strip { display: flex; gap: 10px; padding: 10px; overflow-x: auto; background: var(--surface-soft); }
+.chat-embed-strip[hidden] { display: none; }
+.chat-embed-thumb-placeholder { display: grid; place-items: center; padding: 8px; background: var(--surface-raised); color: var(--muted); font-size: 11px; text-align: center; overflow-wrap: anywhere; }
 .chat-embed-thumb { position: relative; display: flex; flex: none; flex-direction: column; gap: 5px; }
 .chat-embed-thumb-view { position: relative; display: block; overflow: hidden; border: 1px solid var(--border-mid); border-radius: 6px; background: #fff; }
 .chat-embed-thumb-view > iframe { display: block; border: 0; transform-origin: 0 0; pointer-events: none; }

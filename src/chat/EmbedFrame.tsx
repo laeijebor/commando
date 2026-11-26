@@ -20,6 +20,8 @@ export const EMBED_HEIGHT = 320
 const TALL_EMBED_HEIGHT = 640
 const THUMB_HEIGHT = 140
 const THUMB_MAX_WIDTH = 240
+/** Thumbnails past these show a labelled placeholder instead of running the page. */
+export const LIVE_THUMBNAILS = 6
 
 type Props = {
   embed: ChatReplyEmbed
@@ -264,15 +266,24 @@ function CanvasEmbed({ embed, alt, onAction, bridge }: Props & { url: string }) 
             </span>
             <CanvasStage frame={current} onEscape={() => setSelected(null)} {...(bridge ? { bridge } : {})} />
           </>
-        ) : frames.length ? (
-          <span className="chat-embed-strip">
+        ) : null}
+        {/* Stays mounted (hidden) while maximised, so restoring doesn't reload every preview. */}
+        {frames.length ? (
+          <span className="chat-embed-strip" hidden={maximised}>
             {frames.map((frame, index) => {
               const thumb = scaled(frame)
               return (
                 <span key={frame.url + frame.id} className="chat-embed-thumb">
-                  <span className="chat-embed-thumb-view" style={{ width: thumb.width, height: thumb.height }}>
-                    <SandboxedFrame url={frame.url} title={`Preview: ${frame.title}`} interactive={false} style={thumb.frame} preview />
-                  </span>
+                  {index < LIVE_THUMBNAILS ? (
+                    <span className="chat-embed-thumb-view" style={{ width: thumb.width, height: thumb.height }}>
+                      <SandboxedFrame url={frame.url} title={`Preview: ${frame.title}`} interactive={false} style={thumb.frame} preview />
+                    </span>
+                  ) : (
+                    // Past the first few, previews would each run a page for as long as the reply is shown.
+                    <span className="chat-embed-thumb-view chat-embed-thumb-placeholder" style={{ width: thumb.width, height: thumb.height }} aria-hidden="true">
+                      <span>{frame.title}</span>
+                    </span>
+                  )}
                   <button type="button" className="chat-embed-thumb-caption" aria-label={`Open frame ${index + 1}: ${frame.title}`} onClick={() => maximise(frame.id)}>
                     <span className="chat-embed-frame-number">{index + 1}</span><span className="chat-embed-thumb-title">{frame.title}</span>
                   </button>

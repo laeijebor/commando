@@ -173,6 +173,24 @@ describe('EmbedFrame: canvas board', () => {
   })
 })
 
+describe('EmbedFrame: canvas thumbnails', () => {
+  it('runs only the first six previews, and keeps them loaded while a frame is maximised', () => {
+    const frames = Array.from({ length: 8 }, (_, index) => ({ id: `f${index}`, title: `Frame ${index + 1}`, url: `/redline/artifacts/0123456789abcdef/F${index}.html`, w: 390, h: 844 }))
+    const { container } = render(<section data-chat-overlay-root=""><EmbedFrame embed={{ ...canvas, frames }} alt="Board" cwd={cwd} /></section>)
+    expect(container.querySelectorAll('.chat-embed-strip iframe')).toHaveLength(6)
+    expect(container.querySelectorAll('.chat-embed-thumb-placeholder')).toHaveLength(2)
+    expect(container.querySelector('.chat-embed-thumb-placeholder')).toHaveTextContent('Frame 7')
+    const first = screen.getByTitle('Preview: Frame 1')
+    fireEvent.click(screen.getByRole('button', { name: 'Open frame 8: Frame 8' }))
+    expect(container.querySelector('.chat-embed-strip')).toHaveAttribute('hidden')
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('Frame 8')
+    expect(screen.getByTitle('Preview: Frame 1')).toBe(first)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(container.querySelector('.chat-embed-strip')).not.toHaveAttribute('hidden')
+    expect(screen.getByTitle('Preview: Frame 1')).toBe(first)
+  })
+})
+
 describe('embeds in a streaming reply', () => {
   it('keeps the same frame element across flushes, and renders other images as before', () => {
     const text = 'Here is a first pass.\n\n![Accounts](.canvas/settings/Accounts.html)'
