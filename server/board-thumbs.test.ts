@@ -37,6 +37,41 @@ describe('BoardPreviewQueue', () => {
 })
 
 describe('Board thumbnails', () => {
+  it('backs off page DNS before resolving across enqueues/restarts, retries after expiry, and resets on success', async () => {
+    let now = 0
+    const resolve = vi.fn(async (): Promise<{ address: string; family: number }[]> => { throw new Error('DNS unavailable') })
+    const capturePage = vi.fn(async () => png()), options = { resolve, capturePage, now: () => now }
+    const store = new BoardStore(), queue = new BoardPreviewQueue(), worker = new BoardThumbWorker(store, cache(options), queue)
+    const url = 'http://dev.internal:5273/app', key = `page:${url}`
+    store.upsert(target, { key, kind: 'page', title: 'Dev', ref: { url }, source: 'agent' })
+    const retryKey = thumbHash(['page-dns-retry', url])
+    const state = async () => new Map<string, { failures: number; retryAt: number }>(JSON.parse(await readFile(join(root, 'cache', 'page-retries.json'), 'utf8'))).get(retryKey)
+    try {
+      worker.enqueue(target); await queue.idle()
+      expect(resolve).toHaveBeenCalledTimes(1)
+      expect(await state()).toEqual({ failures: 1, retryAt: 300_000 })
+      worker.enqueue(target); await queue.idle()
+      expect(resolve).toHaveBeenCalledTimes(1); expect(capturePage).not.toHaveBeenCalled()
+      const reloaded = cache(options)
+      now = 299_999; expect(await reloaded.source(store.item(target, key))).toBeUndefined()
+      expect(resolve).toHaveBeenCalledTimes(1)
+      now = 300_000; worker.enqueue(target); await queue.idle()
+      expect(resolve).toHaveBeenCalledTimes(2)
+      expect(await state()).toEqual({ failures: 2, retryAt: 900_000 })
+      resolve.mockResolvedValue([{ address: '10.0.0.8', family: 4 }])
+      now = 900_000; worker.enqueue(target); await queue.idle()
+      expect(capturePage).toHaveBeenCalledTimes(1)
+      expect(store.item(target, key).thumb).toBeDefined()
+      expect(await state()).toBeUndefined()
+      // A later failure starts again at five minutes, rather than retaining
+      // the earlier failure count or a stale negative entry after recovery.
+      resolve.mockRejectedValue(new Error('DNS failed again'))
+      worker.enqueue(target); await queue.idle()
+      expect(await state()).toEqual({ failures: 1, retryAt: 1200_000 })
+      const calls = resolve.mock.calls.length
+      worker.enqueue(target); await queue.idle(); expect(resolve).toHaveBeenCalledTimes(calls)
+    } finally { worker.stop() }
+  })
   it('persists page failure backoff across reads, restarts and hourly hash changes, then clears it on success', async () => {
     let now = 0
     const capturePage = vi.fn(async (): Promise<Buffer> => { throw new Error('Browser unavailable') })

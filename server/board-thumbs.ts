@@ -103,7 +103,8 @@ export class BoardThumbCache {
     if (['pr', 'clip', 'link'].includes(item.kind)) return
     if (item.kind === 'page' && item.ref.url) {
       if (!this.canCapture(item.ref.url)) return
-      return this.pageSource(await this.destination(item.ref.url))
+      const destination = await this.pageDestination(item.ref.url)
+      return destination ? this.pageSource(destination) : undefined
     }
     let path: string | undefined, signature: unknown[] = [], w = 1280, h = 800, url = item.ref.url
     if (item.ref.path) {
@@ -197,13 +198,25 @@ export class BoardThumbCache {
     if (!this.canCapture(url)) throw new Error('Blocked Board capture URL')
     return resolveCaptureDestination(url, resolve)
   }
+  private async pageDestination(url: string): Promise<CaptureDestination | undefined> {
+    // Resolution precedes render(), so it needs its own URL key before a
+    // destination/policy (and therefore the render retry key) is available.
+    const key = thumbHash(['page-dns-retry', new URL(url).href])
+    if (await this.pageRetries.blocked(key)) return
+    try {
+      const destination = await this.destination(url)
+      await this.pageRetries.succeeded(key)
+      return destination
+    } catch { await this.pageRetries.failed(key); return }
+  }
   private pageSource(destination: CaptureDestination) {
     const interval = destination.policy === 'private' ? 3600_000 : 86400_000
     return { hash: thumbHash(['page', destination.url, interval, Math.floor((this.options.now ?? Date.now)() / interval)]), url: destination.url, destination, w: 1280, h: 800 }
   }
   async page(url: string, destination?: CaptureDestination): Promise<BoardItem['thumb']> {
     if (!this.canCapture(url)) return
-    destination ??= await this.destination(url)
+    destination ??= await this.pageDestination(url)
+    if (!destination) return
     if (new URL(url).href !== destination.url) throw new Error('Capture destination does not match item URL')
     return this.render({ kind: 'page' } as BoardItem, this.pageSource(destination))
   }
