@@ -134,6 +134,10 @@ test('inline mock-ups go live on click, maximise over the chat and move to a til
     await expect(chatPane.getByRole('button', { name: 'Jump to latest' })).toHaveCount(0)
   }
   const maximise = async () => {
+    // Chromium routes a click by its compositor's hit-test data, which can still hold the frame's maximised rectangle
+    // a few frames after a restore; a click then would land in the page. Layout itself is settled (no reflow on restore).
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    await page.waitForTimeout(250)
     await block.getByRole('button', { name: 'Maximise' }).click()
     await expect(block).toHaveAttribute('data-maximised', '')
     await expect(block.getByRole('button', { name: 'Restore (Esc)' })).toBeFocused()
