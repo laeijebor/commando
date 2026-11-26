@@ -240,7 +240,8 @@ export class RedlineApi {
       }
       if (cached) this.fileCache.set(filePath, body)
     }
-    if ((options.frameId || options.chatEmbed) && extname(filePath).toLowerCase() === '.html') {
+    const extension = extname(filePath).toLowerCase()
+    if ((options.frameId && extension === '.html') || (options.chatEmbed && (extension === '.html' || extension === '.htm'))) {
       const script = [
         options.frameId ? `<script src="/redline/canvas-frame.js" data-canvas-frame="${options.frameId}"></script>` : '',
         // A page a chat reply shows inline relays Esc out of its sandbox (src/chat/EmbedFrame.tsx).
