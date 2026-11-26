@@ -20,6 +20,7 @@ test.afterAll(async () => { await vite?.close() })
 
 // Frames load in their own processes; give them time on a busy machine.
 const expect = baseExpect.configure({ timeout: 20_000 })
+const relayScript = readFileSync(new URL('../server/static/embed-frame.js', import.meta.url))
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/inline-frames/${name}`, import.meta.url))
 const cwd = '/tmp/chat-inline-frames'
 const htmlId = '0123456789abcdef'
@@ -79,10 +80,14 @@ async function openChat(page: Page) {
     socket.send(JSON.stringify({ type: 'chat_snapshot', chats: [chat] }))
     socket.onMessage(() => {})
   })
+  // Like the daemon's artifact route: a page asked for with ?chat-embed=1 gets the real Esc relay.
   await page.route('**/redline/artifacts/**', async (route) => {
-    const name = new URL(route.request().url()).pathname.split('/').at(-1)!
-    await route.fulfill({ body: fixture(name), contentType: 'text/html; charset=utf-8' })
+    const url = new URL(route.request().url())
+    const html = fixture(url.pathname.split('/').at(-1)!).toString('utf8')
+    const body = url.searchParams.get('chat-embed') === '1' ? html.replace(/<\/body>/i, '<script src="/redline/embed-frame.js"></script></body>') : html
+    await route.fulfill({ body, contentType: 'text/html; charset=utf-8' })
   })
+  await page.route('**/redline/embed-frame.js', (route) => route.fulfill({ body: relayScript, contentType: 'text/javascript; charset=utf-8' }))
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     let json: unknown
@@ -122,17 +127,17 @@ test('inline mock-ups go live on click, maximise over the chat and move to a til
   await page.mouse.move(box.x + box.width / 2, box.y + 120)
   await page.mouse.wheel(0, -300)
   await expect.poll(() => timeline.evaluate((node) => node.scrollTop)).toBeLessThan(before)
-  const inner = page.frames().find((candidate) => candidate.url().endsWith('/settings/Accounts.html'))!
+  const inner = page.frames().find((candidate) => candidate.url().includes('/settings/Accounts.html'))!
   expect(await inner.evaluate(() => window.scrollY)).toBe(0)
   const atLatest = async () => {
     await timeline.evaluate((node) => { node.scrollTop = node.scrollHeight })
     await expect(chatPane.getByRole('button', { name: 'Jump to latest' })).toHaveCount(0)
   }
-  // A click is lost when the restored block still moves between press and release on a busy machine, so retry it.
-  const maximise = () => expect(async () => {
-    if (await block.getAttribute('data-maximised') === null) await block.getByRole('button', { name: 'Maximise' }).click()
-    await expect(block).toHaveAttribute('data-maximised', '', { timeout: 3000 })
-  }).toPass()
+  const maximise = async () => {
+    await block.getByRole('button', { name: 'Maximise' }).click()
+    await expect(block).toHaveAttribute('data-maximised', '')
+    await expect(block.getByRole('button', { name: 'Restore (Esc)' })).toBeFocused()
+  }
   await atLatest()
   if (screenshots) await chatPane.screenshot({ path: `${screenshots}/chat-inline-frame.png` })
 
@@ -163,6 +168,14 @@ test('inline mock-ups go live on click, maximise over the chat and move to a til
   await expect(frame.getByText('2 of 3 syncing')).toBeVisible()
   await expect(block.getByText('maximised in chat')).toBeVisible()
   if (screenshots) await chatPane.screenshot({ path: `${screenshots}/chat-inline-frame-maximised.png` })
+  await page.keyboard.press('Escape')
+  await expect(block).not.toHaveAttribute('data-maximised', '')
+  await expect(block.getByRole('button', { name: 'Maximise' })).toBeFocused()
+
+  // Esc typed inside the maximised page reaches Commando through the relay.
+  await maximise()
+  await frame.getByRole('heading', { name: 'Connected accounts' }).click()
+  await expect(block.getByRole('button', { name: 'Restore (Esc)' })).not.toBeFocused()
   await page.keyboard.press('Escape')
   await expect(block).not.toHaveAttribute('data-maximised', '')
   await expect(frame.getByText('2 of 3 syncing')).toBeVisible()
@@ -205,6 +218,11 @@ test('a canvas board shows a frame strip, maximises a frame with tabs, and moves
   await expect(tabs.getByRole('tab', { selected: true })).toContainText('Accounts · teal')
   await expect(page.frameLocator('iframe[title="Accounts · teal"]').getByText('Reconnect')).toBeVisible()
   if (screenshots) await chatPane.screenshot({ path: `${screenshots}/chat-canvas-maximised.png` })
+  await page.frameLocator('iframe[title="Accounts · teal"]').getByText('Reconnect').click()
+  await page.keyboard.press('Escape')
+  await expect(block).not.toHaveAttribute('data-maximised', '')
+  await block.getByRole('button', { name: 'Open frame 2: Accounts · teal' }).click()
+  await expect(block).toHaveAttribute('data-maximised', '')
   await tabs.getByRole('tab', { name: /Accounts · list/ }).click()
   await expect(page.frameLocator('iframe[title="Accounts · list"]').getByRole('heading', { name: 'Connected accounts' })).toBeVisible()
 
