@@ -1,3 +1,4 @@
+import { BoardClosedTiles } from './BoardClosedTiles'
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import { Search, X } from 'lucide-react'
 import { PaneWorklog } from './PaneWorklog'
@@ -75,6 +76,7 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
   const completed = tasks.filter((task) => task.status === 'completed').length
   const terms = (brief.references?.length ?? 0) + (local ? (brief.simulator ? 1 : 0) + (brief.devices?.length ?? 0) : 0)
   const items = useMemo(() => board?.items.filter((item) => boardMatches(item, query)) ?? [], [board, query])
+  const allClosed = [...board?.items ?? []].filter((item) => boardMatchesClosed(item, true)).sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt))
   const recentlyClosed = items.filter((item) => boardMatchesClosed(item, true) && (filter === null || boardType(item) === filter)).sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt)).slice(0, 6)
   const counts = useMemo(() => Object.fromEntries(BOARD_TYPES.map((type) => [type.id, items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).length])) as Record<BoardType, number>, [items, closedOnly])
   const cachedPrs = panePrs
@@ -102,6 +104,9 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
       {error && !selected && <div className="board-error" role="alert">{error}<button type="button" onClick={retry}>Retry</button></div>}
       {!board && !error && <p className="board-loading" role="status">Loading board…</p>}
       {board && (narrow ? <div className="board-compact">
+        <BoardClosedTiles items={allClosed} disabled={pending || !connected}
+          onReopen={async (item) => { await api.revive(targetId, item.key, brief.paneId); retry() }}
+          onForget={(item) => mutate((current) => ({ ...current, items: current.items.filter((i) => i.key !== item.key) }), () => api.remove(targetId, item.key))} />
         <section><h3>Recent <small>· newest first</small></h3><div className="board-filmstrip">{[...board.items].sort((a, b) => b.addedAt - a.addedAt).slice(0, 6).map((item) => card(item, true))}</div>{!board.items.length && <p>Artifacts appear here as you work.</p>}</section>
         <section><h3>On the board</h3><div className="board-type-counts">{BOARD_TYPES.map((type) => <span key={type.id}>{type.label}<b>{counts[type.id]}</b></span>)}</div>
           <button type="button" disabled title="Widen this tile to at least 420 px to open the board">Open board ↗</button><small>Widen this tile to open the board.</small></section>

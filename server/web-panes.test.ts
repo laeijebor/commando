@@ -1884,3 +1884,11 @@ it('validates and persists canvas/guide read-only content without silently dropp
   await loaded.load()
   expect(loaded.list().map((p) => p.content)).toEqual(service.list().map((p) => p.content))
 })
+
+it('rejects direct URL navigation and external re-pending for saved copies without changing their state', async () => {
+  const path = await temporaryStatePath(), service = track(new WebPaneService(path))
+  const pane = service.open({ ...anchor, url: 'http://localhost/saved', readOnly: true, snapshotSavedAt: 1 })
+  expect(() => service.navigate(pane.id, 'http://localhost/other')).toThrow('Saved copies cannot navigate')
+  expect(() => service.repend(pane.id, 'https://external.example')).toThrow('Saved copies cannot navigate')
+  expect(service.get(pane.id)).toEqual(pane)
+})

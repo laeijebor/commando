@@ -291,7 +291,7 @@ export function WebPaneCard({
         title={onDragStart && !detached ? 'Drag onto a terminal pane to move this tile' : undefined}
       >
         <Globe className="web-pane-glyph" aria-hidden="true" />
-        {urlDraft !== null && onNavigate ? (
+        {!webPane.readOnly && urlDraft !== null && onNavigate ? (
           <form
             className="web-pane-url-form"
             onSubmit={(event) => {
@@ -321,7 +321,7 @@ export function WebPaneCard({
               }}
             />
           </form>
-        ) : onNavigate ? (
+        ) : onNavigate && !webPane.readOnly ? (
           <button
             type="button"
             className="web-pane-url is-editable"
@@ -376,6 +376,7 @@ export function WebPaneCard({
             <button
               type="button"
               className="web-pane-button"
+              disabled={webPane.readOnly}
               onClick={onOpenDevtools}
               title="Open DevTools as a tile"
               aria-label="Open DevTools as a tile"

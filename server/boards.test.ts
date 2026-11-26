@@ -303,6 +303,72 @@ describe('artifact lifetime, snapshot and revive', () => {
     expect(f.s.revive(other, page.key, anchor, 'user')).toEqual({ webPaneId: page.ref.webPaneId })
     await f.webPanes.flush()
   })
+  it.each(['page', 'redline'] as const)('preserves separate WebKit and Chromium %s cards, discussions ids, revival and forgetting', async (kind) => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const url = kind === 'page' ? 'http://localhost/same-page' : `http://localhost/redline/artifacts/${f.id}/index.html`
+    const panes = (['webkit', 'chromium'] as const).map((engine) => {
+      const pane = f.webPanes.open({ ...anchor, url, engine, openedBy: 'user' })
+      f.webPanes.close(pane.id)
+      return pane
+    })
+    f.s.backfillClosedTabs(); f.s.flush()
+    const s = store({ root: join(f.root, 'boards'), artifacts: f.artifacts, webPanes: f.webPanes })
+    expect(s.get(target).items).toHaveLength(2)
+    for (const pane of panes) {
+      const item = s.get(target).items.find((i) => i.ref.webPaneId === pane.id)!
+      expect(item.ref.engine).toBe(pane.engine)
+      expect(s.revive(target, item.key, anchor, 'user').webPaneId).toBe(pane.id)
+      expect(f.webPanes.get(pane.id)?.engine).toBe(pane.engine)
+    }
+    for (const pane of panes) f.webPanes.close(pane.id)
+    const removed = s.get(target).items.find((i) => i.ref.webPaneId === panes[0].id)!
+    s.remove(target, removed.key)
+    expect(f.webPanes.closedEntries().map((e) => e.pane.id)).toEqual([panes[1].id])
+    expect(s.get(target).items[0].ref.webPaneId).toBe(panes[1].id)
+    expect(s.revive(target, s.get(target).items[0].key, anchor, 'user').webPaneId).toBe(panes[1].id)
+    f.webPanes.close(panes[1].id); f.webPanes.forgetClosed(target, panes[1].id)
+    const fresh = s.revive(target, s.get(target).items[0].key, anchor, 'user')
+    expect(f.webPanes.get(fresh.webPaneId!)?.engine).toBe('chromium')
+    await f.webPanes.flush()
+  })
+  it('keeps exact retained URL identities separate even when Board URL normalization would merge them', async () => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const panes = ['one', 'two'].map((value) => {
+      const pane = f.webPanes.open({ ...anchor, url: `http://localhost/page?utm_source=${value}`, engine: 'chromium', openedBy: 'user' })
+      f.webPanes.close(pane.id)
+      return pane
+    })
+    f.s.backfillClosedTabs()
+    expect(f.s.get(target).items).toHaveLength(2)
+    for (const pane of panes) {
+      const item = f.s.get(target).items.find((i) => i.ref.webPaneId === pane.id)!
+      expect(f.s.revive(target, item.key, anchor, 'user').webPaneId).toBe(pane.id)
+    }
+    await f.webPanes.flush()
+  })
+  it('repairs close timestamps on existing cards, including previously marked migration ids', async () => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const pane = f.webPanes.open({ ...anchor, url: 'http://localhost/long-running', openedBy: 'user' })
+    const key = f.s.captureWebPane(target, pane)!
+    f.webPanes.close(pane.id)
+    const closedAt = f.webPanes.closedEntries()[0].closedAt
+    expect(f.s.item(target, key).closedAt).toBeUndefined()
+    f.s.backfillClosedTabs(); f.s.flush()
+    expect(f.s.item(target, key).closedAt).toBe(closedAt)
+    const path = join(f.root, 'boards', `${target}.json`), saved = JSON.parse(readFileSync(path, 'utf8'))
+    delete saved.board.items[0].closedAt // A previous v2 run marked this id before copying its timestamp.
+    writeFileSync(path, JSON.stringify(saved))
+    const s = store({ root: join(f.root, 'boards'), webPanes: f.webPanes })
+    s.backfillClosedTabs()
+    expect(s.item(target, key).closedAt).toBe(closedAt)
+    const rev = s.get(target).rev
+    s.backfillClosedTabs()
+    expect(s.get(target).rev).toBe(rev)
+    await f.webPanes.flush()
+  })
   it.each(['canvas', 'slides', 'guide', 'redline', 'page'] as const)('removing a closed %s card forgets only its retained tab', async (kind) => {
     const f = await fixture()
     const content: WebPane['content'] = kind === 'canvas' || kind === 'slides' ? { kind: 'canvas', artifactId: f.id, manifest: kind === 'slides' ? 'deck.html' : 'canvas.json' } : kind === 'guide' ? { kind, artifactId: f.id, file: 'guide.md' } : undefined

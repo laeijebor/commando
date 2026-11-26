@@ -1,3 +1,5 @@
+import { invalidateRestoredWebPane } from './web-pane-access.js'
+import { RedlineArtifactRegistry } from './redline-artifacts.js'
 import { CanvasSnapshotsStore } from './canvas-snapshots.js'
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -262,4 +264,54 @@ it('allows only the owner to restore and publishes the replacement', async () =>
   expect((await request('restore', { destination: '/tmp/new' })).status).toBe(200)
   expect(restoreSnapshot).toHaveBeenCalledWith(id, '/tmp/new')
   expect(onChange).toHaveBeenCalledOnce()
+})
+
+it.each(['pane', 'registry'] as const)('rejects CDP, navigation, reload and answers with %s protection for both callers', async (protection) => {
+  const registry = new RedlineArtifactRegistry(), artifactId = registry.register(dir, true).id
+  const url = `http://localhost/redline/artifacts/${artifactId}/index.html`
+  id = service.open({ url, engine: 'chromium', ...{ anchorPaneId: '%1', sessionId: '$1', windowId: '@1', openedBy: 'user' as const }, ...(protection === 'pane' ? { readOnly: true as const } : {}) }).id
+  const cdpInfo = vi.fn(), onChange = vi.fn()
+  api = new WebPanesApi({ service, agentToken: token, ownerAuthorized: async (req) => req.headers['x-owner'] === 'yes', paneForId: () => undefined, onChange, cdpInfo, readOnlyArtifact: protection === 'registry' ? (id) => registry.isReadOnly(id) : () => false, pending, feedback, attachmentStore: {} as never, agentRequests: {} as never })
+  for (const auth of ['owner', 'agent'] as const) {
+    expect((await request('cdp', undefined, auth)).status).toBe(409)
+    expect((await request('navigate', { url: 'http://localhost/unrelated' }, auth)).status).toBe(409)
+    expect((await request('reload', {}, auth)).status).toBe(409)
+    expect((await request('pending/response', { pageUrl: url, response: { question: 'Ship?', answer: 'Yes' } }, auth)).status).toBe(409)
+  }
+  expect(cdpInfo).not.toHaveBeenCalled()
+  expect(onChange).not.toHaveBeenCalled()
+  expect(service.get(id)?.url).toBe(url)
+  expect(pending.list(id)).toEqual([])
+})
+it('drops the cached snapshot target before publishing a restored Chromium tab', async () => {
+  const oldUrl = 'http://localhost/redline/artifacts/0123456789abcdef/index.html'
+  const nextUrl = 'http://localhost/redline/artifacts/fedcba9876543210/index.html'
+  id = service.open({ url: oldUrl, engine: 'chromium', readOnly: true, anchorPaneId: '%1', sessionId: '$1', windowId: '@1', openedBy: 'user' }).id
+  let targetUrl: string | undefined = oldUrl
+  const engine = { clearPendingSnapshot: vi.fn(), closeTile: vi.fn(() => { targetUrl = undefined }) }, relay = { dropTile: vi.fn() }
+  const onChange = vi.fn(() => { expect(targetUrl).toBeUndefined(); targetUrl ??= service.get(id)!.url })
+  api = new WebPanesApi({ service, agentToken: token, ownerAuthorized: async () => true, paneForId: () => undefined, onChange,
+    restoreSnapshot: () => service.replaceArtifact(id, { url: nextUrl, readOnly: undefined }),
+    onRestored: (pane) => invalidateRestoredWebPane(engine, relay, pane), pending, feedback, attachmentStore: {} as never, agentRequests: {} as never })
+  expect((await request('restore', { destination: '/tmp/new' })).status).toBe(200)
+  expect(engine.closeTile).toHaveBeenCalledWith(id)
+  expect(relay.dropTile).toHaveBeenCalledWith(id)
+  expect(onChange).toHaveBeenCalledOnce()
+  expect(targetUrl).toBe(nextUrl)
+})
+
+it('opens a registry-protected Chromium tab for viewing without adopting unsent answers or requesting a reload', () => {
+  const registry = new RedlineArtifactRegistry(), artifactId = registry.register(dir, true).id
+  const url = `http://localhost/redline/artifacts/${artifactId}/index.html`
+  const adopt = vi.spyOn(pending, 'adopt'), reload = vi.fn(), onReopen = vi.fn()
+  api = new WebPanesApi({ service, agentToken: token, ownerAuthorized: async () => true,
+    paneForId: () => ({ id: '%1', sessionId: '$1', windowId: '@1', width: 100, height: 40 }),
+    onChange: vi.fn(), readOnlyArtifact: (id) => registry.isReadOnly(id), pending, feedback,
+    attachmentStore: {} as never, agentRequests: { reload } as never, onReopen })
+  const first = api.open({ anchor: '%1', url, engine: 'chromium' }, 'owner')
+  const second = api.open({ anchor: '%1', url, engine: 'chromium' }, 'owner')
+  expect(second.pane.id).toBe(first.pane.id)
+  expect(adopt).not.toHaveBeenCalled()
+  expect(reload).not.toHaveBeenCalled()
+  expect(onReopen).not.toHaveBeenCalled()
 })

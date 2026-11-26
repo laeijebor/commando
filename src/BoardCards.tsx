@@ -8,7 +8,7 @@ import { isBoardFile, isBoardTile, type BoardEntry } from './BoardGeometry'
 export const BOARD_STATE_LABELS = { open: 'Open', closed: 'Closed (revive)', snapshot: 'Snapshot', missing: 'Gone' }
 const ICONS = { pr: GitPullRequest, canvas: LayoutDashboard, redline: NotebookPen, guide: ListChecks, slides: Presentation, diagram: Shapes, screenshot: Images, video: Video, link: Link, file: File, clip: StickyNote, page: MonitorPlay }
 const KIND_LABELS: Record<BoardItemKind, string> = { pr: 'Pull request', canvas: 'Canvas', redline: 'Redline', guide: 'Guide', slides: 'Slides', diagram: 'Diagram', screenshot: 'Screenshot', video: 'Video', link: 'Link', file: 'File', clip: 'Clipping', page: 'Page' }
-export const boardKindLabel = (item: BoardEntry) => KIND_LABELS[item.kind]
+export const boardKindLabel = (item: BoardEntry) => `${KIND_LABELS[item.kind]}${item.ref.engine ? ` · ${item.ref.engine === 'chromium' ? 'Chromium' : 'WebKit'}` : ''}`
 export type BoardThumbUrl = (item: BoardEntry, size: 320 | 960, hash?: string) => string
 
 export function BoardStateChip({ item }: { item: BoardEntry }) {
