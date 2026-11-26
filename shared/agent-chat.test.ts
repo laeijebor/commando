@@ -392,11 +392,23 @@ describe('reply embeds', () => {
     ['a short artifact id', '/redline/artifacts/0123/a.html'],
     ['a dot segment', '/redline/artifacts/0123456789abcdef/../../api'],
     ['an encoded dot segment', '/redline/artifacts/0123456789abcdef/%2E%2E/x'],
+    ['a half-encoded dot segment', '/redline/artifacts/0123456789abcdef/.%2e/x'],
+    ['an encoded single dot', '/redline/artifacts/0123456789abcdef/%2e/x'],
+    ['a trailing dot segment', '/redline/artifacts/0123456789abcdef/a/..'],
+    ['an encoded slash', '/redline/artifacts/0123456789abcdef/..%2Fapi'],
+    ['an encoded backslash', '/redline/artifacts/0123456789abcdef/%5C..%5Capi'],
+    ['broken percent-encoding', '/redline/artifacts/0123456789abcdef/%E0%A4%A.html'],
     ['a query', '/redline/artifacts/0123456789abcdef/a.html?x=1'],
     ['a backslash', '/redline/artifacts/0123456789abcdef/a\\b.html'],
   ])('drops an embed whose url is %s', (_name, bad) => {
     const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', embeds: [{ src: 'a.html', kind: 'html', url: bad }] })
     expect(parsed?.kind === 'assistant_message' && parsed.embeds).toBeUndefined()
+  })
+
+  it('keeps encoded names that are not dot segments', () => {
+    const url = '/redline/artifacts/0123456789abcdef/My%20Page%2E.html'
+    const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', embeds: [{ src: 'a.html', kind: 'html', url }] })
+    expect(parsed?.kind === 'assistant_message' && parsed.embeds?.[0].url).toBe(url)
   })
 
   it('drops unknown kinds and errors, and caps the list', () => {

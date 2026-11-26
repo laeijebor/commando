@@ -1052,8 +1052,15 @@ export const MAX_REPLY_EMBEDS = 10
 const MAX_EMBED_FRAMES = 50
 /** Only the daemon's own artifact routes: an embed never points a frame anywhere else. */
 const ARTIFACT_URL = /^\/redline\/artifacts\/[0-9a-f]{16}\/[^\s\\?#]*$/
-const embedUrl = (value: unknown): value is string => typeof value === 'string' && value.length <= 4096 && ARTIFACT_URL.test(value) &&
-  !value.split('/').some((part) => part === '..' || part === '.' || /^%2e%2e$/i.test(part))
+/** An artifact URL a browser resolves to itself: no `.` or `..` segment, however it is encoded. */
+function embedUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 4096 || !ARTIFACT_URL.test(value)) return false
+  return value.split('/').every((part) => {
+    let decoded: string
+    try { decoded = decodeURIComponent(part) } catch { return false }
+    return decoded !== '.' && decoded !== '..' && !decoded.includes('/') && !decoded.includes('\\')
+  })
+}
 const embedSize = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 100_000 ? value : undefined
 
 /** A reply's embeds; one that doesn't parse is dropped, and the reply shows its address instead. */
