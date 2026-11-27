@@ -14,6 +14,7 @@ import {
   hostTakesSettings,
   hostTakesSwitch,
   hostTakesTurnFlow,
+  hostTakesPlanUsage,
   isChatPermissionMode,
   mergeChatItems,
   parseHostMessage,
@@ -25,6 +26,7 @@ import {
   type ChatQueueAction,
   type ChatSendOptions,
   type ChatSessionInfo,
+  type ChatPlanUsage,
   type ChatSettingsChange,
   type ChatSubagentTranscript,
   type ChatSwitchAction,
@@ -118,6 +120,11 @@ type HubDependencies = {
   replyImages?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
   /** Renders ```pr-diagram fences in replies and attaches the SVGs (see chat-reply-diagrams.ts). */
   replyDiagrams?: (items: readonly ChatItem[], cwd: string, wait?: { onRendered?: (itemIds: string[]) => void; waitMs?: number }) => Promise<ChatItem[]>
+  /**
+   * The per-login plan reading (claude-plan-usage.ts). `joined` takes the reading
+   * a connecting chat already holds and answers with the login's newest.
+   */
+  planUsage?: { joined: (configDir: string | undefined, held: ChatPlanUsage | undefined) => ChatPlanUsage | undefined }
 }
 
 /** A chat's unsent draft, sent with its switch to Claude Code. */
@@ -386,6 +393,10 @@ export class AgentHostHub {
         }
         this.chats.set(paneId, entry)
         if (!parseAsideKey(message.session.paneId)) this.dependencies.onSessionInfo?.(message.session)
+        if (takesPlanUsage(paneId, message.session)) {
+          const usage = this.dependencies.planUsage?.joined(message.session.configDir, message.session.planUsage)
+          if (usage && usage !== message.session.planUsage) this.sendTo(socket, { type: 'plan_usage', paneId, usage })
+        }
         if (known) {
           this.dependencies.broadcast({ type: 'chat_state', chat: state })
           this.syncInteractions(paneId, entry, state.items, true)
@@ -502,6 +513,24 @@ export class AgentHostHub {
         entry.handedOff = true
         this.sendTo(socket, { type: 'handoff_saved', paneId: message.paneId, ok: true })
         this.dependencies.onHandoffsChange?.()
+      }
+    }
+  }
+
+  /** The Claude logins of the connected chats that take their plan reading from the daemon. */
+  claudeLogins(): Set<string | undefined> {
+    const logins = new Set<string | undefined>()
+    for (const [paneId, entry] of this.chats) {
+      if (entry.socket && takesPlanUsage(paneId, entry.state.session)) logins.add(entry.state.session.configDir)
+    }
+    return logins
+  }
+
+  /** Sends a login's new plan reading to each of its chats. */
+  deliverPlanUsage(configDir: string | undefined, usage: ChatPlanUsage): void {
+    for (const [paneId, entry] of this.chats) {
+      if (entry.socket && takesPlanUsage(paneId, entry.state.session) && entry.state.session.configDir === configDir) {
+        this.sendTo(entry.socket, { type: 'plan_usage', paneId, usage })
       }
     }
   }
@@ -938,6 +967,11 @@ export class AgentHostHub {
     socket.send(JSON.stringify(message))
     return true
   }
+}
+
+/** Claude chats (not asides, which share their parent's host) on hosts that take `plan_usage`. */
+function takesPlanUsage(paneId: string, session: ChatSessionInfo): boolean {
+  return session.provider === 'claude' && !parseAsideKey(paneId) && hostTakesPlanUsage(session)
 }
 
 /** True when `hostPid` is the pane's process or one of its descendants. */

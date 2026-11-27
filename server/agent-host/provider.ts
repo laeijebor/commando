@@ -5,6 +5,7 @@ import type {
   ChatFileSearchResult,
   ChatImageRef,
   ChatItem,
+  ChatPlanUsage,
   ChatQueueAction,
   ChatQueuedMessage,
   ChatSendOptions,
@@ -60,6 +61,8 @@ export interface ChatProviderSession {
   /** The agent's MCP servers, after acting on one; absent where the provider has none to manage. */
   mcp?(request: ChatMcpRequest): Promise<ChatMcpResult>
   setResumeCommand(command: string): void
+  /** A reading of the login's plan limits the daemon made; absent where the provider reads its own. */
+  applyPlanUsage?(usage: ChatPlanUsage): void
   /** Shows a host-level problem (a failed restart, say) in the chat as well as the pane. */
   hostNotice?(level: 'info' | 'error', text: string): void
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] }

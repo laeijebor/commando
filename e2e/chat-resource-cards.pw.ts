@@ -45,7 +45,8 @@ test('paths in a reply become chips and cards that act on the file', async ({ pa
     '',
     'Files I wrote:',
     '',
-    '- `src/OnboardingCarousel.tsx:42` — the carousel',
+    '- `src/OnboardingCarousel.tsx:42` — the carousel, replacing `<TournamentCardPage title={copy.tournament.title} subtitle={copy.tournament.subtitle} />` with the new hero',
+    '  - Changed post-game polling to poll every `300 ms` for the first 4 rounds, then back off to `2 s` until the results settle',
     '- `.pr/architecture.svg` — the diagram',
     '- `screenshots/onboarding` — 14 images',
     '',
@@ -113,10 +114,14 @@ test('paths in a reply become chips and cards that act on the file', async ({ pa
   expect(actions.length).toBe(before)
 
   // A list where every item starts with a path becomes cards.
-  const cards = chatPane.getByRole('list').filter({ has: page.getByRole('listitem') }).last()
-  await expect(cards.getByRole('listitem')).toHaveCount(3)
+  const cards = chatPane.locator('.chat-resource-cards')
+  await expect(cards.locator('.chat-resource-card')).toHaveCount(3)
   const carousel = cards.getByRole('listitem').filter({ hasText: 'OnboardingCarousel.tsx' })
   await expect(carousel).toContainText('the carousel')
+  // A long note wraps in full: nothing is clipped, and the nested bullet shows.
+  const note = carousel.locator('.chat-resource-description')
+  await expect(note.getByRole('listitem')).toContainText('until the results settle')
+  expect(await note.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
   await carousel.getByRole('button', { name: 'Open in editor' }).click()
   await expect.poll(() => actions.at(-1)).toEqual({ path: `${cwd}/src/OnboardingCarousel.tsx`, action: 'editor', line: 42 })
 

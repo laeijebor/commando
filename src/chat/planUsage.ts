@@ -1,8 +1,12 @@
 import { createContext, useContext } from 'react'
 import type { ChatPlanLimit, ChatPlanUsage, ChatSessionInfo } from '../../shared/agent-chat'
 
-/** A reading older than this, or one whose window has since reset, shows as stale. */
-export const PLAN_USAGE_STALE_MS = 10 * 60_000
+/**
+ * A reading older than this, or one whose window has since reset, shows as stale.
+ * The daemon reads each login every ten minutes, so a reading only gets this old
+ * when a read failed or was refused.
+ */
+export const PLAN_USAGE_STALE_MS = 15 * 60_000
 
 /** The newest plan reading per Claude login (config dir); chats on one login share a plan. */
 export const PlanUsageContext = createContext<ReadonlyMap<string, ChatPlanUsage> | null>(null)

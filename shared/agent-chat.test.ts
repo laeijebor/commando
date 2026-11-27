@@ -112,6 +112,9 @@ describe('chat settings', () => {
     expect(parseDaemonMessage({ type: 'configure', paneId: '%2', settings: { effort: 'low' }, requestId: 'r1' }))
       .toEqual({ type: 'configure', paneId: '%2', settings: { effort: 'low' }, requestId: 'r1' })
     expect(parseDaemonMessage({ type: 'configure', paneId: '%2', settings: {}, requestId: 'r1' })).toBeNull()
+    expect(parseDaemonMessage({ type: 'plan_usage', paneId: '%2', usage: { updatedAt: 5, limits: [{ kind: 'session', title: 'Current session', percent: 30, severity: 'normal', token: 'x' }] } }))
+      .toEqual({ type: 'plan_usage', paneId: '%2', usage: { updatedAt: 5, limits: [{ kind: 'session', title: 'Current session', percent: 30, severity: 'normal' }] } })
+    expect(parseDaemonMessage({ type: 'plan_usage', paneId: '%2', usage: { updatedAt: 5, limits: [] } })).toBeNull()
     expect(parseDaemonMessage({ type: 'configure', paneId: 'x', settings: { effort: 'low' }, requestId: 'r1' })).toBeNull()
   })
 
@@ -397,4 +400,17 @@ it('validates rendered pr-diagram fences and drops malformed ones', () => {
   const capped = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: Array(20).fill({ hash, id }) })
   expect(capped?.kind === 'assistant_message' && capped.diagrams?.length).toBe(10)
   expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: 'nope' })).not.toHaveProperty('diagrams')
+})
+
+it('keeps a valid slides deck on a reply resource and drops a malformed one', () => {
+  const deck = { folder: '/work/talk', manifest: 'deck.html', title: 'Launch', slides: 3, first: 'Why now' }
+  const folder = { ref: './talk', path: '/work/talk', kind: 'folder', entries: 4 }
+  const resources = (value: unknown) => {
+    const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'deck', resources: [{ ...folder, deck: value }] })
+    return parsed?.kind === 'assistant_message' ? parsed.resources?.[0] : undefined
+  }
+  expect(resources(deck)).toEqual({ ...folder, deck })
+  for (const bad of [{ ...deck, folder: 'talk' }, { ...deck, manifest: '../x.html' }, { ...deck, manifest: 'deck.js' }, { ...deck, manifest: 'deck.htm' }, { ...deck, manifest: 'DECK.HTML' }, { ...deck, manifest: '.deck.html' }, { ...deck, slides: 0 }, { ...deck, title: '' }, 'deck']) {
+    expect(resources(bad)).toEqual(folder)
+  }
 })

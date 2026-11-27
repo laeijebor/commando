@@ -3,6 +3,8 @@ import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promise
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { parseLinearChipIssue, parseLinearIssueLink, type LinearChipIssue } from '../shared/rich-links.js'
+
 const LINEAR_ENDPOINT = 'https://api.linear.app/graphql'
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const MAX_PAGES = 10
@@ -532,11 +534,77 @@ const COMMENT_FIELDS = `
   externalUser { id name avatarUrl }
 `
 
+const ISSUE_LOOKUP_TTL_MS = 2 * 60_000
+const MAX_ISSUE_LOOKUPS = 200
+
 export class LinearService {
+  /** Each account's workspace URL key, which chat links name. */
+  private readonly urlKeys = new Map<string, Promise<string>>()
+  private readonly lookups = new Map<string, { at: number; issue: Promise<LinearChipIssue | null> }>()
+
   constructor(
     readonly store = new LinearAccountStore(),
     private readonly fetchImpl: LinearFetch = fetch,
+    private readonly now: () => number = Date.now,
   ) {}
+
+  /**
+   * The issue a chat's `linear.app/<workspace>/issue/<KEY-1>` link names, from the account
+   * connected to that workspace; null when none is or the issue isn't there. Cached briefly.
+   */
+  async lookUpIssue(urlValue: unknown): Promise<LinearChipIssue | null> {
+    const link = typeof urlValue === 'string' ? parseLinearIssueLink(urlValue) : null
+    if (!link) throw new LinearServiceError(400, 'invalid_request', 'url must be a Linear issue link')
+    const accounts = await this.store.list()
+    const keys = await Promise.all(accounts.map((account) => this.urlKey(account.id).catch(() => null)))
+    const account = accounts.find((_account, index) => keys[index] === link.workspace)
+    if (!account) return null
+    const key = `${account.id}:${link.identifier}`
+    const cached = this.lookups.get(key)
+    if (cached && this.now() - cached.at < ISSUE_LOOKUP_TTL_MS) return cached.issue
+    const issue = this.fetchChipIssue(account.id, link.identifier)
+    const entry = { at: this.now(), issue }
+    this.lookups.delete(key)
+    this.lookups.set(key, entry)
+    if (this.lookups.size > MAX_ISSUE_LOOKUPS) this.lookups.delete(this.lookups.keys().next().value!)
+    issue.catch(() => { if (this.lookups.get(key) === entry) this.lookups.delete(key) })
+    return issue
+  }
+
+  private urlKey(accountId: string): Promise<string> {
+    let key = this.urlKeys.get(accountId)
+    if (!key) {
+      key = this.client(accountId).then((client) => client.request('query CommandoLinearUrlKey { organization { urlKey } }'))
+        .then((data) => requiredString(objectField(data, 'organization'), 'urlKey'))
+      const pending = key
+      this.urlKeys.set(accountId, pending)
+      pending.catch(() => { if (this.urlKeys.get(accountId) === pending) this.urlKeys.delete(accountId) })
+    }
+    return key
+  }
+
+  private async fetchChipIssue(accountId: string, identifier: string): Promise<LinearChipIssue | null> {
+    const client = await this.client(accountId)
+    let data: JsonRecord
+    try {
+      data = await client.request(`
+        query CommandoLinearChipIssue($issueId: String!) {
+          issue(id: $issueId) { identifier title url assignee { name } state { name color type } }
+        }
+      `, { issueId: identifier })
+    } catch (error) {
+      if (error instanceof LinearServiceError && error.code === 'linear_invalid_input') return null
+      throw error
+    }
+    const issue = optionalObject(data, 'issue')
+    if (!issue) return null
+    const state = optionalObject(issue, 'state')
+    return parseLinearChipIssue({
+      identifier: issue.identifier, title: issue.title, url: issue.url,
+      state: state ? { name: state.name, color: state.color, type: state.type } : undefined,
+      assignee: optionalObject(issue, 'assignee')?.name,
+    })
+  }
 
   listAccounts(): Promise<LinearAccount[]> {
     return this.store.list()

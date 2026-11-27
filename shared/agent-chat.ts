@@ -9,7 +9,7 @@ import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type Chat
 import type { ChatCardEvent } from './chat-tile-events.js'
 import { ASK_KEY } from './session-asks.js'
 
-export const AGENT_HOST_PROTOCOL_VERSION = 10
+export const AGENT_HOST_PROTOCOL_VERSION = 11
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -64,6 +64,15 @@ export const CHAT_ASIDES_HOST_VERSION = 10
 
 export function hostTakesAsides(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_ASIDES_HOST_VERSION
+}
+/**
+ * Hosts from this version take their plan limits from the daemon (`plan_usage`),
+ * which reads them once per Claude login, instead of asking Claude themselves.
+ */
+export const CHAT_PLAN_USAGE_HOST_VERSION = 11
+
+export function hostTakesPlanUsage(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_PLAN_USAGE_HOST_VERSION
 }
 
 export type ChatAsideMode = 'read-only' | 'inherit'
@@ -312,6 +321,9 @@ export function chatImageContentType(id: string): string {
   return id.endsWith('.svg.png') ? 'image/png' : chatImageType(id)
 }
 
+/** A slides deck a reply resource resolves to: `folder` holds deck.html, and `manifest` is the page to present. */
+export type ChatReplyDeck = { folder: string; manifest: string; title: string; slides: number; first?: string }
+
 /** Local files and folders explicitly referenced by an assistant reply. */
 export type ChatReplyResource = { ref: string; path: string; missing: true } | {
   ref: string
@@ -321,6 +333,7 @@ export type ChatReplyResource = { ref: string; path: string; missing: true } | {
   mtimeMs?: number
   entries?: number
   line?: number
+  deck?: ChatReplyDeck
 }
 
 /** Why a reply image isn't shown: no file there, one the daemon can't read, not an image, or the store failed. */
@@ -841,6 +854,8 @@ export type DaemonToHostMessage =
   | { type: 'switch'; paneId: string; action: ChatSwitchAction; requestId: string }
   /** Answers `handoff`: false when the daemon couldn't keep it, and the switch is off. */
   | { type: 'handoff_saved'; paneId: string; ok: boolean; error?: string }
+  /** The plan limits of the chat's Claude login, read by the daemon for every chat on it. */
+  | { type: 'plan_usage'; paneId: string; usage: ChatPlanUsage }
 
 // ---- validation (host and client input both cross a trust boundary) ----
 
@@ -1050,6 +1065,16 @@ function optionalImages(value: unknown): ChatImageRef[] | undefined {
   return refs?.length ? refs : undefined
 }
 
+function parseChatReplyDeck(value: unknown): ChatReplyDeck | undefined {
+  if (!isRecord(value)) return undefined
+  const { folder, manifest, title, slides, first } = value
+  if (typeof folder !== 'string' || !folder.startsWith('/') || folder.length > 4096 || /[\u0000-\u001f\u007f-\u009f]/u.test(folder) ||
+    typeof manifest !== 'string' || !/^[^/\\\u0000-\u001f]{1,250}\.html$/.test(manifest) || manifest.startsWith('.') ||
+    typeof title !== 'string' || !title || title.length > 200 ||
+    typeof slides !== 'number' || !Number.isSafeInteger(slides) || slides < 1 || slides > 10_000) return undefined
+  return withOptional({ folder, manifest, title, slides }, { first: typeof first === 'string' && first && first.length <= 200 ? first : undefined })
+}
+
 function parseChatReplyResources(value: unknown): ChatReplyResource[] | undefined {
   if (!Array.isArray(value)) return undefined
   const resources = value.slice(0, 50).flatMap((resource): ChatReplyResource[] => {
@@ -1067,6 +1092,7 @@ function parseChatReplyResources(value: unknown): ChatReplyResource[] | undefine
     return [withOptional({ ...base, kind: resource.kind }, {
       size: resource.size as number | undefined, mtimeMs: resource.mtimeMs as number | undefined,
       entries: resource.entries as number | undefined, line: resource.line as number | undefined,
+      deck: parseChatReplyDeck(resource.deck),
     })]
   })
   return resources.length ? resources : undefined
@@ -1496,6 +1522,10 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
       return isChatKey(value.paneId) && typeof value.ok === 'boolean'
         ? withOptional({ type: 'handoff_saved' as const, paneId: value.paneId, ok: value.ok }, { error: optionalText(value.error, 1000) })
         : null
+    case 'plan_usage': {
+      const usage = parsePlanUsage(value.usage)
+      return isChatKey(value.paneId) && usage ? { type: 'plan_usage', paneId: value.paneId, usage } : null
+    }
     case 'answer': {
       const answer = parseChatAnswer(value.answer)
       return isChatKey(value.paneId) && shortString(value.chatRequestId) && answer && shortString(value.requestId)
