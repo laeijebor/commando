@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pullRequestImpactsFor } from './pr-impact-hook.js'
+import { createdPullRequestsFor, pullRequestImpactsFor } from './pr-impact-hook.js'
 
 const cwd = '/work/app'
 const bash = (command: string, event = 'PostToolUse') => pullRequestImpactsFor({ hook_event_name: event, tool_name: 'Bash', cwd, tool_input: { command } })
@@ -173,5 +173,61 @@ EOF
     expect(mcp('get_pull_request', { owner: 'acme', repo: 'widgets', pullNumber: 8 })).toBeUndefined()
     expect(mcp('add_issue_comment', { owner: 'acme', repo: 'bad repo', issue_number: 4 })).toBeUndefined()
     expect(mcp('add_issue_comment', { owner: 'acme', repo: 'widgets', issue_number: -4 })).toBeUndefined()
+  })
+
+  it('reads Cursor postToolUse Shell and MCP payloads and skips failed Shell commands', () => {
+    expect(pullRequestImpactsFor({
+      hook_event_name: 'postToolUse',
+      tool_name: 'Shell',
+      workspace_roots: [cwd],
+      tool_input: { command: 'git push origin feat/instant-lobby' },
+      tool_output: JSON.stringify({ exitCode: 0, stdout: 'ok' }),
+    })).toEqual([{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat/instant-lobby' }])
+
+    expect(pullRequestImpactsFor({
+      hook_event_name: 'postToolUse',
+      tool_name: 'Shell',
+      workspace_roots: [cwd],
+      tool_input: { command: 'git push origin feat/instant-lobby' },
+      tool_output: JSON.stringify({ exitCode: 1, stderr: 'rejected' }),
+    })).toBeUndefined()
+
+    expect(pullRequestImpactsFor({
+      hook_event_name: 'postToolUse',
+      tool_name: 'MCP:github:create_pull_request_review',
+      tool_input: { owner: 'acme', repo: 'widgets', pullNumber: 12 },
+    })).toEqual([{ relation: 'reviewed', repo: 'acme/widgets', number: 12 }])
+  })
+})
+
+describe('createdPullRequestsFor', () => {
+  it('reads PR URLs created via Bash, Cursor Shell, and GitHub MCP tools', () => {
+    expect(createdPullRequestsFor({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'gh pr create --title "Test"' },
+      tool_response: 'https://github.com/acme/widgets/pull/42\n',
+    })).toEqual([{ repo: 'acme/widgets', number: 42 }])
+
+    expect(createdPullRequestsFor({
+      hook_event_name: 'postToolUse',
+      tool_name: 'Shell',
+      tool_input: { command: 'gh pr create --fill' },
+      tool_output: JSON.stringify({ exitCode: 0, stdout: 'Created https://github.com/Save-All/Save-All/pull/32224\n' }),
+    })).toEqual([{ repo: 'Save-All/Save-All', number: 32224 }])
+
+    expect(createdPullRequestsFor({
+      hook_event_name: 'postToolUse',
+      tool_name: 'Shell',
+      tool_input: { command: 'gh pr create --fill' },
+      tool_output: JSON.stringify({ exitCode: 1, stderr: 'already exists: https://github.com/Save-All/Save-All/pull/32224' }),
+    })).toBeUndefined()
+
+    expect(createdPullRequestsFor({
+      hook_event_name: 'postToolUse',
+      tool_name: 'MCP:github:create_pull_request',
+      tool_input: { owner: 'acme', repo: 'widgets' },
+      tool_output: JSON.stringify({ html_url: 'https://github.com/acme/widgets/pull/77' }),
+    })).toEqual([{ repo: 'acme/widgets', number: 77 }])
   })
 })

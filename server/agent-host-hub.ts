@@ -42,6 +42,9 @@ import type { ChatResumeSettings } from './agent-resume-command.js'
 import type { ChatHandoffStore } from './chat-handoffs.js'
 import type { ChatHostReport } from './agent-status-registry.js'
 import { chatAnswerFor, chatHostReport, chatRequestOpen, type ChatRequestItem } from './chat-interactions.js'
+import { extractChatItemPullRequests, seedSeenPullRequestItems } from './chat-pr-tracker.js'
+import type { PrImpactReport } from './pane-pr-impacts.js'
+import type { PanePrRef } from './pane-pr-records.js'
 
 const parentPaneId = (key: string): string => parseAsideKey(key)?.paneId ?? key
 
@@ -121,6 +124,10 @@ type HubDependencies = {
    * a connecting chat already holds and answers with the login's newest.
    */
   planUsage?: { joined: (configDir: string | undefined, held: ChatPlanUsage | undefined) => ChatPlanUsage | undefined }
+  /** PRs a chat's completed command or MCP tool output shows it just created. */
+  onPullRequestsCreated?: (paneId: string, refs: PanePrRef[]) => void
+  /** PRs a chat's completed command or MCP tool pushed to, reviewed, or commented on. */
+  onPullRequestsImpacted?: (paneId: string, reports: PrImpactReport[]) => void
 }
 
 /** A chat's unsent draft, sent with its switch to Claude Code. */
@@ -145,6 +152,8 @@ type ChatEntry = {
   answered: Set<string>
   /** Whether the chat has had a turn, so idle reads as done. */
   hadTurn: boolean
+  /** Completed command/tool item ids already inspected for PR creations/impacts. */
+  processedPrItems: Set<string>
 }
 
 /**
@@ -310,6 +319,8 @@ export class AgentHostHub {
           ...(sameProvider && previous?.state.commands ? { commands: previous.state.commands } : {}),
           ...(carried ? { carried } : {}),
         }
+        const processedPrItems = new Set<string>()
+        seedSeenPullRequestItems(state.items, processedPrItems)
         const entry: ChatEntry = {
           state,
           socket,
@@ -320,6 +331,7 @@ export class AgentHostHub {
           // A request still open in a new host's snapshot never got its answer.
           answered: new Set(),
           hadTurn: state.items.some((item) => item.kind === 'user_message'),
+          processedPrItems,
         }
         this.chats.set(paneId, entry)
         if (!parseAsideKey(message.session.paneId)) this.dependencies.onSessionInfo?.(message.session)
@@ -358,6 +370,14 @@ export class AgentHostHub {
         const entry = this.owned(socket, message.paneId)
         if (!entry) return
         entry.state = { ...entry.state, items: mergeChatItems(message.replace ? [] : entry.state.items, items) }
+        if (message.replace) {
+          entry.processedPrItems.clear()
+          seedSeenPullRequestItems(items, entry.processedPrItems)
+        } else if (!parseAsideKey(message.paneId)) {
+          const { created, impacted } = extractChatItemPullRequests(items, entry.state.session.cwd, entry.processedPrItems)
+          if (created.length) this.dependencies.onPullRequestsCreated?.(message.paneId, created)
+          if (impacted.length) this.dependencies.onPullRequestsImpacted?.(message.paneId, impacted)
+        }
         const startsTurn = !entry.hadTurn && items.some((item) => item.kind === 'user_message')
         if (startsTurn) entry.hadTurn = true
         if (entry.visible) {
@@ -475,6 +495,11 @@ export class AgentHostHub {
    */
   owns(paneId: string): boolean {
     return this.chats.get(paneId)?.socket != null
+  }
+
+  providerFor(paneId: string): ChatProvider | undefined {
+    const entry = this.chats.get(paneId)
+    return entry?.socket != null ? entry.state.session.provider : undefined
   }
 
   items(paneId: string): ChatItem[] {

@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto'
 import { discoverCursorAssociation } from './cursor-hook-ownership.js'
+import { createdPullRequestsFor, pullRequestImpactsFor } from './pr-impact-hook.js'
+
+function extractCursorCreatedPullRequests(value: unknown) {
+  return createdPullRequestsFor(value)
+}
+
+function extractCursorPullRequestImpacts(value: unknown) {
+  return pullRequestImpactsFor(value)
+}
 
 /** Cursor's native hook names; do not register thought/transcript telemetry. */
 export const CURSOR_HOOK_EVENTS = [
@@ -121,6 +130,45 @@ export function normalizeCursorHook(value: unknown): Record<string, unknown> | n
       const check = input.check as Record<string, unknown>
       if (['test', 'typecheck', 'lint', 'build'].includes(check.label as string) && ['running', 'passed', 'failed'].includes(check.status as string)) result.check = { label: check.label, status: check.status }
     }
+    if (event === 'postToolUse') {
+      const REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/
+      const rawCreated = extractCursorCreatedPullRequests(input) ?? (Array.isArray(input.createdPullRequests) ? input.createdPullRequests : undefined)
+      if (rawCreated) {
+        const created = rawCreated.slice(0, 10).flatMap((entry) => {
+          if (typeof entry !== 'object' || entry === null) return []
+          const item = entry as Record<string, unknown>
+          return typeof item.repo === 'string' && REPO.test(item.repo) && typeof item.number === 'number' && Number.isInteger(item.number) && item.number > 0 && item.number < 2 ** 31
+            ? [{ repo: item.repo, number: item.number }]
+            : []
+        })
+        if (created.length) result.createdPullRequests = created
+      }
+      const rawImpacts = extractCursorPullRequestImpacts(input) ?? (Array.isArray(input.impactedPullRequests) ? input.impactedPullRequests : undefined)
+      if (rawImpacts && rawImpacts.length) {
+        const BRANCH = /^(?![-/.])(?!.*\.\.)[A-Za-z0-9._/+-]{1,200}$/
+        const REMOTE = /^(?!-)[A-Za-z0-9._-]{1,100}$/
+        const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/
+        const impacted = rawImpacts.slice(0, 10).flatMap((entry) => {
+          if (typeof entry !== 'object' || entry === null) return []
+          const item = entry as Record<string, unknown>
+          if (item.relation !== 'pushed' && item.relation !== 'reviewed' && item.relation !== 'commented') return []
+          const next: Record<string, unknown> = { relation: item.relation }
+          if (typeof item.cwd === 'string' && item.cwd.startsWith('/') && item.cwd.length <= 4096 && !item.cwd.includes('\0')) next.cwd = item.cwd
+          if (typeof item.repo === 'string' && REPO.test(item.repo)) next.repo = item.repo
+          if (typeof item.number === 'number' && Number.isInteger(item.number) && item.number > 0 && item.number < 2 ** 31) next.number = item.number
+          if (typeof item.branch === 'string' && BRANCH.test(item.branch)) next.branch = item.branch
+          if (typeof item.headOwner === 'string' && OWNER.test(item.headOwner)) next.headOwner = item.headOwner
+          if (typeof item.remote === 'string' && REMOTE.test(item.remote)) next.remote = item.remote
+          return [next]
+        })
+        if (impacted.length) {
+          result.impactedPullRequests = impacted
+          const rootCwd = Array.isArray(input.workspace_roots) && typeof input.workspace_roots[0] === 'string' ? input.workspace_roots[0] : undefined
+          const rawCwd = typeof input.cwd === 'string' ? input.cwd : rootCwd
+          if (typeof rawCwd === 'string' && rawCwd.startsWith('/') && rawCwd.length <= 4096 && !rawCwd.includes('\0')) result.cwd = rawCwd
+        }
+      }
+    }
   }
   if (event === 'subagentStart' || event === 'subagentStop') {
     if (event === 'subagentStop' && ['completed', 'error', 'aborted'].includes(input.status as string)) result.status = input.status
@@ -130,7 +178,7 @@ export function normalizeCursorHook(value: unknown): Record<string, unknown> | n
   return result
 }
 
-export function generatedCursorBridge(tokenPath: string, instructions: string): string {
+export function generatedCursorBridge(tokenPath: string, instructions: string, chatImages = ''): string {
   return `import { createHash } from 'node:crypto'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
@@ -140,6 +188,10 @@ import { delimiter, join } from 'node:path'
 const __name = (target, name) => Object.defineProperty(target, 'name', { value: name, configurable: true })
 ${cursorActivityId.toString()}
 function sanitizeCursorActivityId(value) { return cursorActivityId(value, createHash) }
+${createdPullRequestsFor.toString()}
+${pullRequestImpactsFor.toString()}
+function extractCursorCreatedPullRequests(value) { return createdPullRequestsFor(value) }
+function extractCursorPullRequestImpacts(value) { return pullRequestImpactsFor(value) }
 ${normalizeCursorHook.toString()}
 ${discoverCursorAssociation.toString()}
 const emittedAt = process.hrtime.bigint().toString()
@@ -162,6 +214,10 @@ const configuredEvent = process.argv[3]
 let output = configuredEvent === 'preToolUse' || configuredEvent === 'subagentStart' ? { permission: 'allow' }
   : configuredEvent === 'beforeSubmitPrompt' ? { continue: true } : {}
 try {
+  if (process.env.COMMANDO_ASIDE) {
+    process.stdout.write(JSON.stringify(output) + '\\n')
+    process.exit(0)
+  }
   let raw = ''
   let bytes = 0
   for await (const chunk of process.stdin) {
@@ -177,13 +233,19 @@ try {
   const pane = process.env.TMUX_PANE
   const port = process.env.COMMANDO_PORT || '4310'
   const tmux = /^(.*),(\\d+),(\\d+)$/.exec(process.env.TMUX || '')
-  if (body && /^%\\d+$/.test(pane || '') && tmux && /^\\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) <= 65535) {
+  const isChatHost = process.env.COMMANDO_CHAT_PROVIDER === 'cursor'
+  if (body && /^%\\d+$/.test(pane || '') && (tmux || isChatHost) && /^\\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) <= 65535) {
     const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
     if (token.length >= 32) {
-      const association = await discoverCursorAssociation(pane, ['-S', tmux[1]], process.pid, null, io)
-      if (association && association.serverPid === Number(tmux[2])) {
-        body.association = association
-        body.emittedAt = emittedAt
+      const association = !isChatHost && tmux ? await discoverCursorAssociation(pane, ['-S', tmux[1]], process.pid, null, io) : null
+      const verifiedTui = association && tmux && association.serverPid === Number(tmux[2])
+      if (isChatHost || verifiedTui) {
+        if (isChatHost) {
+          body.chatHost = true
+        } else {
+          body.association = association
+          body.emittedAt = emittedAt
+        }
         const encoded = JSON.stringify(body)
         if (Buffer.byteLength(encoded) <= 64 * 1024) {
           const response = await fetch('http://127.0.0.1:' + port + '/api/agent-status/hooks/cursor', {
@@ -193,8 +255,14 @@ try {
           const accepted = response.ok && (await response.json()).accepted === true
           if (accepted && event === 'sessionStart' && !input.parent_conversation_id && !input.subagent_id) {
             const id = input.conversation_id
-            const resume = /^[A-Za-z0-9][A-Za-z0-9-]{7,79}$/.test(id) ? '\\nResume command for this conversation: agent --resume=' + id + ' (pin it once with the --session flag)' : ''
-            output = { additional_context: ${JSON.stringify(instructions)} + resume }
+            const chatResume = process.env.COMMANDO_CHAT_RESUME
+            const validId = /^[A-Za-z0-9][A-Za-z0-9-]{7,79}$/.test(id)
+            const hasChatResume = typeof chatResume === 'string' && chatResume.length > 0 && chatResume.length < 2000 && !/[\\x00-\\x1f]/.test(chatResume)
+            const resume = !validId ? ''
+              : hasChatResume ? '\\nResume command for this conversation: ' + chatResume + ' --resume ' + id + ' (pin it once with the --session flag)'
+                : '\\nResume command for this conversation: agent --resume=' + id + ' (pin it once with the --session flag)'
+            const chatNote = (isChatHost || hasChatResume) && ${JSON.stringify(chatImages)} ? '\\n' + ${JSON.stringify(chatImages)} : ''
+            output = { additional_context: ${JSON.stringify(instructions)} + chatNote + resume }
           }
         }
       }

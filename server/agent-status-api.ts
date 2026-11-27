@@ -28,6 +28,8 @@ type AgentStatusApiDependencies = {
   chatAsideSession?: (paneId: string, sessionId: string) => boolean
   /** A chat pane's host answers permission prompts itself (SDK canUseTool), so hooks never hold them. */
   chatOwnsPane?: (paneId: string) => boolean
+  /** Provider currently running inside a Commando-owned chat pane, if any. */
+  chatProvider?: (paneId: string) => string | undefined
   now?: () => number
   verifyCursorAssociation?: (paneId: string, body: Record<string, unknown>) => Promise<CursorHookAssociation | null>
   cursorForeground?: (paneId: string) => Promise<boolean>
@@ -192,7 +194,11 @@ export class AgentStatusHookApi {
       }
       const updatedAt = this.dependencies.now?.() ?? Date.now()
       if (provider === 'cursor' && this.dependencies.chatOwnsPane?.(targetPaneId)) {
-        writeJson(response, 200, { ok: true, changed: false })
+        const accepted = body.chatHost === true
+          && this.dependencies.chatProvider?.(targetPaneId) === 'cursor'
+          && normalizeCursorHook(body) !== null
+        if (accepted) this.recordPullRequests(targetPaneId, body)
+        writeJson(response, 200, { ok: true, changed: false, ...(accepted ? { accepted: true } : {}) })
         return true
       }
       let change: AgentStatusChange
@@ -218,6 +224,7 @@ export class AgentStatusHookApi {
         cursorAssociation = association ?? null
         if (!association) throw new HttpError(403, 'Cursor foreground association could not be verified')
         change = this.dependencies.registry.applyCursorHook(targetPaneId, body, updatedAt, processCommand, association)
+        this.recordPullRequests(targetPaneId, body)
       } else if (provider === 'claude' || provider === 'muse') {
         requiredString(body, 'hook_event_name')
         requiredString(body, 'session_id')
@@ -232,12 +239,7 @@ export class AgentStatusHookApi {
           processCommand,
           provider,
         )
-        const created = Array.isArray(body.createdPullRequests)
-          ? body.createdPullRequests.slice(0, MAX_CREATED_PULL_REQUESTS).filter(isPanePrRef)
-          : []
-        if (created.length) this.dependencies.onPullRequestsCreated?.(targetPaneId, created.map(({ repo, number }) => ({ repo, number })))
-        const impacted = parsePrImpactReports(body.impactedPullRequests, body.cwd)
-        if (impacted.length) this.dependencies.onPullRequestsImpacted?.(targetPaneId, impacted)
+        this.recordPullRequests(targetPaneId, body)
       } else if (provider === 'codex') {
         const event = body.event
         if (!isRecord(event)) throw new HttpError(400, 'event must be a JSON object')
@@ -316,6 +318,15 @@ export class AgentStatusHookApi {
       writeJson(response, 500, { error: 'Unable to record agent status' })
       return true
     }
+  }
+
+  private recordPullRequests(targetPaneId: string, body: Record<string, unknown>): void {
+    const created = Array.isArray(body.createdPullRequests)
+      ? body.createdPullRequests.slice(0, MAX_CREATED_PULL_REQUESTS).filter(isPanePrRef)
+      : []
+    if (created.length) this.dependencies.onPullRequestsCreated?.(targetPaneId, created.map(({ repo, number }) => ({ repo, number })))
+    const impacted = parsePrImpactReports(body.impactedPullRequests, body.cwd)
+    if (impacted.length) this.dependencies.onPullRequestsImpacted?.(targetPaneId, impacted)
   }
 
   private rememberResolvedOpenCodeInteraction(key: string): void {

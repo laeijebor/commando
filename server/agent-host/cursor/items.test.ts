@@ -310,4 +310,20 @@ describe('CursorItemMapper', () => {
     ])
     expect(items.every((item) => parseChatItem(item))).toBe(true)
   })
+
+  it('preserves workingDirectory as cwd on shell command items', () => {
+    const mapper = new CursorItemMapper(() => 1)
+    mapper.begin('turn-cwd')
+    const completed = mapper.delta({
+      type: 'tool-call-completed',
+      callId: 'shell-cwd',
+      toolCall: {
+        type: 'shell',
+        args: { command: 'git push origin feat', workingDirectory: '/repos/other' },
+        result: { status: 'success', value: { stdout: 'ok\n', stderr: '' } },
+      },
+    }).at(-1)
+    expect(completed).toMatchObject({ kind: 'command', command: 'git push origin feat', cwd: '/repos/other', status: 'completed' })
+    expect(parseChatItem(completed)).toMatchObject({ kind: 'command', cwd: '/repos/other' })
+  })
 })

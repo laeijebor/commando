@@ -60,7 +60,8 @@ describe('CodexItemMapper', () => {
     mapper.resolveRequest(requestKey(3), { kind: 'approval', decision: 'allow' })
     notify('serverRequest/resolved', { requestId: 3 })
     notify('item/completed', { item: { ...command, status: 'completed', aggregatedOutput: 'hello', exitCode: 0, durationMs: 5 } })
-    expect(mapper.list()).toMatchObject([{ kind: 'command', output: 'hello', status: 'completed' }, { kind: 'request', status: 'completed', answer: { decision: 'allow' } }])
+    expect(mapper.list()).toMatchObject([{ kind: 'command', cwd: '/tmp', output: 'hello', status: 'completed' }, { kind: 'request', status: 'completed', answer: { decision: 'allow' } }])
+    expect(parseChatItem(mapper.list()[0])).toMatchObject({ kind: 'command', cwd: '/tmp', output: 'hello', status: 'completed' })
     expect(notify('item/started', { item: command })).toEqual([])
   })
   it('updates multi-file patches, counts hunks without headers and marks failures', () => {

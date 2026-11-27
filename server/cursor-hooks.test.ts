@@ -467,3 +467,82 @@ it('keeps the generated hook alive for verification slower than the former one-s
   const accepted = (await readFile(transport.env.COMMANDO_TEST_REQUESTS + '.accepted', 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   expect(accepted.map((body) => body.hook_event_name)).toEqual(['sessionStart', 'stop'])
 })
+
+it('extracts and preserves created and impacted PRs in normalizeCursorHook without leaking unrelated cwd', () => {
+  const created = normalizeCursorHook({
+    ...base,
+    hook_event_name: 'postToolUse',
+    tool_name: 'Shell',
+    tool_input: { command: 'gh pr create --title "Live lobby"' },
+    tool_output: JSON.stringify({ stdout: 'https://github.com/Save-All/Save-All/pull/32224\n', exitCode: 0 }),
+    cwd: '/Users/dev/Save-All',
+  })
+  expect(created?.createdPullRequests).toEqual([{ repo: 'Save-All/Save-All', number: 32224 }])
+  expect(created?.cwd).toBeUndefined()
+  expect(normalizeCursorHook(created!)?.createdPullRequests).toEqual([{ repo: 'Save-All/Save-All', number: 32224 }])
+
+  const impacted = normalizeCursorHook({
+    ...base,
+    hook_event_name: 'postToolUse',
+    tool_name: 'Shell',
+    tool_input: { command: 'git push origin feat/live-instant-lobby' },
+    tool_output: JSON.stringify({ stdout: 'Everything up-to-date', exitCode: 0 }),
+    cwd: '/Users/dev/Save-All',
+  })
+  expect(impacted?.impactedPullRequests).toEqual([{ relation: 'pushed', cwd: '/Users/dev/Save-All', remote: 'origin', branch: 'feat/live-instant-lobby' }])
+  expect(impacted?.cwd).toBe('/Users/dev/Save-All')
+  expect(normalizeCursorHook(impacted!)?.impactedPullRequests).toEqual(impacted?.impactedPullRequests)
+
+  const unrelated = normalizeCursorHook({
+    ...base,
+    hook_event_name: 'postToolUse',
+    tool_name: 'Shell',
+    tool_input: { command: 'npm test' },
+    tool_output: JSON.stringify({ stdout: 'ok', exitCode: 0 }),
+    cwd: '/Users/dev/private-project',
+  })
+  expect(unrelated?.createdPullRequests).toBeUndefined()
+  expect(unrelated?.impactedPullRequests).toBeUndefined()
+  expect(unrelated?.cwd).toBeUndefined()
+})
+
+it('supports Cursor chat host panes for sessionStart context and postToolUse PR metadata while skipping asides', async () => {
+  const paths = await new AgentHookInstaller({ home: await home() }).install()
+  const transport = await fakeTransport(join(paths.cursorBridgePath, '..'))
+  const chatEnv = {
+    ...transport.env,
+    // Simulate a Commando chat pane where ps shows node/agent-host instead of cursor-agent.
+    COMMANDO_TEST_PS: '100 90 node server/agent-host/main.ts cursor --pane %1\n',
+    COMMANDO_CHAT_PROVIDER: 'cursor',
+    COMMANDO_CHAT_RESUME: 'commando-chat cursor',
+  }
+  const started = await run(paths.cursorBridgePath, { ...base, generation_id: base.conversation_id, hook_event_name: 'sessionStart' }, chatEnv)
+  expect(started).toMatchObject({ code: 0, stderr: '' })
+  const context = JSON.parse(started.stdout).additional_context as string
+  expect(context).toContain('commando-chat cursor --resume conv-abcdefgh')
+  expect(context).toContain('commando-pr-marker')
+  expect(context).toContain('shows Markdown images inline')
+
+  const created = await run(paths.cursorBridgePath, {
+    ...base,
+    hook_event_name: 'postToolUse',
+    tool_name: 'Shell',
+    tool_input: { command: 'gh pr create --fill' },
+    tool_output: JSON.stringify({ stdout: 'https://github.com/Save-All/Save-All/pull/32224\n', exitCode: 0 }),
+    cwd: '/Users/dev/Save-All',
+  }, chatEnv, 'postToolUse')
+  expect(created).toMatchObject({ code: 0, stderr: '' })
+
+  const aside = await run(paths.cursorBridgePath, { ...base, generation_id: base.conversation_id, hook_event_name: 'sessionStart' }, { ...chatEnv, COMMANDO_ASIDE: 'aside-1' })
+  expect(aside).toEqual({ code: 0, stdout: '{}\n', stderr: '' })
+
+  const received = await transport.received()
+  expect(received).toHaveLength(2)
+  expect(received[0].body).toMatchObject({ hook_event_name: 'sessionStart', chatHost: true })
+  expect(received[1].body).toMatchObject({
+    hook_event_name: 'postToolUse',
+    chatHost: true,
+    createdPullRequests: [{ repo: 'Save-All/Save-All', number: 32224 }],
+  })
+})
+

@@ -179,8 +179,12 @@ export class CodexItemMapper {
         const value = type === 'reasoning' ? parts.map(text).join('\n\n') : text(item.text)
         return [this.put({ ...base, kind, text: value || (previous && 'text' in previous ? previous.text : ''), ...(kind === 'plan' ? { toolUseId: itemId } : {}) } as ChatItem)]
       }
-      case 'commandExecution': return [this.put({ ...base, kind: 'command', toolUseId: itemId, command: text(item.command).slice(0, 16384) || (previous?.kind === 'command' ? previous.command : ''),
-        output: string(item.aggregatedOutput)?.slice(-MAX_TEXT) ?? (previous?.kind === 'command' ? previous.output : undefined), ...(state === 'failed' ? { isError: true } : {}) })]
+      case 'commandExecution': {
+        const cwd = string(item.cwd)?.trim().slice(0, 4096) || (previous?.kind === 'command' ? previous.cwd : undefined)
+        return [this.put({ ...base, kind: 'command', toolUseId: itemId, command: text(item.command).slice(0, 16384) || (previous?.kind === 'command' ? previous.command : ''),
+          ...(cwd ? { cwd } : {}),
+          output: string(item.aggregatedOutput)?.slice(-MAX_TEXT) ?? (previous?.kind === 'command' ? previous.output : undefined), ...(state === 'failed' ? { isError: true } : {}) })]
+      }
       case 'fileChange': return list(item.changes).flatMap((value) => {
         const change = record(value)
         const path = string(change.path)

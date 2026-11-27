@@ -2691,7 +2691,7 @@ export class AgentHookInstaller {
   private async installCursorHooks(repair = false): Promise<void> {
     const { settings, mode } = await readClaudeSettings(this.paths.cursorHooksPath)
     const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.deviceCliPath, this.paths.boardCliPath)
-    await writeAtomically(this.paths.cursorBridgePath, generatedCursorBridge(this.paths.tokenPath, instructions), 0o600)
+    await writeAtomically(this.paths.cursorBridgePath, generatedCursorBridge(this.paths.tokenPath, instructions, CHAT_IMAGE_INSTRUCTIONS), 0o600)
     await writeAtomically(this.paths.cursorHooksPath, `${JSON.stringify(mergeCursorHooks(settings, this.paths.cursorBridgePath, repair), null, 2)}\n`, mode)
     // Explicit install upgrades the healthy managed Claude bridge as well. Repair
     // of unrelated provider paths never enables native Cursor hooks.
