@@ -14,23 +14,31 @@ export type PrImpactHookReport = {
 }
 
 /**
- * Reads, from a PostToolUse hook payload, the PRs the agent just pushed to,
- * reviewed or commented on: `git push`, `gh pr comment|review|edit|merge|close|ready`
+ * Reads, from a PostToolUse / postToolUse hook payload, the PRs the agent just
+ * pushed to, reviewed or commented on: `git push`, `gh pr comment|review|edit|merge|close|ready`
  * and the GitHub MCP equivalents. It only parses the command, so the daemon
  * resolves branches and repos to PRs. Words that come from variables or
  * command substitution are not guessed at, and echoed text and heredocs never
- * count. The hook bridge embeds this with `toString()`, so it must stay
+ * count. The hook bridges embed this with `toString()`, so it must stay
  * self-contained: no imports and no outside references.
  */
 export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | undefined {
   type Word = { text: string; dynamic: boolean }
   if (typeof value !== 'object' || value === null) return undefined
   const input = value as Record<string, unknown>
-  if (input.hook_event_name !== 'PostToolUse') return undefined
+  if (input.hook_event_name !== 'PostToolUse' && input.hook_event_name !== 'postToolUse') return undefined
+  if (input.hook_event_name === 'postToolUse' && typeof input.tool_output === 'string') {
+    try {
+      const exitCode = (JSON.parse(input.tool_output) as Record<string, unknown>)?.exitCode
+      if (typeof exitCode === 'number' && Number.isInteger(exitCode) && exitCode !== 0) return undefined
+    } catch { /* non-JSON output */ }
+  }
   const tool = typeof input.tool_name === 'string' ? input.tool_name : ''
   const args = (typeof input.tool_input === 'object' && input.tool_input !== null ? input.tool_input : {}) as Record<string, unknown>
-  const startCwd = typeof input.cwd === 'string' && input.cwd.startsWith('/') && input.cwd.length <= 4096 && !input.cwd.includes('\0')
-    ? input.cwd : undefined
+  const rootCwd = Array.isArray(input.workspace_roots) && typeof input.workspace_roots[0] === 'string' ? input.workspace_roots[0] : undefined
+  const rawCwd = typeof input.cwd === 'string' ? input.cwd : rootCwd
+  const startCwd = typeof rawCwd === 'string' && rawCwd.startsWith('/') && rawCwd.length <= 4096 && !rawCwd.includes('\0')
+    ? rawCwd : undefined
   const REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/
   const BRANCH = /^(?![-/.])(?!.*\.\.)[A-Za-z0-9._/+-]{1,200}$/
   const REMOTE = /^(?!-)[A-Za-z0-9._-]{1,100}$/
@@ -51,8 +59,8 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     return match ? match[1] : undefined
   }
 
-  // GitHub MCP tools name the repo and PR outright.
-  const mcp = /^mcp__.+__([a-z_]+)$/.exec(tool)?.[1]
+  // GitHub MCP tools name the repo and PR outright (Claude `mcp__…__tool` and Cursor `MCP:…:tool`).
+  const mcp = (/^mcp__.+__([a-z_]+)$/i.exec(tool)?.[1] ?? /^MCP:(?:[^:]+:)?([a-z_]+)$/i.exec(tool)?.[1])?.toLowerCase()
   if (mcp) {
     const relation = [
       'create_pull_request_review', 'create_and_submit_pull_request_review', 'create_pending_pull_request_review',
@@ -73,7 +81,7 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     return impacts.length ? impacts : undefined
   }
 
-  if (tool !== 'Bash' || typeof args.command !== 'string' || args.command.length > 20_000) return undefined
+  if ((tool !== 'Bash' && tool !== 'Shell') || typeof args.command !== 'string' || args.command.length > 20_000) return undefined
   const text = args.command
   if (!/\b(?:git|gh)\b/.test(text)) return undefined
 
@@ -383,4 +391,39 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     }
   }
   return impacts.length ? impacts : undefined
+}
+
+/**
+ * Reads PR URLs from a PostToolUse / postToolUse payload when the agent just
+ * ran `gh pr create`, `gh stack`, or a GitHub MCP `create_pull_request` tool.
+ * Self-contained for `.toString()` embedding inside standalone hook bridges.
+ */
+export function createdPullRequestsFor(value: unknown): Array<{ repo: string; number: number }> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const input = value as Record<string, unknown>
+  if (input.hook_event_name !== 'PostToolUse' && input.hook_event_name !== 'postToolUse') return undefined
+  if (input.hook_event_name === 'postToolUse' && typeof input.tool_output === 'string') {
+    try {
+      const exitCode = (JSON.parse(input.tool_output) as Record<string, unknown>)?.exitCode
+      if (typeof exitCode === 'number' && Number.isInteger(exitCode) && exitCode !== 0) return undefined
+    } catch { /* non-JSON output */ }
+  }
+  const tool = typeof input.tool_name === 'string' ? input.tool_name : ''
+  const args = (typeof input.tool_input === 'object' && input.tool_input !== null ? input.tool_input : {}) as Record<string, unknown>
+  const command = args.command
+  const creates = tool === 'Bash' || tool === 'Shell'
+    ? typeof command === 'string' && /\bgh\s+(?:pr\s+create|stack)\b/.test(command)
+    : /create_pull_request$/i.test(tool)
+  if (!creates) return undefined
+  const response = input.tool_response ?? input.tool_result ?? input.tool_output
+  const output = (typeof response === 'string' ? response : JSON.stringify(response ?? '')).slice(0, 200_000)
+  const created: Array<{ repo: string; number: number }> = []
+  for (const match of output.matchAll(/https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100})\/pull\/(\d{1,9})\b/g)) {
+    const number = Number(match[2])
+    if (!Number.isSafeInteger(number) || number <= 0 || number >= 2 ** 31) continue
+    const pr = { repo: match[1], number }
+    if (!created.some((known) => known.repo === pr.repo && known.number === pr.number)) created.push(pr)
+    if (created.length === 10) break
+  }
+  return created.length ? created : undefined
 }
