@@ -20,7 +20,7 @@ const input = (path: string, kind: BoardItem['kind'] = 'screenshot') => ({ key: 
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'board-thumbs-test-')); run.mockClear() })
 afterEach(async () => { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) })
 function cache(extra: Partial<ConstructorParameters<typeof BoardThumbCache>[0]> = {}) {
-  return new BoardThumbCache({ root: join(root, 'cache'), origin, platform: 'darwin', run, ...extra })
+  return new BoardThumbCache({ root: join(root, 'cache'), origin, platform: 'darwin', run, capturePage: extra.capture, resolve: async (host) => [{ address: host === 'localhost' ? '127.0.0.1' : '93.184.216.34', family: 4 }], ...extra })
 }
 
 describe('BoardPreviewQueue', () => {
@@ -37,6 +37,75 @@ describe('BoardPreviewQueue', () => {
 })
 
 describe('Board thumbnails', () => {
+  it('backs off page DNS before resolving across enqueues/restarts, retries after expiry, and resets on success', async () => {
+    let now = 0
+    const resolve = vi.fn(async (): Promise<{ address: string; family: number }[]> => { throw new Error('DNS unavailable') })
+    const capturePage = vi.fn(async () => png()), options = { resolve, capturePage, now: () => now }
+    const store = new BoardStore(), queue = new BoardPreviewQueue(), worker = new BoardThumbWorker(store, cache(options), queue)
+    const url = 'http://dev.internal:5273/app', key = `page:${url}`
+    store.upsert(target, { key, kind: 'page', title: 'Dev', ref: { url }, source: 'agent' })
+    const retryKey = thumbHash(['page-dns-retry', url])
+    const state = async () => new Map<string, { failures: number; retryAt: number }>(JSON.parse(await readFile(join(root, 'cache', 'page-retries.json'), 'utf8'))).get(retryKey)
+    try {
+      worker.enqueue(target); await queue.idle()
+      expect(resolve).toHaveBeenCalledTimes(1)
+      expect(await state()).toEqual({ failures: 1, retryAt: 300_000 })
+      worker.enqueue(target); await queue.idle()
+      expect(resolve).toHaveBeenCalledTimes(1); expect(capturePage).not.toHaveBeenCalled()
+      const reloaded = cache(options)
+      now = 299_999; expect(await reloaded.source(store.item(target, key))).toBeUndefined()
+      expect(resolve).toHaveBeenCalledTimes(1)
+      now = 300_000; worker.enqueue(target); await queue.idle()
+      expect(resolve).toHaveBeenCalledTimes(2)
+      expect(await state()).toEqual({ failures: 2, retryAt: 900_000 })
+      resolve.mockResolvedValue([{ address: '10.0.0.8', family: 4 }])
+      now = 900_000; worker.enqueue(target); await queue.idle()
+      expect(capturePage).toHaveBeenCalledTimes(1)
+      expect(store.item(target, key).thumb).toBeDefined()
+      expect(await state()).toBeUndefined()
+      // A later failure starts again at five minutes, rather than retaining
+      // the earlier failure count or a stale negative entry after recovery.
+      resolve.mockRejectedValue(new Error('DNS failed again'))
+      worker.enqueue(target); await queue.idle()
+      expect(await state()).toEqual({ failures: 1, retryAt: 1200_000 })
+      const calls = resolve.mock.calls.length
+      worker.enqueue(target); await queue.idle(); expect(resolve).toHaveBeenCalledTimes(calls)
+    } finally { worker.stop() }
+  })
+  it('persists page failure backoff across reads, restarts and hourly hash changes, then clears it on success', async () => {
+    let now = 0
+    const capturePage = vi.fn(async (): Promise<Buffer> => { throw new Error('Browser unavailable') })
+    const options = { capturePage, now: () => now }, c = cache(options), store = new BoardStore(), queue = new BoardPreviewQueue()
+    const worker = new BoardThumbWorker(store, c, queue)
+    const url = 'http://127.0.0.1:5273/app'
+    store.upsert(target, { key: `page:${url}`, kind: 'page', title: 'Dev', ref: { url }, source: 'agent' })
+    worker.enqueue(target); await queue.idle()
+    worker.enqueue(target); await queue.idle(); expect(capturePage).toHaveBeenCalledTimes(1)
+    const reloaded = cache(options)
+    now = 299_999; expect(await reloaded.page(url)).toBeUndefined(); expect(capturePage).toHaveBeenCalledTimes(1)
+    now = 300_000; await reloaded.page(url); expect(capturePage).toHaveBeenCalledTimes(2)
+    const key = thumbHash(['page-retry', url, 'private'])
+    const state = async () => new Map<string, { failures: number; retryAt: number }>(JSON.parse(await readFile(join(root, 'cache', 'page-retries.json'), 'utf8'))).get(key)!
+    expect(await state()).toEqual({ failures: 2, retryAt: 900_000 })
+    now = 900_000; await reloaded.page(url)
+    now = 2100_000; await reloaded.page(url)
+    const beforeRollover = (await reloaded.source(store.item(target, `page:${url}`)))!.hash
+    now = 3600_000
+    expect((await reloaded.source(store.item(target, `page:${url}`)))!.hash).not.toBe(beforeRollover)
+    await reloaded.page(url); expect(capturePage).toHaveBeenCalledTimes(4)
+    for (let i = 0; i < 8; i++) {
+      now = (await state()).retryAt; await reloaded.page(url)
+      expect((await state()).retryAt - now).toBeLessThanOrEqual(6 * 3600_000)
+    }
+    expect((await state()).retryAt - now).toBe(6 * 3600_000)
+    // Another destination does not inherit this page's backoff.
+    await reloaded.page('http://127.0.0.1:5273/other')
+    capturePage.mockResolvedValue(png())
+    now = (await state()).retryAt
+    expect(await reloaded.page(url)).toBeDefined()
+    expect(await state()).toBeUndefined()
+    worker.stop()
+  })
   it('schedules individual items round-robin across targets and deduplicates pending item jobs', async () => {
     const store = new BoardStore(), queue = new BoardPreviewQueue(), c = cache(), events: string[] = []
     let release!: () => void
@@ -81,7 +150,7 @@ describe('Board thumbnails', () => {
     worker.stop(); vi.useRealTimers()
     const capture = vi.fn(async () => { store.remove(target, 'page:local'); return png() })
     const otherCache = cache({ capture }), otherQueue = new BoardPreviewQueue(), other = new BoardThumbWorker(store, otherCache, otherQueue)
-    store.upsert(target, { key: 'page:local', kind: 'page', title: 'Page', ref: { url: `${origin}/redline/page.html` }, source: 'user' })
+    store.upsert(target, { key: 'page:local', kind: 'page', title: 'Page', ref: { url: 'http://localhost:5273/page.html' }, source: 'user' })
     other.enqueue(target); await otherQueue.idle(); expect(store.get(target).items.some((i) => i.key === 'page:local')).toBe(false); other.stop()
   })
   it('selects the lowest focus canvas frame and first slide and fingerprints nested asset edits', async () => {
@@ -108,14 +177,32 @@ describe('Board thumbnails', () => {
     expect(await linux.render(item, { ...source, hash: 'b'.repeat(64) })).toBeUndefined(); expect(noNative).not.toHaveBeenCalled()
     expect(await c.source({ ...item, kind: 'pr' })).toBeUndefined(); expect(await c.source({ ...item, kind: 'clip' })).toBeUndefined()
   })
-  it('only captures daemon artifact pages and reuses content-addressed downloaded assets', async () => {
+  it('captures private pages in isolation and reuses content-addressed downloaded assets', async () => {
     const capture = vi.fn(async () => png()), c = cache({ capture })
-    expect(await c.page('http://192.168.1.2/private')).toBeUndefined(); expect(capture).not.toHaveBeenCalled()
+    expect(await c.page('http://192.168.1.2/private')).toBeDefined(); expect(capture).toHaveBeenCalledWith('http://192.168.1.2/private', 1280, 800, expect.objectContaining({ policy: 'private' }))
+    run.mockClear()
     const hash = await c.image(png()); expect(hash).toMatch(/^[a-f0-9]{64}$/)
     await c.image(png()); expect(run).toHaveBeenCalledTimes(2)
     expect(await c.read('../escape', 960)).toBeUndefined(); expect(await c.read(hash!, 100)).toBeUndefined()
     expect(await c.read(hash!, 320)).toEqual(png(320, 200))
     expect(defaultBoardThumbsPath(4491)).toMatch(/board-thumbs-4491$/)
+  })
+  it('keys public pages by day and private pages by hour, shares page/link shots and rejects unsafe URLs', async () => {
+    let now = 0
+    const capturePage = vi.fn(async () => png()), c = cache({ capturePage, now: () => now })
+    const publicUrl = 'https://example.com/app', localUrl = 'http://localhost:5273/app'
+    const first = await c.page(publicUrl), local = await c.page(localUrl)
+    const source = await c.source({ kind: 'page', ref: { url: publicUrl } } as BoardItem)
+    expect(source?.hash).toBe(first?.hash)
+    await c.page(publicUrl); await c.page(localUrl); expect(capturePage).toHaveBeenCalledTimes(2)
+    now = 3600_000
+    expect((await c.page(publicUrl))?.hash).toBe(first?.hash)
+    expect((await c.page(localUrl))?.hash).not.toBe(local?.hash)
+    now = 86400_000
+    expect((await c.page(publicUrl))?.hash).not.toBe(first?.hash)
+    expect(capturePage).toHaveBeenCalledTimes(4)
+    for (const url of ['file:///tmp/x', 'https://u:p@example.com', `${origin}/api/auth/sign-in/email`, `${origin}/api/pairing/claim`]) expect(await c.page(url)).toBeUndefined()
+    expect(capturePage).toHaveBeenCalledTimes(4)
   })
   it('evicts old cache entries using recent reads and ignores unrelated files', async () => {
     const c = cache({ maxBytes: 80 })

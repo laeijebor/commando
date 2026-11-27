@@ -79,6 +79,7 @@ export class BoardsApi {
   }
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
     if (url.pathname !== '/api/boards' && !url.pathname.startsWith('/api/boards/')) return false
+    let explicitCapture = false
     try {
       const candidate = /^Bearer\s+([^\s]+)$/i.exec(request.headers.authorization ?? '')?.[1]
       const agent = !!candidate && candidate.length <= 1024 && timingSafeEqual(digest(candidate), this.tokenDigest)
@@ -115,18 +116,39 @@ export class BoardsApi {
       const source = owner ? 'user' : 'agent', store = this.deps.store, method = request.method
       if (parts.length === 0 && method === 'GET') { json(response, 200, store.view(targetId)); return true }
       const section = parts[0], key = parts[1]
+      if (section === 'folders' && parts.length === 1 && method === 'POST') {
+        explicitCapture = true
+        const b = await body(request); fields(b, ['dir', 'group'])
+        const dir = text(b, 'dir', 4096, true)!, group = groupId(b)
+        if (!group) throw new BoardError(400, 'group is required')
+        if (!dir.startsWith('/') || !(await stat(dir).catch(() => undefined))?.isDirectory()) throw new BoardError(400, 'dir must be an absolute directory')
+        store.ensureGroup(targetId, group, source)
+        const result = store.captureFolder(targetId, dir, Date.now(), pane && this.deps.agentSession(pane.id), group)
+        json(response, 200, { ...store.view(targetId), ...result }); return true
+      }
       if (section === 'items' && parts.length <= 3) {
         if (key !== undefined && !BOARD_ITEM_KEY.test(key)) throw new BoardError(400, 'Invalid item key')
         if (!key && method === 'POST') {
           const b = await body(request)
-          fields(b, ['kind', 'url', 'path', 'text', 'title', 'caption', 'tone', 'group', 'pinned'])
+          explicitCapture = b.path !== undefined
+          fields(b, ['kind', 'url', 'path', 'text', 'title', 'caption', 'tone', 'group', 'near', 'pinned'])
           const kind = text(b, 'kind', 20)
           if (kind !== undefined && !BOARD_ITEM_KINDS.includes(kind as BoardItem['kind'])) throw new BoardError(400, 'Invalid kind')
           const tone = text(b, 'tone', 20)
           if (tone !== undefined && !['decision', 'gotcha', 'note'].includes(tone)) throw new BoardError(400, 'Invalid tone')
           const item = boardInput({ kind: kind as BoardItem['kind'] | undefined, url: text(b, 'url', 8192), path: text(b, 'path', 4096), text: text(b, 'text', 16000), title: text(b, 'title'), caption: text(b, 'caption', 16000), tone: tone as BoardItem['tone'], pinned: bool(b, 'pinned') }, source, this.deps.artifacts, pane && this.deps.agentSession(pane.id))
           if (item.kind === 'pr' && b.title === undefined) item.title = store.get(targetId).items.find((i) => i.key === item.key)?.title ?? item.title
-          json(response, 201, store.upsert(targetId, item, groupId(b))); return true
+          const group = groupId(b), near = groupId(b, 'near')
+          if (near && !group) throw new BoardError(400, 'near requires group')
+          if (group) store.ensureGroup(targetId, group, source, near)
+          try {
+            const added = store.upsert(targetId, item, group)
+            json(response, 201, { ...added, ...(b.path ? { captured: 1, errors: [] } : {}) })
+          } catch (error) {
+            if (!b.path) throw error
+            json(response, error instanceof BoardError ? error.status : 500, { captured: 0, errors: [error instanceof Error ? error.message : String(error)] })
+          }
+          return true
         }
         if (key && parts.length === 2 && method === 'PATCH') {
           const b = await body(request); fields(b, ['title', 'caption', 'pinned'])
@@ -168,7 +190,10 @@ export class BoardsApi {
         if (b.x !== undefined) p.x = number(b, 'x')
         if (b.y !== undefined) p.y = number(b, 'y')
         if (b.fixed !== undefined) p.fixed = bool(b, 'fixed')
-        store.place(targetId, text(b, 'key', 8192, true)!, p, source); json(response, 200, store.view(targetId)); return true
+        const key = text(b, 'key', 8192, true)!
+        store.item(targetId, key)
+        if (p.group && (source === 'user' || (!store.get(targetId).placements[key]?.fixed && p.x === undefined && p.y === undefined && p.fixed === undefined))) store.ensureGroup(targetId, p.group, source)
+        store.place(targetId, key, p, source); json(response, 200, store.view(targetId)); return true
       }
       if (section === 'groups' && parts.length <= 2) {
         if (key && !BOARD_ID.test(key)) throw new BoardError(400, 'Invalid group id')
@@ -197,7 +222,8 @@ export class BoardsApi {
       throw new BoardError(405, 'Unsupported Board route or method')
     } catch (error) {
       const status = error instanceof BoardError ? error.status : record(error) && typeof error.status === 'number' ? error.status : 500
-      json(response, status, { error: status === 500 ? 'Unable to update board' : error instanceof Error ? error.message : 'Invalid request' })
+      const message = status === 500 ? 'Unable to update board' : error instanceof Error ? error.message : 'Invalid request'
+      json(response, status, { error: message, ...(explicitCapture ? { captured: 0, errors: [message] } : {}) })
       return true
     }
   }

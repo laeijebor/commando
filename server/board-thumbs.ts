@@ -8,6 +8,8 @@ import { parseCanvasSource } from '../shared/deck.js'
 import { canvasRelativePath, encodeCanvasPath } from '../shared/canvas-manifest.js'
 import type { BoardItem } from '../shared/board.js'
 import type { BoardStore } from './boards.js'
+import { BoardPageRetries } from './board-preview-backoff.js'
+import { isBoardCaptureUrl, isCaptureControlUrl, resolveCaptureDestination, type CaptureDestination, type CaptureResolver } from './board-capture-policy.js'
 
 export const BOARD_THUMB_HASH = /^[0-9a-f]{64}$/
 export const BOARD_THUMB_WIDTHS = [320, 960] as const
@@ -55,8 +57,8 @@ const runTool: Run = (command, args) => new Promise((resolve, reject) => {
 })
 type Capture = (url: string, w: number, h: number) => Promise<Buffer>
 type Options = {
-  root: string; origin: string; platform?: string; run?: Run; capture?: Capture
-  maxBytes?: number; now?: () => number
+  root: string; origin: string; platform?: string; run?: Run; capture?: Capture; capturePage?: (url: string, w: number, h: number, destination: CaptureDestination) => Promise<Buffer>
+  maxBytes?: number; now?: () => number; resolve?: CaptureResolver
 }
 export function pngDimensions(bytes: Buffer): { w: number; h: number } | undefined {
   if (bytes.length < 24 || bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return
@@ -66,7 +68,11 @@ export function pngDimensions(bytes: Buffer): { w: number; h: number } | undefin
 
 export class BoardThumbCache {
   private readonly run: Run
-  constructor(private readonly options: Options) { this.run = options.run ?? runTool }
+  private readonly pageRetries: BoardPageRetries
+  constructor(private readonly options: Options) {
+    this.run = options.run ?? runTool
+    this.pageRetries = new BoardPageRetries(join(options.root, 'page-retries.json'), options.now ?? Date.now)
+  }
   private path(hash: string, width: number): string { return join(this.options.root, `${hash}-${width}.png`) }
   async read(hash: string, width: number): Promise<Buffer | undefined> {
     if (!BOARD_THUMB_HASH.test(hash) || !BOARD_THUMB_WIDTHS.includes(width as 320 | 960)) return
@@ -93,8 +99,13 @@ export class BoardThumbCache {
     } catch { await this.remove(hash); return undefined }
     return await this.has(hash) ? hash : undefined
   }
-  async source(item: BoardItem): Promise<{ hash: string; path?: string; url?: string; w: number; h: number } | undefined> {
+  async source(item: BoardItem): Promise<{ hash: string; path?: string; url?: string; destination?: CaptureDestination; w: number; h: number } | undefined> {
     if (['pr', 'clip', 'link'].includes(item.kind)) return
+    if (item.kind === 'page' && item.ref.url) {
+      if (!this.canCapture(item.ref.url)) return
+      const destination = await this.pageDestination(item.ref.url)
+      return destination ? this.pageSource(destination) : undefined
+    }
     let path: string | undefined, signature: unknown[] = [], w = 1280, h = 800, url = item.ref.url
     if (item.ref.path) {
       path = await realpath(item.ref.path)
@@ -142,8 +153,13 @@ export class BoardThumbCache {
     await visit(root); return entries
   }
   async render(item: BoardItem, source: NonNullable<Awaited<ReturnType<BoardThumbCache['source']>>>): Promise<BoardItem['thumb']> {
+    const retryKey = item.kind === 'page' && source.destination ? thumbHash(['page-retry', source.destination.url, source.destination.policy]) : undefined
     const cached = await this.read(source.hash, 960)
-    if (cached && await this.has(source.hash)) return { hash: source.hash, ...(pngDimensions(cached) ?? { w: 960, h: 600 }) }
+    if (cached && await this.has(source.hash)) {
+      if (retryKey) await this.pageRetries.succeeded(retryKey)
+      return { hash: source.hash, ...(pngDimensions(cached) ?? { w: 960, h: 600 }) }
+    }
+    if (retryKey && await this.pageRetries.blocked(retryKey)) return
     if ((this.options.platform ?? process.platform) !== 'darwin') return // TODO: portable image resampling through managed Chromium.
     try {
       await this.withTemp(async (dir) => {
@@ -156,22 +172,53 @@ export class BoardThumbCache {
             if (!file) throw new Error('QuickLook returned no PNG')
             await this.publish(join(out, file), source.hash, width)
           }
-        } else if (this.options.capture && source.url && this.canCapture(source.url)) {
-          const bytes = await this.options.capture(source.url, source.w, source.h)
+        } else if (source.url) {
+          let bytes: Buffer
+          if (item.kind === 'page' && source.destination && this.canCapture(source.url) && this.options.capturePage) {
+            bytes = await this.options.capturePage(source.url, source.w, source.h, source.destination)
+          } else if (item.kind !== 'page' && this.options.capture && new URL(source.url).origin === this.options.origin && new URL(source.url).pathname.startsWith('/redline/') && isBoardCaptureUrl(source.url)) {
+            bytes = await this.options.capture(source.url, source.w, source.h)
+          } else return
           const input = join(dir, 'capture.png'); await writeFile(input, bytes); await this.resize(input, source.hash)
         }
-        // TODO: ChromiumEngine.screenshot rejects general page/private-link URLs. Do not repurpose live tiles.
       })
       const bytes = await this.read(source.hash, 960)
-      if (bytes && await this.has(source.hash)) return { hash: source.hash, ...(pngDimensions(bytes) ?? { w: 960, h: 600 }) }
+      if (bytes && await this.has(source.hash)) {
+        if (retryKey) await this.pageRetries.succeeded(retryKey)
+        return { hash: source.hash, ...(pngDimensions(bytes) ?? { w: 960, h: 600 }) }
+      }
     } catch { await this.remove(source.hash) } // Missing sips/QuickLook/Chromium means the UI keeps its kind icon.
+    if (retryKey) await this.pageRetries.failed(retryKey)
     return undefined
   }
   canCapture(url: string): boolean {
-    try { const u = new URL(url); return u.origin === this.options.origin && u.pathname.startsWith('/redline/') } catch { return false }
+    return isBoardCaptureUrl(url) && !isCaptureControlUrl(url, [this.options.origin], [Number(new URL(this.options.origin).port || (new URL(this.options.origin).protocol === 'https:' ? 443 : 80))])
   }
-  async page(url: string): Promise<BoardItem['thumb']> {
-    return this.render({ kind: 'page' } as BoardItem, { hash: thumbHash(['page', url]), url, w: 1280, h: 800 })
+  async destination(url: string, resolve = this.options.resolve): Promise<CaptureDestination> {
+    if (!this.canCapture(url)) throw new Error('Blocked Board capture URL')
+    return resolveCaptureDestination(url, resolve)
+  }
+  private async pageDestination(url: string): Promise<CaptureDestination | undefined> {
+    // Resolution precedes render(), so it needs its own URL key before a
+    // destination/policy (and therefore the render retry key) is available.
+    const key = thumbHash(['page-dns-retry', new URL(url).href])
+    if (await this.pageRetries.blocked(key)) return
+    try {
+      const destination = await this.destination(url)
+      await this.pageRetries.succeeded(key)
+      return destination
+    } catch { await this.pageRetries.failed(key); return }
+  }
+  private pageSource(destination: CaptureDestination) {
+    const interval = destination.policy === 'private' ? 3600_000 : 86400_000
+    return { hash: thumbHash(['page', destination.url, interval, Math.floor((this.options.now ?? Date.now)() / interval)]), url: destination.url, destination, w: 1280, h: 800 }
+  }
+  async page(url: string, destination?: CaptureDestination): Promise<BoardItem['thumb']> {
+    if (!this.canCapture(url)) return
+    destination ??= await this.pageDestination(url)
+    if (!destination) return
+    if (new URL(url).href !== destination.url) throw new Error('Capture destination does not match item URL')
+    return this.render({ kind: 'page' } as BoardItem, this.pageSource(destination))
   }
   private async withTemp<T>(job: (dir: string) => Promise<T>): Promise<T> {
     const dir = await mkdtemp(join(tmpdir(), 'commando-board-thumb-'))

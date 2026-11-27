@@ -11,11 +11,11 @@ beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'board-link-preview
 afterEach(async () => { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) })
 const response = (body: string | Uint8Array, type = 'text/html', status = 200) => new Response(typeof body === 'string' ? body : new Uint8Array(body), { status, headers: { 'Content-Type': type } })
 function setup(options: Partial<ConstructorParameters<typeof BoardLinkPreviews>[0]> = {}) {
-  const store = new BoardStore(), thumbs = new BoardThumbCache({ root: join(root, 'thumbs'), origin: 'http://127.0.0.1:4491', platform: 'linux' })
+  const store = new BoardStore(), thumbs = new BoardThumbCache({ root: join(root, 'thumbs'), origin: 'http://127.0.0.1:4491', platform: 'linux', resolve: async () => [{ address: '93.184.216.34', family: 4 }] })
   const image = vi.spyOn(thumbs, 'image').mockResolvedValue('a'.repeat(64)), page = vi.spyOn(thumbs, 'page').mockResolvedValue(undefined)
   vi.spyOn(thumbs, 'has').mockResolvedValue(true)
   const fetch = vi.fn<NonNullable<ConstructorParameters<typeof BoardLinkPreviews>[0]['fetch']>>(async () => response('<title>Article</title>'))
-  const resolve = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }])
+  const resolve = vi.fn(async (host: string) => [{ address: host === 'localhost' ? '127.0.0.1' : '93.184.216.34', family: 4 }])
   const config = { store, thumbs, statePath: join(root, 'previews.json'), fetch, resolve, ...options }
   return { ...config, fetch, resolve, image, page, previews: new BoardLinkPreviews(config) }
 }
@@ -35,12 +35,144 @@ describe('Link preview metadata', () => {
 })
 
 describe('Board link previews', () => {
+  it('replaces a fallback shot with a downloaded OG image, then schedules fallback again when the image disappears', async () => {
+    let now = 0, hasOg = false
+    const s = setup({ now: () => now }), item = add(s.store)
+    const firstShot = { hash: 'b'.repeat(64), w: 960, h: 600 }, nextShot = { hash: 'c'.repeat(64), w: 960, h: 600 }
+    s.page.mockResolvedValue(firstShot)
+    s.fetch.mockImplementation(async (url) => url.endsWith('hero.png') || url.endsWith('favicon.ico')
+      ? response(new Uint8Array([1, 2, 3]), 'image/png')
+      : response(`<title>Article</title>${hasOg ? '<meta property="og:image" content="/hero.png">' : ''}`))
+    await s.previews.refresh(target, item)
+    expect(s.store.item(target, item.key).thumb).toEqual(firstShot)
+    expect(s.page).toHaveBeenCalledTimes(1)
+    hasOg = true; now += 7 * 86400_000 + 1
+    await s.previews.refresh(target, s.store.item(target, item.key))
+    expect(s.store.item(target, item.key).thumb).toBeUndefined()
+    expect(s.store.item(target, item.key).preview?.image).toBe('a'.repeat(64))
+    expect(s.page).toHaveBeenCalledTimes(1)
+    const withImage = JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    expect(withImage.thumb).toBeUndefined(); expect(withImage.capture).toBeUndefined()
+    hasOg = false; now += 7 * 86400_000 + 1; s.page.mockResolvedValue(nextShot)
+    await new BoardLinkPreviews(s).refresh(target, s.store.item(target, item.key))
+    expect(s.page).toHaveBeenCalledTimes(2)
+    expect(s.store.item(target, item.key).thumb).toEqual(nextShot)
+    expect(s.store.item(target, item.key).preview?.image).toBeUndefined()
+    const fallback = JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    expect(fallback).toMatchObject({ thumb: nextShot, capture: 'public' })
+  })
+  it('clears stale fallback state from cached OG entries and items even when the preview itself is unchanged', async () => {
+    const s = setup({ now: () => 1000 }), item = add(s.store)
+    const preview = { title: 'Cached OG', image: 'a'.repeat(64) }, thumb = { hash: 'b'.repeat(64), w: 960, h: 600 }
+    s.store.setPreview(target, item.key, { preview, thumb })
+    await writeFile(s.statePath, JSON.stringify([[item.ref.url, { expires: 86400_000, preview, thumb, capture: 'public', shotExpires: 86400_000, shotRetryAt: 86400_000, shotFailures: 2 }]]))
+    await s.previews.refresh(target, s.store.item(target, item.key))
+    expect(s.store.item(target, item.key).thumb).toBeUndefined()
+    expect(s.store.item(target, item.key).preview).toEqual(preview)
+    expect(s.fetch).not.toHaveBeenCalled(); expect(s.page).not.toHaveBeenCalled()
+    const saved = JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    for (const field of ['thumb', 'capture', 'shotExpires', 'shotRetryAt', 'shotFailures']) expect(saved[field]).toBeUndefined()
+  })
+  it('preserves another kind of item thumbnail if the link changes kind during metadata refresh', async () => {
+    const s = setup(), item = add(s.store), thumb = { hash: 'b'.repeat(64), w: 960, h: 600 }
+    s.fetch.mockImplementation(async (url) => {
+      if (url === item.ref.url) {
+        s.store.upsert(target, { ...item, kind: 'page', thumb })
+        return response('<meta property="og:image" content="/hero.png">')
+      }
+      return response(new Uint8Array([1, 2, 3]), 'image/png')
+    })
+    await s.previews.refresh(target, item)
+    expect(s.store.item(target, item.key)).toMatchObject({ kind: 'page', thumb })
+  })
+  it('persists a DNS negative cache, reapplies cached previews on other boards, and retries with backoff', async () => {
+    let now = 1000
+    const s = setup({ now: () => now }), item = add(s.store)
+    await s.previews.refresh(target, item)
+    const preview = s.store.item(target, item.key).preview
+    s.resolve.mockRejectedValue(new Error('DNS unavailable'))
+    const next = add(s.store, item.ref.url!, other)
+    await s.previews.refresh(other, next)
+    expect(s.store.item(other, next.key).preview).toEqual(preview)
+    const state = async () => JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    expect((await state()).dnsRetryAt).toBe(now + 15 * 60_000)
+    const calls = s.resolve.mock.calls.length
+    const reloaded = new BoardLinkPreviews(s)
+    now += 60_000; await reloaded.refresh(other, next)
+    expect(s.resolve).toHaveBeenCalledTimes(calls)
+    now = (await state()).dnsRetryAt; await reloaded.refresh(other, next)
+    expect(s.resolve).toHaveBeenCalledTimes(calls + 1)
+    expect((await state()).dnsRetryAt - now).toBe(30 * 60_000)
+    now = (await state()).dnsRetryAt
+    s.resolve.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+    await reloaded.refresh(other, next)
+    expect((await state()).dnsRetryAt).toBeUndefined()
+    expect((await state()).dnsFailures).toBeUndefined()
+    expect(s.store.item(other, next.key).preview).toEqual(preview)
+  })
+  it('negative-caches first-time DNS failure and preserves expired metadata when DNS is unavailable after restart', async () => {
+    let now = 1000
+    const s = setup({ now: () => now }), item = add(s.store)
+    s.resolve.mockRejectedValue(new Error('DNS unavailable'))
+    await s.previews.refresh(target, item)
+    const next = new BoardLinkPreviews(s)
+    await next.refresh(target, item)
+    expect(s.resolve).toHaveBeenCalledTimes(1); expect(s.fetch).not.toHaveBeenCalled()
+    now += 15 * 60_000
+    s.resolve.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+    await next.refresh(target, item)
+    expect(s.store.item(target, item.key).preview?.title).toBe('Article')
+    now += 7 * 86400_000 + 1
+    s.resolve.mockRejectedValue(new Error('DNS unavailable'))
+    const stale = add(s.store, item.ref.url!, other)
+    await new BoardLinkPreviews(s).refresh(other, stale)
+    expect(s.store.item(other, stale.key).preview?.title).toBe('Article')
+  })
+  it('retries failed shots with persisted exponential backoff and advances daily expiry only on success', async () => {
+    let now = 1000
+    const s = setup({ now: () => now }), item = add(s.store)
+    await s.previews.refresh(target, item)
+    let state = JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    expect(state.shotExpires).toBeUndefined(); expect(state.shotRetryAt).toBe(now + 300_000)
+    now += 60_000; await s.previews.refresh(target, item); expect(s.page).toHaveBeenCalledTimes(1)
+    const reloaded = new BoardLinkPreviews(s)
+    now = 301_000; await reloaded.refresh(target, item); expect(s.page).toHaveBeenCalledTimes(2)
+    state = JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    expect(state.shotExpires).toBeUndefined(); expect(state.shotRetryAt).toBe(now + 600_000)
+    for (let i = 0; i < 8; i++) {
+      now = state.shotRetryAt; await reloaded.refresh(target, item)
+      state = JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+      expect(state.shotRetryAt - now).toBeLessThanOrEqual(6 * 3600_000)
+    }
+    s.page.mockResolvedValue({ hash: 'b'.repeat(64), w: 960, h: 600 })
+    now = state.shotRetryAt; await reloaded.refresh(target, item)
+    state = JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    expect(state.shotExpires).toBe((Math.floor(now / 86400_000) + 1) * 86400_000)
+    expect(state.shotRetryAt).toBeUndefined(); expect(state.shotFailures).toBeUndefined()
+  })
+  it('shares private-alias classification and hourly page/link cache keys without an OG request', async () => {
+    let now = 0
+    const s = setup({ now: () => now }), url = 'http://dev.internal:5273/app'
+    s.resolve.mockResolvedValue([{ address: '10.0.0.8', family: 4 }])
+    await s.previews.refresh(target, add(s.store, url))
+    const destination = s.page.mock.calls[0][1]!
+    expect(destination).toMatchObject({ url, policy: 'private' }); expect(s.fetch).not.toHaveBeenCalled()
+    const run = vi.fn(async (_cmd: string, args: string[]) => { await writeFile(args.at(-1)!, Buffer.from('png')) })
+    const capturePage = vi.fn(async () => Buffer.from('png'))
+    const cache = new BoardThumbCache({ root: join(root, 'alias-cache'), origin: 'http://127.0.0.1:4491', platform: 'darwin', resolve: s.resolve, run, capturePage, now: () => now })
+    const link = await cache.page(url, destination)
+    const page = await cache.source({ ...add(s.store, url), kind: 'page' })
+    expect(page?.hash).toBe(link?.hash); expect(page?.destination?.policy).toBe('private')
+    await cache.page(url, destination); expect(capturePage).toHaveBeenCalledTimes(1)
+    now = 3600_000; expect((await cache.page(url, destination))?.hash).not.toBe(link?.hash)
+    expect(capturePage).toHaveBeenCalledTimes(2)
+  })
   it('fetches every link privately, downloads image/favicon into local hashes, preserves user metadata and persists shared URL cache', async () => {
     const s = setup()
     s.fetch.mockImplementation(async (url) => url.endsWith('hero.jpg') || url.endsWith('favicon.ico') ? response(new Uint8Array([1, 2, 3]), 'image/png') : response('<title>Remote</title><meta property="og:image" content="/hero.jpg"><meta property="og:site_name" content="Site">'))
     const item = add(s.store); await s.previews.refresh(target, item)
     expect(s.store.item(target, item.key)).toMatchObject({ title: 'User title', source: 'user', preview: { title: 'Remote', siteName: 'Site', image: 'a'.repeat(64), favicon: 'a'.repeat(64) } })
-    expect(s.fetch).toHaveBeenCalledTimes(3)
+    expect(s.fetch).toHaveBeenCalledTimes(3); expect(s.page).not.toHaveBeenCalled()
     expect(s.fetch.mock.calls[0][1]).toMatchObject({ redirect: 'manual', credentials: 'omit', headers: { Accept: 'text/html', 'User-Agent': 'Commando link preview' } })
     expect(s.fetch.mock.calls[0][2]).toEqual({ address: '93.184.216.34', family: 4 })
     expect(Object.keys(s.fetch.mock.calls[0][1].headers!)).toEqual(['Accept', 'User-Agent'])
@@ -92,7 +224,7 @@ describe('Board link previews', () => {
   it('never fetches direct private URLs, checks every DNS answer, and pins only checked public addresses', async () => {
     const s = setup()
     await s.previews.refresh(target, add(s.store, 'http://127.0.0.1/private'))
-    expect(s.fetch).not.toHaveBeenCalled(); expect(s.resolve).not.toHaveBeenCalled(); expect(s.page).toHaveBeenCalledWith('http://127.0.0.1/private')
+    expect(s.fetch).not.toHaveBeenCalled(); expect(s.resolve).not.toHaveBeenCalled(); expect(s.page).toHaveBeenCalledWith('http://127.0.0.1/private', expect.objectContaining({ policy: 'private' }))
     s.resolve.mockResolvedValue([{ address: '93.184.216.34', family: 4 }, { address: '10.0.0.1', family: 4 }])
     await s.previews.refresh(target, add(s.store, 'https://rebind.example/a'))
     expect(s.fetch).not.toHaveBeenCalled(); expect(s.page).toHaveBeenCalledTimes(1)
@@ -137,6 +269,46 @@ describe('Board link previews', () => {
     const pending = s.previews.refresh(target, add(s.store)); await vi.waitFor(() => expect(s.resolve).toHaveBeenCalled())
     controller.abort(); await pending; expect(timeout).toHaveBeenCalledWith(5000); expect(s.fetch).not.toHaveBeenCalled()
     timeout.mockRestore()
+  })
+  it('captures links without OG images daily while retaining metadata, including persisted cache and evicted shots', async () => {
+    let now = 0
+    const s = setup({ now: () => now }), item = add(s.store)
+    const thumb = { hash: 'b'.repeat(64), w: 960, h: 600 }
+    s.page.mockResolvedValue(thumb)
+    await s.previews.refresh(target, item)
+    expect(s.store.item(target, item.key)).toMatchObject({ thumb, preview: { title: 'Article' } })
+    expect(s.page).toHaveBeenCalledTimes(1)
+    const persisted = new BoardLinkPreviews(s)
+    now = 86399_999; await persisted.refresh(target, item)
+    expect(s.page).toHaveBeenCalledTimes(1)
+    now++; await persisted.refresh(target, item)
+    expect(s.page).toHaveBeenCalledTimes(2); expect(s.fetch).toHaveBeenCalledTimes(2)
+    vi.spyOn(s.thumbs, 'has').mockImplementation(async (hash) => hash !== thumb.hash)
+    await persisted.refresh(target, item)
+    expect(s.page).toHaveBeenCalledTimes(3)
+  })
+  it('upgrades persisted v1 no-image previews without waiting for their seven-day metadata expiry', async () => {
+    const s = setup({ now: () => 1000 }), item = add(s.store)
+    await writeFile(s.statePath, JSON.stringify([[item.ref.url, { expires: 7 * 86400_000, preview: { title: 'Cached v1 title' } }]]))
+    s.page.mockResolvedValue({ hash: 'b'.repeat(64), w: 960, h: 600 })
+    await s.previews.refresh(target, item)
+    expect(s.fetch).not.toHaveBeenCalled()
+    expect(s.page).toHaveBeenCalledWith(item.ref.url, expect.objectContaining({ policy: 'public' }))
+    expect(s.store.item(target, item.key).preview?.title).toBe('Cached v1 title')
+  })
+  it('refreshes direct private shots hourly and does not capture private redirect destinations or auth routes', async () => {
+    let now = 0
+    const s = setup({ now: () => now }), item = add(s.store, 'http://localhost:5273/app')
+    s.page.mockResolvedValue({ hash: 'b'.repeat(64), w: 960, h: 600 })
+    await s.previews.refresh(target, item)
+    now = 3599_999; await s.previews.refresh(target, item); expect(s.page).toHaveBeenCalledTimes(1)
+    now++; await s.previews.refresh(target, item); expect(s.page).toHaveBeenCalledTimes(2)
+    expect(s.fetch).not.toHaveBeenCalled()
+    s.fetch.mockResolvedValue(new Response(null, { status: 302, headers: { location: 'http://10.0.0.1/auth' } }))
+    await s.previews.refresh(target, add(s.store))
+    await s.previews.refresh(target, add(s.store, 'http://127.0.0.1:4491/api/auth/bootstrap'))
+    expect(s.page).toHaveBeenCalledTimes(2)
+    expect(s.fetch).toHaveBeenCalledTimes(1)
   })
   it('uses the same queue as thumbnails and tolerates deletion while fetching', async () => {
     const s = setup(), queue = new BoardPreviewQueue(), worker = new BoardThumbWorker(s.store, s.thumbs, queue, s.previews), item = add(s.store)

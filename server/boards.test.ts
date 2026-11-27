@@ -22,6 +22,33 @@ function item(id = 'a', source: BoardItem['source'] = 'auto') { return { key: `u
 afterEach(() => { for (const s of stores.splice(0)) s.flush(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
 describe('BoardStore', () => {
+  it('stamps failed folder scans and logs each bad file only once per stamp, including explicit retries', () => {
+    const dir = temp(); writeFileSync(join(dir, 'good.png'), 'image'); writeFileSync(join(dir, 'bad.png'), 'bad')
+    const onError = vi.fn(), s = store({ onError })
+    const capture = s.capture.bind(s)
+    const spy = vi.spyOn(s, 'capture').mockImplementation((...args) => {
+      if (args[1].ref.path?.endsWith('bad.png')) throw new Error('Permanently bad file')
+      return capture(...args)
+    })
+    expect(s.captureFolder(target, dir, 1000)).toEqual({ captured: 1, errors: ['Permanently bad file'] })
+    expect(onError).toHaveBeenCalledTimes(1)
+    s.captureFolder(target, dir, 1000); s.captureFolder(target, dir, 1000)
+    expect(spy).toHaveBeenCalledTimes(2); expect(onError).toHaveBeenCalledTimes(1)
+    s.ensureGroup(target, 'evidence', 'agent')
+    expect(s.captureFolder(target, dir, 1000, session, 'evidence').errors).toEqual(['Permanently bad file'])
+    expect(onError).toHaveBeenCalledTimes(1)
+    s.captureFolder(target, dir, 2000)
+    expect(onError).toHaveBeenCalledTimes(2)
+    spy.mockRestore()
+  })
+  it('stamps a missing folder too so a bad brief cannot repeatedly rescan and log it', () => {
+    const onError = vi.fn(), s = store({ onError }), dir = join(temp(), 'missing')
+    expect(s.captureFolder(target, dir, 1000).errors).toHaveLength(1)
+    expect(s.captureFolder(target, dir, 1000)).toEqual({ captured: 0, errors: [] })
+    expect(onError).toHaveBeenCalledTimes(1)
+    s.captureFolder(target, dir, 2000)
+    expect(onError).toHaveBeenCalledTimes(2)
+  })
   it('merges references by canonical key, preserves added time/manual fields and notifies revisions', () => {
     let now = 1000
     const changed = vi.fn(), s = store({ now: () => now, onChange: changed })

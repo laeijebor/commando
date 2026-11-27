@@ -821,7 +821,7 @@ const tokenPath = ${JSON.stringify(tokenPath)}
 const args = process.argv.slice(2)
 
 function usage() {
-  console.error('Usage: commando-session-update [--title text] [--headline text] [--update kind text] [--state complete] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--session COMMAND|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--ask QUESTION --key KEY [--context text] [--why text] [--option text]... [--recommend N] [--link URL]] [--resolve-ask KEY] [--stdin]')
+  console.error('Usage: commando-session-update [--title text] [--headline text] [--update kind text] [--state complete] [--screenshots dir [--board-group id]] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--session COMMAND|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--ask QUESTION --key KEY [--context text] [--why text] [--option text]... [--recommend N] [--link URL]] [--resolve-ask KEY] [--stdin]')
 }
 
 async function stdinJson() {
@@ -846,6 +846,7 @@ function valueAfter(index, flag) {
 async function bodyFromArgs() {
   if (args.includes('--stdin')) return stdinJson()
   const body = {}
+  let boardGroup
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index]
     if (flag === '--title') body.title = valueAfter(index++, flag)
@@ -854,6 +855,7 @@ async function bodyFromArgs() {
     else if (flag === '--next') body.next = valueAfter(index++, flag)
     else if (flag === '--clear-next') body.next = null
     else if (flag === '--state') body.state = valueAfter(index++, flag)
+    else if (flag === '--board-group') boardGroup = valueAfter(index++, flag)
     else if (flag === '--screenshots') body.screenshots = { dir: resolve(valueAfter(index++, flag)) }
     else if (['--feature-flag', '--url', '--issue', '--deployment', '--build', '--release', '--session',
       '--remove-feature-flag', '--remove-url', '--remove-issue', '--remove-deployment', '--remove-build', '--remove-release', '--remove-session'].includes(flag)) {
@@ -895,6 +897,11 @@ async function bodyFromArgs() {
       throw new Error('Unknown argument: ' + flag)
     }
   }
+  if (boardGroup !== undefined) {
+    if (!body.screenshots) throw new Error('--board-group requires --screenshots')
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(boardGroup) || ['__proto__', 'constructor', 'prototype'].includes(boardGroup)) throw new Error('Invalid --board-group')
+    body.screenshots.boardGroup = boardGroup
+  }
   return body
 }
 
@@ -922,6 +929,17 @@ try {
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(result.error ?? ('Commando returned ' + response.status))
+    if (body.screenshots?.boardGroup) {
+      const grouped = await fetch('http://127.0.0.1:' + port + '/api/boards/by-pane/' + encodeURIComponent(paneId) + '/folders', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'X-Commando-Pane': paneId },
+        body: JSON.stringify({ dir: body.screenshots.dir, group: body.screenshots.boardGroup }),
+        signal: AbortSignal.timeout(3_000),
+      })
+      const capture = await grouped.json()
+      if (!grouped.ok || (capture.captured === 0 && capture.errors?.length)) throw new Error('Screenshots published; Board grouping failed: ' + (capture.error ?? capture.errors?.join('; ') ?? grouped.status))
+      console.log(JSON.stringify({ captured: capture.captured, errors: capture.errors }))
+    }
     console.log(JSON.stringify(result.brief))
   }
 } catch (error) {

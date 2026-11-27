@@ -2768,6 +2768,79 @@ describe('generated chat CLI', () => {
 
 
 describe('generated session title CLI', () => {
+  it('fails a zero-capture grouping error and reports counts on partial success', async () => {
+    const home = await temporaryHome(), tokenPath = join(home, 'token')
+    await writeFile(tokenPath, 'fake-token')
+    vi.stubEnv('TMUX_PANE', '%42'); vi.stubEnv('COMMANDO_PORT', '4410')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const previous = process.exitCode
+    try {
+      for (const captured of [0, 1]) {
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/folders') ? { captured, errors: ['One image failed'] } : { brief: {} } })))
+        const source = generatedSessionBriefCli(tokenPath).replace('const args = process.argv.slice(2)', `const args = ["--screenshots", "/tmp/shots-${captured}", "--board-group", "evidence"]`)
+        process.exitCode = 0
+        await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+        expect(process.exitCode).toBe(captured ? 0 : 1)
+      }
+      expect(error).toHaveBeenCalledWith('Screenshots published; Board grouping failed: One image failed')
+      expect(log).toHaveBeenCalledWith(JSON.stringify({ captured: 1, errors: ['One image failed'] }))
+    } finally { process.exitCode = previous; error.mockRestore(); log.mockRestore() }
+  })
+  it.each([
+    ['--screenshots', '/tmp/board-shots', '--board-group', 'evidence'],
+    ['--board-group', 'review', '--screenshots', '/tmp/board-shots'],
+  ])('publishes and groups screenshot evidence in flag order %j using fake transport', async (...args) => {
+    const home = await temporaryHome(), tokenPath = join(home, 'token')
+    await writeFile(tokenPath, 'fake-token')
+    vi.stubEnv('TMUX_PANE', '%42'); vi.stubEnv('COMMANDO_PORT', '4410')
+    const request = vi.fn(async () => ({ ok: true, json: async () => ({ brief: {} }) }))
+    vi.stubGlobal('fetch', request)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const source = generatedSessionBriefCli(tokenPath).replace('const args = process.argv.slice(2)', `const args = ${JSON.stringify(args)}`)
+      await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+      const group = args[args.indexOf('--board-group') + 1]
+      expect(request).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4410/api/session-brief', expect.objectContaining({
+        body: JSON.stringify({ screenshots: { dir: '/tmp/board-shots', boardGroup: group } }),
+      }))
+      expect(request).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:4410/api/boards/by-pane/%2542/folders', expect.objectContaining({
+        headers: expect.objectContaining({ 'X-Commando-Pane': '%42' }),
+        body: JSON.stringify({ dir: '/tmp/board-shots', group }),
+      }))
+    } finally { log.mockRestore() }
+  })
+  it('rejects a standalone or invalid board group before transport', async () => {
+    const home = await temporaryHome(), tokenPath = join(home, 'token')
+    vi.stubEnv('TMUX_PANE', '%42'); vi.stubEnv('COMMANDO_PORT', '4410')
+    const request = vi.fn(); vi.stubGlobal('fetch', request)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const previous = process.exitCode
+    try {
+      for (const args of [['--board-group', 'evidence'], ['--screenshots', '/tmp/board-shots', '--board-group', '../bad']]) {
+        const source = generatedSessionBriefCli(tokenPath).replace('const args = process.argv.slice(2)', `const args = ${JSON.stringify(args)}`)
+        await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+      }
+      expect(request).not.toHaveBeenCalled()
+      expect(error).toHaveBeenCalledWith('--board-group requires --screenshots')
+      expect(error).toHaveBeenCalledWith('Invalid --board-group')
+    } finally { process.exitCode = previous; error.mockRestore() }
+  })
+  it.each(['publish', 'group'])('reports a %s failure without claiming the evidence was grouped', async (stage) => {
+    const home = await temporaryHome(), tokenPath = join(home, 'token')
+    await writeFile(tokenPath, 'fake-token')
+    vi.stubEnv('TMUX_PANE', '%42'); vi.stubEnv('COMMANDO_PORT', '4410')
+    const request = vi.fn(async (url: string) => ({ ok: stage === 'group' && url.endsWith('/api/session-brief'), json: async () => ({ error: 'Unavailable' }) }))
+    vi.stubGlobal('fetch', request)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const previous = process.exitCode
+    try {
+      const source = generatedSessionBriefCli(tokenPath).replace('const args = process.argv.slice(2)', 'const args = ["--screenshots", "/tmp/board-shots", "--board-group", "evidence"]')
+      await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+      expect(request).toHaveBeenCalledTimes(stage === 'publish' ? 1 : 2)
+      expect(error).toHaveBeenCalledWith(stage === 'publish' ? 'Unavailable' : 'Screenshots published; Board grouping failed: Unavailable')
+    } finally { process.exitCode = previous; error.mockRestore() }
+  })
   it('sends --title in the patch using a fake transport', async () => {
     const home = await temporaryHome()
     const tokenPath = join(home, 'token')

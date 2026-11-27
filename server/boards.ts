@@ -120,6 +120,7 @@ export class BoardStore {
   private readonly boards = new Map<string, Board>()
   private readonly observed = new Map<string, Record<string, string>>()
   private readonly folderScans = new Map<string, number>()
+  private readonly folderErrors = new Map<string, Set<string>>()
   private readonly dirty = new Set<string>()
   private timer: ReturnType<typeof setTimeout> | undefined
   private readonly now: () => number
@@ -299,6 +300,12 @@ export class BoardStore {
     b.placements[key] = result.placement
     b.groups[b.groups.findIndex((g) => g.id === group)] = result.group
   }
+  /** CLI grouping creates a named group once and preserves existing layout. */
+  ensureGroup(targetId: string, id: string, by: BoardItemSource, near?: string): void {
+    if (this.get(targetId).groups.some((g) => g.id === id)) return
+    const anchor = near ?? (id === 'evidence' && this.get(targetId).groups.some((g) => g.id === 'spec') ? 'spec' : undefined)
+    this.group(targetId, id, { title: id, ...(anchor ? { near: anchor } : {}) }, by, true)
+  }
   place(targetId: string, key: string, p: Partial<BoardPlacement>, by: BoardItemSource): void {
     const b = this.get(targetId)
     if (!b.items.some((i) => i.key === key)) throw new BoardError(404, 'Board item does not exist')
@@ -430,24 +437,41 @@ export class BoardStore {
     }
     for (const folder of brief.screenshots ?? []) this.captureFolder(brief.targetId, folder.dir, folder.updatedAt, brief.agentSession)
   }
-  captureFolder(targetId: string, dir: string, stamp: number, agentSession?: AgentSessionRef): void {
+  captureFolder(targetId: string, dir: string, stamp: number, agentSession?: AgentSessionRef, group?: string): { captured: number; errors: string[] } {
+    const result = { captured: 0, errors: [] as string[] }
     const scanKey = `${targetId}:${dir}`
-    if (this.folderScans.get(scanKey) === stamp) return
+    if (!group && this.folderScans.get(scanKey) === stamp) return result
+    // Automatic briefs do not repeatedly rescan permanently bad files. Explicit
+    // grouped requests may retry the scan, but each file is logged once per stamp.
+    if (this.folderScans.get(scanKey) !== stamp) this.folderErrors.delete(scanKey)
     this.folderScans.set(scanKey, stamp)
+    const report = (error: unknown, file = dir) => {
+      result.errors.push(error instanceof Error ? error.message : String(error))
+      const logged = this.folderErrors.get(scanKey) ?? new Set<string>()
+      if (!logged.has(file)) { logged.add(file); this.folderErrors.set(scanKey, logged); this.options.onError?.(error) }
+    }
     try {
       const root = realpathSync(dir), entries = opendirSync(root)
-      let visited = 0, captured = 0
+      let visited = 0, eligible = 0
       try {
         let entry
-        while (visited++ < 500 && captured < 24 && (entry = entries.readSync())) {
+        while (visited++ < 500 && eligible < 24 && (entry = entries.readSync())) {
           if (!entry.isFile() || entry.name.startsWith('.')) continue
-          const path = realpathSync(join(root, entry.name)), kind = inferBoardFileKind(path)
-          if (!path.startsWith(root + sep) || (kind !== 'screenshot' && kind !== 'video') || statSync(path).size > 50 * 1024 * 1024) continue
-          this.capture(targetId, { key: boardItemKeyForFile(path), kind, title: entry.name, ref: { path }, origin: { at: this.now(), agentSession } }, JSON.stringify([stamp, statSync(path).mtimeMs, agentSession]))
-          captured++
+          try {
+            const path = realpathSync(join(root, entry.name)), kind = inferBoardFileKind(path)
+            if (!path.startsWith(root + sep) || (kind !== 'screenshot' && kind !== 'video') || statSync(path).size > 50 * 1024 * 1024) continue
+            eligible++
+            const key = boardItemKeyForFile(path)
+            this.capture(targetId, { key, kind, title: entry.name, ref: { path }, origin: { at: this.now(), agentSession } }, JSON.stringify([stamp, statSync(path).mtimeMs, agentSession]))
+            const board = this.get(targetId), placement = board.placements[key]
+            if (!board.items.some((i) => i.key === key)) continue // Previously removed and unchanged.
+            if (group && !placement?.fixed && placement?.group !== group) this.place(targetId, key, { group }, 'agent')
+            result.captured++
+          } catch (error) { report(error, entry.name) }
         }
       } finally { entries.closeSync() }
-    } catch (error) { this.options.onError?.(error) }
+    } catch (error) { report(error) }
+    return result
   }
   capturePr(targetId: string, pr: { repo: string; number: number; title?: string; url?: string; updatedAt?: string; state?: string }, agentSession?: AgentSessionRef): void {
     if (!isPanePrRef(pr)) return

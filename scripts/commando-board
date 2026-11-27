@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
 const usage = `usage: commando-board list [--json]
-       commando-board add <path|url> [--title T] [--caption C] [--group G] [--pin]
+       commando-board add <path|url> [--title T] [--caption C] [--group G] [--near G] [--pin]
        commando-board clip "text" [--tone decision|gotcha|note] [--group G]
        commando-board group <id> --title T [--tone green] [--near G]
        commando-board link <from> <to> [--label L]
@@ -16,7 +16,7 @@ if (args[0] === '--help' || args[0] === '-h') { console.log(usage); process.exit
 const command = args.shift()
 const config = {
   list: { count: 0, flags: ['json'] },
-  add: { count: 1, flags: ['title', 'caption', 'group', 'pin'] },
+  add: { count: 1, flags: ['title', 'caption', 'group', 'near', 'pin'] },
   clip: { count: 1, flags: ['tone', 'group'] },
   group: { count: 1, flags: ['title', 'tone', 'near'] },
   link: { count: 2, flags: ['label'] },
@@ -39,6 +39,7 @@ while (args.length) {
   } else positional.push(arg)
 }
 if (positional.length !== config.count) fail(usage)
+if (flags.near && command === 'add' && !flags.group) fail('--near requires --group')
 if (command === 'group' && !flags.title) fail('--title is required')
 if (command === 'place' && !flags.group) fail('--group is required')
 if (command === 'clip' && flags.tone && !['decision', 'gotcha', 'note'].includes(flags.tone)) fail('invalid clip tone')
@@ -57,7 +58,7 @@ switch (command) {
   case 'add': {
     const value = positional[0]
     const pr = /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?(?:[?#][^\s]*)?$/i.test(value)
-    payload = { kind: pr ? 'pr' : undefined, ...(/^https?:\/\//i.test(value) ? { url: value } : { path: resolve(value) }), title: flags.title, caption: flags.caption, group: flags.group, pinned: flags.pin || undefined }
+    payload = { kind: pr ? 'pr' : undefined, ...(/^https?:\/\//i.test(value) ? { url: value } : { path: resolve(value) }), title: flags.title, caption: flags.caption, group: flags.group, near: flags.near, pinned: flags.pin || undefined }
     path = '/items'; break
   }
   case 'clip': payload = { text: positional[0], tone: flags.tone, group: flags.group }; path = '/items'; break
@@ -69,7 +70,7 @@ switch (command) {
 try {
   const response = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`, 'X-Commando-Pane': pane, ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined, signal: AbortSignal.timeout(15000) })
   const result = await response.json()
-  if (!response.ok) fail(`daemon responded ${response.status}: ${result.error ?? 'request failed'}`, 1)
+  if (!response.ok || (result.captured === 0 && result.errors?.length)) fail(`daemon responded ${response.status}: ${result.error ?? result.errors?.join('; ') ?? 'request failed'}`, 1)
   if (command === 'list' && !flags.json) {
     for (const item of result.items) console.log(`${item.key}\t${item.kind}\t${item.state}\t${item.title}`)
   } else console.log(JSON.stringify(result, null, 2))

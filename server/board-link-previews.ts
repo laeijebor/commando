@@ -1,5 +1,3 @@
-import { lookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { Readable } from 'node:stream'
@@ -10,6 +8,9 @@ import { randomUUID } from 'node:crypto'
 import { normalizeBoardUrl, type BoardItem } from '../shared/board.js'
 import type { BoardStore } from './boards.js'
 import type { BoardThumbCache } from './board-thumbs.js'
+import { previewRetry } from './board-preview-backoff.js'
+import { assertPinnedPeer, guardPinnedSocket } from './board-pinned-socket.js'
+import { resolveCaptureDestination, type CaptureDestination, type CaptureResolver } from './board-capture-policy.js'
 
 export const defaultBoardLinkPreviewsPath = (port: number) => join(homedir(), '.commando', `board-link-previews-${port}.json`)
 const DAY = 86400_000, HTML_LIMIT = 512 * 1024, IMAGE_LIMIT = 5 * 1024 * 1024
@@ -55,29 +56,21 @@ export function parseLinkPreview(html: string, url: string): { title?: string; d
   return { ...(title ? { title } : {}), ...(description ? { description } : {}), ...(siteName ? { siteName } : {}), image: httpUrl(meta['og:image'], url), favicon }
 }
 
-/** Deny private, link-local, unspecified, mapped, multicast and other non-global addresses. */
-export function isPrivatePreviewHost(host: string): boolean {
-  host = host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host === 'local') return true
-  if (isIP(host) === 4) {
-    const [a, b] = host.split('.').map(Number)
-    return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || b === 0)) || (a === 198 && (b === 18 || b === 19))
-  }
-  if (isIP(host) === 6) return !/^[23]/.test(host) || /^2001:db8:/i.test(host)
-  return false
-}
-type Address = { address: string; family: number }
+export { isPrivatePreviewHost } from './board-capture-policy.js'
+type Address = CaptureDestination['addresses'][number]
 type PreviewFetch = (url: string, init: RequestInit, address: Address) => Promise<Response>
 // Pin the checked DNS answer in the socket lookup. Native fetch would resolve again after validation.
 const pinnedFetch: PreviewFetch = (url, init, address) => new Promise((resolve, reject) => {
   const parsed = new URL(url)
   const req = (parsed.protocol === 'https:' ? httpsRequest : httpRequest)(parsed, {
-    method: 'GET', headers: init.headers as Record<string, string>, signal: init.signal ?? undefined,
+    method: 'GET', headers: init.headers as Record<string, string>, signal: init.signal ?? undefined, agent: false,
     lookup: (_host, options, callback) => {
       if (typeof options === 'object' && options.all) callback(null, [address])
       else callback(null, address.address, address.family)
     },
   }, (res) => {
+    try { assertPinnedPeer(res.socket, address) }
+    catch (error) { res.destroy(); reject(error); return }
     const headers = new Headers()
     for (const [key, value] of Object.entries(res.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value)
     try {
@@ -87,13 +80,15 @@ const pinnedFetch: PreviewFetch = (url, init, address) => new Promise((resolve, 
       resolve(new Response(body, { status, headers }))
     } catch (error) { res.destroy(); reject(error) }
   })
-  req.on('error', reject); req.end()
+  req.on('error', reject); guardPinnedSocket(req, address); req.end()
 })
-class PrivateUrl extends Error {}
-type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb'] }
+class PrivateUrl extends Error { constructor(readonly url: string) { super('Private preview URL') } }
+// A link's thumb is exclusively a fallback screenshot; downloaded OG images
+// belong in preview.image, so preferring OG may safely clear the thumb.
+type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb']; capture?: 'public' | 'private'; shotExpires?: number; shotRetryAt?: number; shotFailures?: number; dnsRetryAt?: number; dnsFailures?: number }
 type Options = {
   store: BoardStore; thumbs: BoardThumbCache; statePath: string
-  fetch?: PreviewFetch; resolve?: (host: string) => Promise<Address[]>; now?: () => number
+  fetch?: PreviewFetch; resolve?: CaptureResolver; now?: () => number
 }
 export class BoardLinkPreviews {
   private readonly entries = new Map<string, Entry>()
@@ -111,15 +106,17 @@ export class BoardLinkPreviews {
       for (const row of data.slice(-2000)) {
         if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== 'string') continue
         const [url, entry] = row as [string, Entry]
-        if (normalizeBoardUrl(url) !== url || !entry || !Number.isFinite(entry.expires) || entry.expires <= this.now()) continue
+        if (normalizeBoardUrl(url) !== url || !entry || !Number.isFinite(entry.expires) || (entry.expires + 7 * DAY <= this.now() && !(entry.dnsRetryAt && entry.dnsRetryAt > this.now()))) continue
         if (entry.preview && (typeof entry.preview !== 'object' || Object.entries(entry.preview).some(([k, v]) => !['title', 'description', 'siteName', 'image', 'favicon'].includes(k) || typeof v !== 'string' || v.length > 2000 || (['image', 'favicon'].includes(k) && !/^[0-9a-f]{64}$/.test(v))))) continue
         if (entry.thumb && (!/^[0-9a-f]{64}$/.test(entry.thumb.hash) || ![entry.thumb.w, entry.thumb.h].every((n) => Number.isFinite(n) && n > 0 && n <= 16384))) continue
+        if (entry.capture !== undefined && !['public', 'private'].includes(entry.capture)) continue
+        if ([entry.shotExpires, entry.shotRetryAt, entry.shotFailures, entry.dnsRetryAt, entry.dnsFailures].some((n) => n !== undefined && (!Number.isFinite(n) || n < 0))) continue
         this.entries.set(url, entry)
       }
     } catch { /* No preview cache, or corrupt state: start empty. */ }
   }
   private async save(): Promise<void> {
-    for (const [url, entry] of this.entries) if (entry.expires <= this.now()) this.entries.delete(url)
+    for (const [url, entry] of this.entries) if (entry.expires + 7 * DAY <= this.now() && !(entry.dnsRetryAt && entry.dnsRetryAt > this.now())) this.entries.delete(url)
     while (this.entries.size > 2000) this.entries.delete(this.entries.keys().next().value!)
     const tmp = `${this.options.statePath}.${randomUUID()}.tmp`
     try {
@@ -128,14 +125,12 @@ export class BoardLinkPreviews {
       await rename(tmp, this.options.statePath)
     } finally { await rm(tmp, { force: true }) }
   }
-  private async address(url: URL): Promise<Address> {
-    const host = url.hostname.replace(/^\[|\]$/g, '')
-    if (isPrivatePreviewHost(host)) throw new PrivateUrl()
-    const answers = isIP(host) ? [{ address: host, family: isIP(host) }] : await (this.options.resolve ?? ((host) => lookup(host, { all: true })))(host)
-    if (!answers.length || answers.some((a) => !isIP(a.address) || isPrivatePreviewHost(a.address))) throw new PrivateUrl()
-    return answers[0]
+  private async address(url: URL, initial?: CaptureDestination): Promise<Address> {
+    const destination = initial?.url === url.href ? initial : await resolveCaptureDestination(url.href, this.options.resolve)
+    if (destination.policy === 'private') throw new PrivateUrl(url.href)
+    return destination.addresses[0]
   }
-  private async download(url: string, limit: number, image: boolean): Promise<{ bytes: Buffer; url: string }> {
+  private async download(url: string, limit: number, image: boolean, initial?: CaptureDestination): Promise<{ bytes: Buffer; url: string }> {
     const signal = AbortSignal.timeout(5000)
     // Race DNS too: DNS resolution itself is not cancellable by node's lookup API.
     const abort = new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(new Error('Link preview timed out')), { once: true }))
@@ -144,7 +139,7 @@ export class BoardLinkPreviews {
         if (signal.aborted) throw new Error('Link preview timed out')
         const parsed = new URL(url)
         if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('Invalid preview URL')
-        const address = await this.address(parsed)
+        const address = await this.address(parsed, initial)
         if (signal.aborted) throw new Error('Link preview timed out')
         const response = await (this.options.fetch ?? pinnedFetch)(url, {
           signal, redirect: 'manual', credentials: 'omit', headers: { Accept: image ? 'image/*' : 'text/html', 'User-Agent': 'Commando link preview' },
@@ -180,16 +175,38 @@ export class BoardLinkPreviews {
     if (item.kind !== 'link' || !item.ref.url) return
     let url: string
     try { url = normalizeBoardUrl(item.ref.url) } catch { return }
+    if (!this.options.thumbs.canCapture(url)) return
     await this.load()
     let entry = this.entries.get(url)
+    if (entry && this.clearFallbackForImage(entry)) await this.save().catch(() => {})
+    if (entry?.dnsRetryAt && entry.dnsRetryAt > this.now()) { this.applyEntry(targetId, item, entry); return }
+    let destination: CaptureDestination
+    try { destination = await this.options.thumbs.destination(url, this.options.resolve) } catch {
+      entry ??= { expires: this.now() }
+      const retry = previewRetry(entry.dnsFailures ?? 0, this.now(), 15 * 60_000)
+      entry.dnsFailures = retry.failures; entry.dnsRetryAt = retry.retryAt
+      this.entries.set(url, entry)
+      await this.save().catch(() => {})
+      this.applyEntry(targetId, item, entry)
+      return
+    }
+    if (entry?.dnsRetryAt !== undefined || entry?.dnsFailures !== undefined) {
+      delete entry.dnsRetryAt; delete entry.dnsFailures
+      await this.save().catch(() => {})
+    }
+    // Classification is fresh and explicit; a failed public fetch never upgrades
+    // a previously public job to private-network authority.
+    if (entry && !entry.preview?.image && (entry.capture || entry.preview || destination.policy === 'private')) entry.capture = destination.policy
+    const previousShot = entry
     if (entry && entry.expires > this.now()) {
-      const hashes = new Set([entry.preview?.image, entry.preview?.favicon].filter((hash): hash is string => !!hash))
+      const hashes = new Set([entry.preview?.image, entry.preview?.favicon, ...(entry.shotRetryAt && entry.shotRetryAt > this.now() ? [] : [entry.thumb?.hash])].filter((hash): hash is string => !!hash))
       // Metadata outlives the LRU thumbnail cache; refetch when either asset was evicted.
-      if ((await Promise.all([...hashes].map((hash) => this.options.thumbs.has(hash)))).some((exists) => !exists)) entry = undefined
+      if ((await Promise.all([...hashes].map((hash) => this.options.thumbs.has(hash)))).some((exists) => !exists)) { entry.shotExpires = undefined; entry = undefined }
     }
     if (!entry || entry.expires <= this.now()) {
       try {
-        const page = await this.download(url, HTML_LIMIT, false), parsed = parseLinkPreview(page.bytes.toString('utf8'), page.url)
+        if (destination.policy === 'private') throw new PrivateUrl(url)
+        const page = await this.download(url, HTML_LIMIT, false, destination), parsed = parseLinkPreview(page.bytes.toString('utf8'), page.url)
         const { image, favicon, ...metadata } = parsed
         const preview: NonNullable<BoardItem['preview']> = metadata
         // Sequential downloads remain within the same single background job.
@@ -197,22 +214,54 @@ export class BoardLinkPreviews {
           if (!asset) continue
           try { const data = await this.download(asset, IMAGE_LIMIT, true); const hash = await this.options.thumbs.image(data.bytes); if (hash) preview[key] = hash } catch { /* Metadata is useful even when an image fails. */ }
         }
-        entry = { expires: this.now() + 7 * DAY, preview }
+        entry = { expires: this.now() + 7 * DAY, preview, ...(!preview.image ? { capture: 'public' as const } : {}) }
       } catch (error) {
         entry = { expires: this.now() + 3600_000 }
-        if (error instanceof PrivateUrl && isPrivatePreviewHost(new URL(url).hostname)) {
-          // Only the managed engine may view private pages; it never receives user cookies.
-          const thumb = await this.options.thumbs.page(url)
-          if (thumb) entry.thumb = thumb
-        }
+        // A public URL redirecting into a private network is not a dev-server link.
+        if (error instanceof PrivateUrl && error.url === url && destination.policy === 'private') entry.capture = 'private'
+      }
+      if (entry.capture && previousShot) {
+        entry.thumb = previousShot.thumb
+        entry.shotExpires = previousShot.shotExpires
+        entry.shotRetryAt = previousShot.shotRetryAt
+        entry.shotFailures = previousShot.shotFailures
       }
       this.entries.set(url, entry)
       await this.save().catch(() => {}) // State failures must not lose a successful preview.
     }
-    if (entry.preview || entry.thumb) this.apply(targetId, item, { ...(entry.preview ? { preview: entry.preview } : {}), ...(entry.thumb ? { thumb: entry.thumb } : {}) })
+    if (entry.capture && (!entry.shotExpires || entry.shotExpires <= this.now()) && (!entry.shotRetryAt || entry.shotRetryAt <= this.now())) {
+      const interval = destination.policy === 'private' ? 3600_000 : DAY
+      let thumb: BoardItem['thumb']
+      try { thumb = await this.options.thumbs.page(url, destination) } catch { /* Retry failed DNS/browser work with backoff too. */ }
+      if (thumb) {
+        entry.thumb = thumb
+        entry.shotExpires = (Math.floor(this.now() / interval) + 1) * interval
+        delete entry.shotRetryAt; delete entry.shotFailures
+      } else {
+        const retry = previewRetry(entry.shotFailures ?? 0, this.now())
+        entry.shotFailures = retry.failures; entry.shotRetryAt = retry.retryAt
+        // Keep private entries alive long enough to preserve backoff across metadata retries.
+        if (destination.policy === 'private') entry.expires = Math.max(entry.expires, entry.shotRetryAt + 1)
+      }
+      await this.save().catch(() => {})
+    }
+    this.applyEntry(targetId, item, entry)
+  }
+  private clearFallbackForImage(entry: Entry): boolean {
+    if (!entry.preview?.image) return false
+    const changed = [entry.thumb, entry.capture, entry.shotExpires, entry.shotRetryAt, entry.shotFailures].some((value) => value !== undefined)
+    delete entry.thumb; delete entry.capture; delete entry.shotExpires; delete entry.shotRetryAt; delete entry.shotFailures
+    return changed
+  }
+  private applyEntry(targetId: string, item: BoardItem, entry: Entry): void {
+    if (entry.preview || entry.thumb) this.apply(targetId, item, { ...(entry.preview ? { preview: entry.preview } : {}), ...(entry.preview?.image ? { thumb: undefined } : entry.thumb ? { thumb: entry.thumb } : {}) })
   }
   private apply(target: string, item: BoardItem, patch: Pick<Partial<BoardItem>, 'preview' | 'thumb'>): void {
-    if ((!patch.preview || JSON.stringify(item.preview) === JSON.stringify(patch.preview)) && (!patch.thumb || JSON.stringify(item.thumb) === JSON.stringify(patch.thumb))) return
-    try { if (this.options.store.item(target, item.key).ref.url === item.ref.url) this.options.store.setPreview(target, item.key, patch) } catch { /* Deleted while fetching. */ }
+    try {
+      const current = this.options.store.item(target, item.key)
+      if (current.kind !== 'link' || current.ref.url !== item.ref.url) return
+      if ((!Object.hasOwn(patch, 'preview') || JSON.stringify(current.preview) === JSON.stringify(patch.preview)) && (!Object.hasOwn(patch, 'thumb') || JSON.stringify(current.thumb) === JSON.stringify(patch.thumb))) return
+      this.options.store.setPreview(target, item.key, patch)
+    } catch { /* Deleted while fetching. */ }
   }
 }

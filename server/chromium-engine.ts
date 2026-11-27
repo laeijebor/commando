@@ -46,7 +46,11 @@ import {
   MAX_WEB_PANE_TITLE_LENGTH,
   type WebPanePendingSnapshot,
 } from '../shared/protocol.js'
+import { BOARD_CAPTURE_OWNER_FILE } from './board-capture-profiles.js'
 import { WebPaneError } from './web-panes.js'
+import { BoardCaptureBrowser, type BoardCaptureOptions } from './chromium-engine-board-capture.js'
+import { registerBrowserDebuggingPort, type CaptureDestination } from './board-capture-policy.js'
+export { isBoardCaptureUrl } from './board-capture-policy.js'
 
 const LAUNCH_TIMEOUT_MS = 20_000
 const CDP_CALL_TIMEOUT_MS = 15_000
@@ -63,7 +67,7 @@ export function isDaemonCaptureUrl(url: string): boolean {
   try { parsed = new URL(url) } catch { return false }
   return parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) && parsed.pathname.startsWith('/redline/')
 }
-const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
+const PROFILE_OWNER_FILE = BOARD_CAPTURE_OWNER_FILE
 const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
 const MAX_PENDING_SNAPSHOT_EXPRESSION_BYTES = 4 * 1024 * 1024
 /**
@@ -75,6 +79,7 @@ export const MAX_LIVE_CHROMIUM_TILES = 32
 type ChromiumProfileOwner = {
   ownerPid: number
   browserPid: number
+  ownerUid?: number
 }
 
 /**
@@ -112,7 +117,7 @@ export type ChromiumLaunch = {
   exited: Promise<void>
 }
 
-export type ChromiumLauncher = (profileDir: string, signal?: AbortSignal) => Promise<ChromiumLaunch>
+export type ChromiumLauncher = (profileDir: string, signal?: AbortSignal, extraArgs?: readonly string[]) => Promise<ChromiumLaunch>
 
 function processIsAlive(pid: number): boolean {
   try {
@@ -227,7 +232,7 @@ export async function reclaimStaleChromiumProfile(profileDir: string): Promise<v
  * default profile, so the dedicated --user-data-dir is mandatory, not just
  * hygiene. The chosen port is parsed from the "DevTools listening on" line.
  */
-export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal) => {
+export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal, extraArgs = []) => {
   const binary = findChromiumBinary()
   if (!binary) {
     throw new WebPaneError(
@@ -260,6 +265,7 @@ export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
         '--disable-background-timer-throttling',
+        ...extraArgs,
         'about:blank',
       ],
       { stdio: ['ignore', 'ignore', 'pipe'], detached: true },
@@ -271,7 +277,8 @@ export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal
       try {
         writeFileSync(
           join(profileDir, PROFILE_OWNER_FILE),
-          JSON.stringify({ ownerPid: process.pid, browserPid } satisfies ChromiumProfileOwner),
+          JSON.stringify({ ownerPid: process.pid, browserPid, ownerUid: process.getuid?.() } satisfies ChromiumProfileOwner),
+          { mode: 0o600 },
         )
       } catch (error) {
         killBrowserProcessGroup(browserPid)
@@ -346,7 +353,7 @@ export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal
   })
 }
 
-type CdpEventHandler = (params: Record<string, unknown>) => void
+type CdpEventHandler = (params: Record<string, unknown>, sessionId?: string) => void
 type ScreenshotCdp = Pick<CdpConnection, 'send' | 'on' | 'close'>
 
 /**
@@ -385,7 +392,7 @@ class CdpConnection {
     })
   }
 
-  send(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> {
+  send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<Record<string, unknown>> {
     if (this.closed) return Promise.reject(new WebPaneError(503, 'CDP connection is closed'))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
@@ -403,7 +410,7 @@ class CdpConnection {
           reject(error)
         },
       })
-      this.socket.send(JSON.stringify({ id, method, ...(params ? { params } : {}) }))
+      this.socket.send(JSON.stringify({ id, method, ...(params ? { params } : {}), ...(sessionId ? { sessionId } : {}) }))
     })
   }
 
@@ -421,6 +428,8 @@ class CdpConnection {
     }
     handlers.add(handler)
   }
+
+  off(event: string, handler: CdpEventHandler): void { this.eventHandlers.get(event)?.delete(handler) }
 
   onClose(handler: () => void): void {
     if (this.closed) {
@@ -456,7 +465,7 @@ class CdpConnection {
       const handlers = this.eventHandlers.get(message.method)
       if (!handlers) return
       const params = (message.params ?? {}) as Record<string, unknown>
-      for (const handler of handlers) handler(params)
+      for (const handler of handlers) handler(params, typeof message.sessionId === 'string' ? message.sessionId : undefined)
     }
   }
 
@@ -752,6 +761,8 @@ type TileTarget = {
 type HibernatedTile = { url: string; lastFrame: ScreencastFrame | null }
 
 export type ChromiumEngineOptions = {
+  boardCapture?: Partial<Omit<BoardCaptureOptions, 'launcher'>>
+
   profileDir?: string
   launcher?: ChromiumLauncher
   /** URL policy from WebPaneService — 'open' means allowed without confirmation. */
@@ -818,10 +829,16 @@ export class ChromiumEngine {
   private readonly subscribing = new Map<string, number>()
   private useCounter = 0
   private disposed = false
+  private boardCapture?: BoardCaptureBrowser
 
   constructor(private readonly options: ChromiumEngineOptions) {
     this.profileDir = options.profileDir ?? defaultChromiumProfileDir()
-    this.launcher = options.launcher ?? spawnChromiumLauncher
+    const launcher = options.launcher ?? spawnChromiumLauncher
+    this.launcher = async (...args) => {
+      const launch = await launcher(...args)
+      registerBrowserDebuggingPort(launch.port, launch.exited)
+      return launch
+    }
     this.httpTimeoutMs = options.httpTimeoutMs ?? CDP_CALL_TIMEOUT_MS
     this.connectTimeoutMs = options.connectTimeoutMs ?? CDP_CALL_TIMEOUT_MS
     this.screencastFallbackAfterMs = options.screencastFallbackAfterMs ?? SCREENCAST_FALLBACK_AFTER_MS
@@ -890,6 +907,21 @@ export class ChromiumEngine {
     }
     try { return await Promise.race([capture(), timeout]) }
     finally { clearTimeout(timer); cleanup() }
+  }
+
+  /** Untrusted Board jobs have a separate process and never enter live tile state. */
+  async screenshotPage(url: string, width: number, height: number, destination: CaptureDestination): Promise<Buffer> {
+    if (this.disposed) throw new WebPaneError(503, 'Chromium engine is shut down')
+    this.boardCapture ??= new BoardCaptureBrowser({
+      launcher: this.launcher, connect: CdpConnection.open,
+      endpoint: async (port) => {
+        const version = await this.browserHttp(port, '/json/version') as { webSocketDebuggerUrl?: string }
+        if (!version.webSocketDebuggerUrl) throw new Error('Missing Board browser DevTools endpoint')
+        return version.webSocketDebuggerUrl
+      },
+      daemonOrigins: [], daemonPorts: [4310], ...this.options.boardCapture,
+    })
+    return this.boardCapture.capture(url, width, height, destination)
   }
 
   async cdpInfo(webPaneId: string, url: string): Promise<{ target: string; devtoolsFrontendUrl: string }> {
@@ -1321,6 +1353,7 @@ export class ChromiumEngine {
   }
 
   dispose(): void {
+    this.boardCapture?.dispose()
     this.disposed = true
     this.pendingSnapshots.clear()
     this.browserStartingAbort?.abort()
