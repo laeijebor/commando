@@ -136,6 +136,57 @@ describe('RedlineArtifactRegistry', () => {
     expect(persisted.artifacts.map((artifact) => artifact.id)).not.toContain(ids[1])
   })
 
+  it('never releases a registration a tab still shows, however many others are registered', () => {
+    let clock = 1_000
+    const registry = new RedlineArtifactRegistry({ now: () => clock++ })
+    const dirs = Array.from({ length: MAX_ARTIFACT_DIRS }, () => realpathSync(artifactDir()))
+    const ids = dirs.map((dir) => registry.register(dir).id)
+    registry.retain([ids[0]])
+    for (let i = 0; i < MAX_ARTIFACT_DIRS; i++) registry.register(realpathSync(artifactDir()))
+    expect(registry.directory(ids[0])).toBe(dirs[0])
+    expect(registry.directory(ids[1])).toBeNull()
+  })
+
+  it('ensure with retain keeps the registration through the capacity trim until a retain call drops it', () => {
+    let clock = 1_000
+    const registry = new RedlineArtifactRegistry({ now: () => clock++ })
+    const dir = realpathSync(artifactDir())
+    const { id } = registry.ensure(dir, { retain: true })
+    for (let index = 0; index < MAX_ARTIFACT_DIRS + 2; index++) registry.register(realpathSync(artifactDir()))
+    expect(registry.directory(id)).toBe(dir)
+    // An existing registration joins the retained set too.
+    const other = realpathSync(artifactDir())
+    const existing = registry.register(other).id
+    expect(registry.ensure(other, { retain: true }).id).toBe(existing)
+    registry.retain([id, existing])
+    for (let index = 0; index < MAX_ARTIFACT_DIRS + 2; index++) registry.register(realpathSync(artifactDir()))
+    expect(registry.directory(existing)).toBe(other)
+    // Once the owner stops passing it, the capacity applies again.
+    registry.retain([])
+    registry.register(realpathSync(artifactDir()))
+    expect(registry.directory(id)).toBeNull()
+  })
+
+  it('ensure reuses a live registration without refreshing it, and registers a missing one', () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
+    let clock = 1_000
+    const registry = new RedlineArtifactRegistry({ statePath, now: () => clock })
+    const dir = realpathSync(artifactDir())
+    const { id } = registry.register(dir)
+    const written = readFileSync(statePath, 'utf8')
+    clock += 60_000
+    expect(registry.ensure(dir)).toEqual({ id })
+    expect(readFileSync(statePath, 'utf8')).toBe(written)
+    // Still the original age: it lapses a TTL after its registration, then ensure registers it again.
+    clock = 1_000 + REDLINE_ARTIFACT_TTL_MS + 1
+    expect(registry.directory(id)).toBeNull()
+    const fresh = registry.ensure(dir)
+    expect(registry.directory(fresh.id)).toBe(dir)
+    const other = realpathSync(artifactDir())
+    expect(registry.directory(registry.ensure(other).id)).toBe(other)
+    expect(() => registry.ensure('relative/dir')).toThrow(RedlineArtifactError)
+  })
+
   it('unregister frees the id', () => {
     const registry = new RedlineArtifactRegistry()
     const { id } = registry.register(realpathSync(artifactDir()))

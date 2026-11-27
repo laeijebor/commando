@@ -46,6 +46,8 @@ import { chatAnswerFor, chatHostReport, chatRequestOpen, type ChatRequestItem } 
 const parentPaneId = (key: string): string => parseAsideKey(key)?.paneId ?? key
 
 const MAX_HOST_MESSAGE_BYTES = 4 * 1024 * 1024
+/** A subagent transcript is sent once, so it waits this long for diagrams still rendering (well inside its 20s timeout). */
+const TRANSCRIPT_DIAGRAM_WAIT_MS = 3000
 /** How long a session may wait for its pane to appear in the tmux snapshot. */
 const PENDING_PANE_MS = 60_000
 /** How long a chat stays after its host disconnects (a host restart or daemon blip). */
@@ -116,6 +118,8 @@ type HubDependencies = {
   replyResources?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
   /** Stores the local images replies show with Markdown and attaches them (see chat-reply-images.ts). */
   replyImages?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
+  /** Renders ```pr-diagram fences in replies and attaches the SVGs (see chat-reply-diagrams.ts). */
+  replyDiagrams?: (items: readonly ChatItem[], cwd: string, wait?: { onRendered?: (itemIds: string[]) => void; waitMs?: number }) => Promise<ChatItem[]>
   /**
    * The per-login plan reading (claude-plan-usage.ts). `joined` takes the reading
    * a connecting chat already holds and answers with the login's newest.
@@ -177,6 +181,12 @@ export class AgentHostHub {
   connect(socket: WebSocket): void {
     // Messages are applied in order, even while a snapshot waits on verification.
     let queue = Promise.resolve()
+    // Work that must not overtake a message being applied, such as a finished diagram's update.
+    this.socketQueues.set(socket, (task) => {
+      queue = queue.then(task).catch((error: unknown) => {
+        this.dependencies.log?.(`[agent-host] queued work failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    })
     socket.on('message', (data, isBinary) => {
       if (isBinary) return
       const raw = data.toString()
@@ -198,6 +208,7 @@ export class AgentHostHub {
       })
     })
     socket.on('close', () => {
+      this.socketQueues.delete(socket)
       for (const [requestId, search] of this.fileSearches) {
         if (search.socket === socket) this.finishFileSearch(requestId, { entries: [], truncated: false, error: 'The agent host disconnected' })
       }
@@ -259,6 +270,65 @@ export class AgentHostHub {
     }
   }
 
+  /**
+   * Items with the pr-diagram fences already rendered attached; as they came
+   * if that fails. Renders never hold up the chat: one still running updates
+   * its reply in the pane's timeline when it finishes (`refreshDiagrams`).
+   */
+  private async withReplyDiagrams(items: ChatItem[], cwd: string | undefined, target: { socket: WebSocket; paneId: string } | { waitMs: number }): Promise<ChatItem[]> {
+    if (!this.dependencies.replyDiagrams || !items.some((item) => item.kind === 'assistant_message' && (item.text.includes('pr-diagram') || item.diagrams))) return items
+    try {
+      return await this.dependencies.replyDiagrams(items, cwd ?? '', 'waitMs' in target
+        ? { waitMs: target.waitMs }
+        : { onRendered: (ids) => this.diagramsRendered(target.socket, target.paneId, ids) })
+    } catch (error) {
+      this.dependencies.log?.(`[agent-host] couldn't attach reply diagrams: ${error instanceof Error ? error.message : String(error)}`)
+      return items
+    }
+  }
+
+  private readonly diagramRefreshes = new Map<string, Set<string>>()
+  private readonly socketQueues = new Map<WebSocket, (task: () => Promise<void>) => void>()
+
+  /**
+   * Collects the replies whose renders finished, and attaches them again once
+   * per pane, in the host's message queue: after the message that started the
+   * render has stored its items, so the update lands on the newest copy.
+   */
+  private diagramsRendered(socket: WebSocket, paneId: string, itemIds: readonly string[]): void {
+    const enqueue = this.socketQueues.get(socket)
+    if (!enqueue) return
+    let pending = this.diagramRefreshes.get(paneId)
+    if (!pending) {
+      pending = new Set()
+      this.diagramRefreshes.set(paneId, pending)
+      enqueue(() => this.refreshDiagrams(socket, paneId))
+    }
+    for (const id of itemIds) pending.add(id)
+  }
+
+  private async refreshDiagrams(socket: WebSocket, paneId: string): Promise<void> {
+    const ids = this.diagramRefreshes.get(paneId)
+    this.diagramRefreshes.delete(paneId)
+    const entry = this.owned(socket, paneId)
+    if (!ids || !entry || !this.dependencies.replyDiagrams) return
+    const before = entry.state.items.filter((item) => ids.has(item.id))
+    if (!before.length) return
+    let after: ChatItem[]
+    try {
+      after = await this.dependencies.replyDiagrams(before, entry.state.session.cwd, { onRendered: (more) => this.diagramsRendered(socket, paneId, more) })
+    } catch {
+      return
+    }
+    // The host may have changed, or sent a newer copy of a reply, meanwhile; a newer copy attached its own diagrams.
+    if (this.chats.get(paneId) !== entry) return
+    const changed = after.filter((item, index) => entry.state.items.includes(before[index]) &&
+      JSON.stringify((item as { diagrams?: unknown }).diagrams) !== JSON.stringify((before[index] as { diagrams?: unknown }).diagrams))
+    if (!changed.length) return
+    entry.state = { ...entry.state, items: mergeChatItems(entry.state.items, changed) }
+    if (entry.visible) this.dependencies.broadcast({ type: 'chat_items', paneId, items: changed })
+  }
+
   private async handle(socket: WebSocket, message: HostToDaemonMessage): Promise<void> {
     switch (message.type) {
       case 'hello':
@@ -293,7 +363,7 @@ export class AgentHostHub {
         // A chat back from Claude Code offers its draft and queue to the composer again.
         const carried = !aside && message.session.sessionId ? this.dependencies.handoffs?.returned(message.session.sessionId) : undefined
         if (!aside && message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
-        const items = await this.withReplyResources(await this.withReplyImages(message.items, message.session.cwd), message.session.cwd)
+        const items = await this.withReplyResources(await this.withReplyImages(await this.withReplyDiagrams(message.items, message.session.cwd, { socket, paneId: message.session.paneId }), message.session.cwd), message.session.cwd)
         if (socket.readyState !== socket.OPEN) return
         const pendingHandoff = this.takeProviderHandoff(paneId, message.session.provider)
         const sameProvider = previous?.state.session.provider === message.session.provider
@@ -353,7 +423,7 @@ export class AgentHostHub {
       }
       case 'items': {
         if (!this.owned(socket, message.paneId) || (message.items.length === 0 && !message.replace)) return
-        const items = await this.withReplyResources(await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd), this.chats.get(message.paneId)?.state.session.cwd)
+        const items = await this.withReplyResources(await this.withReplyImages(await this.withReplyDiagrams(message.items, this.chats.get(message.paneId)?.state.session.cwd, { socket, paneId: message.paneId }), this.chats.get(message.paneId)?.state.session.cwd), this.chats.get(message.paneId)?.state.session.cwd)
         // The host may have been replaced while the images were stored.
         const entry = this.owned(socket, message.paneId)
         if (!entry) return
@@ -390,7 +460,7 @@ export class AgentHostHub {
       case 'subagent_transcript_result': {
         const read = this.transcripts.get(message.requestId)
         if (!read || read.socket !== socket || read.paneId !== message.paneId) return
-        const items = await this.withReplyResources(await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd), this.chats.get(message.paneId)?.state.session.cwd)
+        const items = await this.withReplyResources(await this.withReplyImages(await this.withReplyDiagrams(message.items, this.chats.get(message.paneId)?.state.session.cwd, { waitMs: TRANSCRIPT_DIAGRAM_WAIT_MS }), this.chats.get(message.paneId)?.state.session.cwd), this.chats.get(message.paneId)?.state.session.cwd)
         this.finish(this.transcripts, message.requestId, message.error ? { items, error: message.error } : { items })
         return
       }

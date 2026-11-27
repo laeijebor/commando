@@ -86,6 +86,178 @@ describe('AgentHostHub', () => {
     expect(broadcasts.at(-2)).toMatchObject({ type: 'chat_items', items: [{ id: 'b', images: [{ src: 'a.png' }] }] })
   })
 
+  it('renders pr-diagram fences in snapshots and streamed items, and keeps the reply when rendering fails', async () => {
+    const calls: string[] = []
+    const logs: string[] = []
+    let fail = false
+    const hub = new AgentHostHub({
+      paneExists: () => true, targetIdFor: () => undefined, broadcast: () => undefined, log: (message) => logs.push(message),
+      replyDiagrams: async (items) => {
+        if (fail) throw new Error('renderer exploded')
+        return items.map((entry) => {
+          calls.push(entry.id)
+          return entry.kind === 'assistant_message' ? { ...entry, diagrams: [{ hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }] } : entry
+        })
+      },
+    })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', '```pr-diagram\n{}\n```')] })
+    socket.host({ type: 'items', paneId: '%1', items: [item('p', 'plain')] })
+    await settle()
+    fail = true
+    socket.host({ type: 'items', paneId: '%1', items: [item('b', '```pr-diagram\n{}\n```')] })
+    await settle()
+    // Only batches that mention pr-diagram are rendered.
+    expect(calls).toEqual(['a'])
+    expect(hub.items('%1').map((entry) => entry.kind === 'assistant_message' && Boolean(entry.diagrams))).toEqual([true, false, false])
+    expect(logs).toEqual([expect.stringContaining('renderer exploded')])
+  })
+
+  it("doesn't hold a snapshot for a render, and broadcasts the reply once its diagram is ready", async () => {
+    const diagram = { hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }
+    let ready = false
+    const finished: (() => void)[] = []
+    const calls: string[] = []
+    const replyDiagrams = async (items: readonly ChatItem[], cwd: string, wait?: { onRendered?: (ids: string[]) => void }) => items.map((entry) => {
+      const onRendered = wait?.onRendered
+      if (entry.kind !== 'assistant_message') return entry
+      calls.push(`${entry.id}@${cwd}`)
+      if (ready) return { ...entry, diagrams: [diagram] }
+      if (onRendered && entry.text.includes('pr-diagram')) finished.push(() => onRendered([entry.id]))
+      return entry
+    })
+    const broadcasts: ServerMessage[] = []
+    const hub = new AgentHostHub({ paneExists: () => true, targetIdFor: () => undefined, broadcast: (message) => broadcasts.push(message), replyDiagrams })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', '```pr-diagram\n{}\n```'), item('p', 'plain')] })
+    await settle()
+    expect(broadcasts.map((message) => message.type)).toEqual(['chat_state'])
+    expect(hub.items('%1').every((entry) => !(entry.kind === 'assistant_message' && entry.diagrams))).toBe(true)
+
+    // Two renders finish together: the pane's reply is attached again once, and only it is sent.
+    ready = true
+    finished.forEach((done) => done())
+    finished.forEach((done) => done())
+    await settle()
+    await settle()
+    expect(calls).toEqual(['a@/work', 'p@/work', 'a@/work'])
+    expect(broadcasts.at(-1)).toEqual({ type: 'chat_items', paneId: '%1', items: [{ ...item('a', '```pr-diagram\n{}\n```'), diagrams: [diagram] }] })
+    expect(hub.items('%1')[0]).toMatchObject({ diagrams: [diagram] })
+  })
+
+  it('applies a finished render and a newer copy of the reply in the order they came', async () => {
+    let onDone: ((ids: string[]) => void) | undefined
+    let hold: Promise<void> | undefined
+    let release!: () => void
+    const replyDiagrams = async (items: readonly ChatItem[], _cwd: string, wait?: { onRendered?: (ids: string[]) => void }) => {
+      onDone ??= wait?.onRendered
+      const gate = hold
+      hold = undefined
+      if (gate) await gate
+      return items.map((entry) => gate && entry.kind === 'assistant_message' ? { ...entry, diagrams: [{ hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }] } : entry)
+    }
+    const broadcasts: ServerMessage[] = []
+    const hub = new AgentHostHub({ paneExists: () => true, targetIdFor: () => undefined, broadcast: (message) => broadcasts.push(message), replyDiagrams })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'old ```pr-diagram\n{}\n```')] })
+    await settle()
+    // The render finishes and the refresh starts; a newer copy of the reply arrives and waits its turn.
+    hold = new Promise<void>((resolve) => { release = resolve })
+    onDone?.(['a'])
+    await settle()
+    socket.host({ type: 'items', paneId: '%1', items: [item('a', 'new ```pr-diagram\n{}\n```')] })
+    await settle()
+    const sent = broadcasts.length
+    release()
+    await settle()
+    await settle()
+    const updates = broadcasts.slice(sent).flatMap((message) => message.type === 'chat_items' ? message.items : [])
+    expect(updates.map((entry) => entry.kind === 'assistant_message' && entry.text.split(' ')[0])).toEqual(['old', 'new'])
+    expect(hub.items('%1')[0]).toEqual(item('a', 'new ```pr-diagram\n{}\n```'))
+  })
+
+  it('applies a render that finishes during a slow snapshot once the snapshot is stored', async () => {
+    const diagram = { hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }
+    let rendered = false
+    let releaseImages!: () => void
+    const imagesHeld = new Promise<void>((resolve) => { releaseImages = resolve })
+    const broadcasts: ServerMessage[] = []
+    const hub = new AgentHostHub({
+      paneExists: () => true, targetIdFor: () => undefined, broadcast: (message) => broadcasts.push(message),
+      replyDiagrams: async (items, _cwd, wait) => items.map((entry) => {
+        if (entry.kind !== 'assistant_message') return entry
+        if (rendered) return { ...entry, diagrams: [diagram] }
+        // The render finishes straight away, while the snapshot still waits on its images.
+        queueMicrotask(() => { rendered = true; wait?.onRendered?.([entry.id]) })
+        return entry
+      }),
+      replyImages: async (items) => { await imagesHeld; return [...items] },
+    })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', '![x](x.png) ```pr-diagram\n{}\n```')] })
+    await settle()
+    expect(hub.items('%1')).toEqual([])
+    releaseImages()
+    await settle()
+    await settle()
+    expect(hub.items('%1')[0]).toMatchObject({ diagrams: [diagram] })
+    expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_items', items: [{ id: 'a', diagrams: [diagram] }] })
+  })
+
+  it('applies a render that finishes during a slow live update to the newest copy of the reply', async () => {
+    const diagram = { hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }
+    let rendered = false
+    let hold: Promise<void> | undefined
+    let releaseImages!: () => void
+    const broadcasts: ServerMessage[] = []
+    const hub = new AgentHostHub({
+      paneExists: () => true, targetIdFor: () => undefined, broadcast: (message) => broadcasts.push(message),
+      replyDiagrams: async (items, _cwd, wait) => items.map((entry) => {
+        if (entry.kind !== 'assistant_message') return entry
+        if (rendered) return { ...entry, diagrams: [diagram] }
+        if (entry.text.includes('done')) queueMicrotask(() => { rendered = true; wait?.onRendered?.([entry.id]) })
+        return entry
+      }),
+      replyImages: async (items) => { if (hold) await hold; return [...items] },
+    })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'streaming ![x](x.png)', { status: 'running' })] })
+    await settle()
+    hold = new Promise<void>((resolve) => { releaseImages = resolve })
+    socket.host({ type: 'items', paneId: '%1', items: [item('a', 'done ![x](x.png) ```pr-diagram\n{}\n```')] })
+    await settle()
+    releaseImages()
+    await settle()
+    await settle()
+    const [stored] = hub.items('%1')
+    expect(stored).toMatchObject({ text: 'done ![x](x.png) ```pr-diagram\n{}\n```', status: 'completed', diagrams: [diagram] })
+    // No update re-sent the streaming copy.
+    expect(broadcasts.filter((message) => message.type === 'chat_items').flatMap((message) => message.type === 'chat_items' ? message.items : [])
+      .every((entry) => entry.kind === 'assistant_message' && entry.text.startsWith('done'))).toBe(true)
+  })
+
+  it('lets a subagent transcript wait briefly for its diagrams', async () => {
+    const waits: unknown[] = []
+    const hub = new AgentHostHub({
+      paneExists: () => true, targetIdFor: () => undefined, broadcast: () => undefined,
+      replyDiagrams: async (items, _cwd, wait) => { waits.push(wait); return [...items] },
+    })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: AGENT_HOST_PROTOCOL_VERSION }), items: [] })
+    await settle()
+    const read = hub.subagentTranscript('%1', 'a711')
+    const request = socket.sent.at(-1) as { requestId: string }
+    socket.host({ type: 'subagent_transcript_result', paneId: '%1', requestId: request.requestId, items: [item('s', '```pr-diagram\n{}\n```')] })
+    await read
+    expect(waits).toEqual([{ waitMs: 3000 }])
+  })
+
   it('shows replies without their images when storing them fails', async () => {
     const logs: string[] = []
     const hub = new AgentHostHub({

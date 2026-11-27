@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1216 734" width="1216" height="734" role="img" aria-label="Rich chat blocks from plain agent replies. Agents keep writing Markdown. Commando resolves paths and embeds on the daemon, then renders cards, diagrams and live frames inline, maximised or as a tile.">
+<style>
+.t{font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;fill:#e6e9ee}.s{font:10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#8b93a1}.cap{font:600 10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:1px;fill:#7d8696}.l{font:600 10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#aeb6c4}
+.e{fill:none;stroke:#667082;stroke-width:1.5}.e-added{stroke:#4fb56a;stroke-width:2}.e-changed{stroke:#e0a030;stroke-width:2}.e-removed{stroke:#d9645f;stroke-dasharray:5 4;opacity:.85}
+.flow{stroke-dasharray:6 6;animation:f 1.2s linear infinite}@keyframes f{to{stroke-dashoffset:-24}}
+@media (prefers-reduced-motion:reduce){.flow{animation:none}}
+</style>
+<defs><marker id="m-neutral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#667082"/></marker><marker id="m-added" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4fb56a"/></marker><marker id="m-changed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#e0a030"/></marker><marker id="m-removed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#d9645f"/></marker><pattern id="dots" width="14" height="14" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#262b34"/></pattern></defs>
+<rect width="1216" height="734" rx="14" fill="#171a20"/><rect width="1216" height="734" rx="14" fill="url(#dots)"/>
+<text x="26" y="38" font-family='-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif' font-size="17" font-weight="650" fill="#e6e9ee">Rich chat blocks from plain agent replies</text>
+<rect x="359.8" y="23" width="103.2" height="20" rx="10" fill="none" stroke="#6b5220"/><text class="cap" x="368.8" y="37" style="fill:#e0a030">ARCHITECTURE</text>
+<rect x="14" y="56" width="1188" height="616.5" rx="12" fill="#1e222a" stroke="#2c313b"/>
+<g transform="translate(26 72)">
+<rect x="0" y="0" width="1163.1" height="114" rx="12" fill="#1a1d24" stroke="#2c313b"/>
+<g><rect x="354" y="38" width="174" height="58" rx="8" fill="#272c36" stroke="#3b424e" stroke-width="1.2"/><text class="t" x="366" y="64">Agent reply</text><text class="s" x="366" y="79">Markdown, links, fences</text></g>
+<g><rect x="635.1" y="38" width="174" height="58" rx="8" fill="#1f3327" stroke="#4fb56a" stroke-width="1.6"/><text class="t" x="647.1" y="64">commando-ui skill</text><text class="s" x="647.1" y="79">teaches the conventions</text><text class="l" x="801.1" y="51" text-anchor="end" font-size="8" style="fill:#6fd08a">NEW</text></g>
+<rect x="0" y="174" width="1163.1" height="114" rx="12" fill="#1a1d24" stroke="#2c313b"/>
+<g><rect x="51.1" y="212" width="162" height="58" rx="8" fill="#272c36" stroke="#3b424e" stroke-width="1.2"/><text class="t" x="63.1" y="238">chat extractors</text><text class="s" x="63.1" y="253">per provider</text></g>
+<g><rect x="350.7" y="212" width="162" height="58" rx="8" fill="#1f3327" stroke="#4fb56a" stroke-width="1.6"/><text class="t" x="362.7" y="238">Resource resolver</text><text class="s" x="362.7" y="253">stat path, kind, size</text><text class="l" x="504.7" y="225" text-anchor="end" font-size="8" style="fill:#6fd08a">NEW</text></g>
+<g><rect x="950" y="212" width="162" height="58" rx="8" fill="#272c36" stroke="#e0a030" stroke-width="1.6"/><text class="t" x="962" y="238">Open / reveal API</text><text class="s" x="962" y="253">Finder, editor, tile</text><text class="l" x="1103.9" y="225" text-anchor="end" font-size="8" style="fill:#f0b440">CHANGED</text></g>
+<g><rect x="650.3" y="212" width="162" height="58" rx="8" fill="#272c36" stroke="#3b424e" stroke-width="1.2"/><text class="t" x="662.3" y="238">Artifact registry</text><text class="s" x="662.3" y="253">serves HTML folders</text></g>
+<rect x="0" y="348" width="1163.1" height="114" rx="12" fill="#1a1d24" stroke="#2c313b"/>
+<g><rect x="18" y="386" width="174" height="58" rx="8" fill="#272c36" stroke="#e0a030" stroke-width="1.6"/><text class="t" x="30" y="412">Markdown renderer</text><text class="s" x="30" y="427">remark plugins</text><text class="l" x="184" y="399" text-anchor="end" font-size="8" style="fill:#f0b440">CHANGED</text></g>
+<g><rect x="335.7" y="386" width="174" height="58" rx="8" fill="#1f3327" stroke="#4fb56a" stroke-width="1.6"/><text class="t" x="347.7" y="412">ResourceCard</text><text class="s" x="347.7" y="427">open, reveal, copy</text><text class="l" x="501.7" y="399" text-anchor="end" font-size="8" style="fill:#6fd08a">NEW</text></g>
+<g><rect x="653.4" y="386" width="174" height="58" rx="8" fill="#272c36" stroke="#e0a030" stroke-width="1.6"/><text class="t" x="665.4" y="412">DiagramBlock</text><text class="s" x="665.4" y="427">SVG, mermaid, expand</text><text class="l" x="819.4" y="399" text-anchor="end" font-size="8" style="fill:#f0b440">CHANGED</text></g>
+<g><rect x="971.1" y="386" width="174" height="58" rx="8" fill="#1f3327" stroke="#4fb56a" stroke-width="1.6"/><text class="t" x="983.1" y="412">EmbedFrame</text><text class="s" x="983.1" y="427">inline, maximised, tile</text><text class="l" x="1137.1" y="399" text-anchor="end" font-size="8" style="fill:#6fd08a">NEW</text></g>
+<path class="e" d="M635.1 67C590.1 67 573 67 528 67" marker-end="url(#m-neutral)"/>
+<path class="e" d="M354 67C261.7 67 305.4 235.6 213.1 235.6" marker-end="url(#m-neutral)"/>
+<path class="e e-added flow" d="M213.1 246.4C271.1 246.4 292.8 235.6 350.7 235.6" marker-end="url(#m-added)"/>
+<path class="e" d="M512.7 241C570.5 241 592.6 241 650.3 241" marker-end="url(#m-neutral)"/>
+<path class="e e-added flow" d="M350.7 246.4C255.1 246.4 287.6 409.6 192 409.6" marker-end="url(#m-added)"/>
+<path class="e" d="M192 420.4C252.4 420.4 275.3 415 335.7 415" marker-end="url(#m-neutral)"/>
+<path class="e" d="M105 444C105 574 740.4 574 740.4 444" marker-end="url(#m-neutral)"/>
+<path class="e" d="M105 386C105 256 1058.1 256 1058.1 386" marker-end="url(#m-neutral)"/>
+<path class="e e-added flow" d="M509.7 415C639.7 415 820 241 950 241" marker-end="url(#m-added)"/>
+<path class="e" d="M971.1 415C872.2 415 911.3 241 812.3 241" marker-end="url(#m-neutral)"/>
+<text class="cap" x="14" y="22">AGENT CLIS · CLAUDE, CODEX, OPENCODE</text>
+<text class="cap" x="14" y="196">DAEMON</text>
+<text class="cap" x="14" y="370">CHAT RENDERER</text>
+<text class="s" x="0" y="580.5" style="fill:#d5dae2">① resolved blocks · ② one click</text>
+<rect x="540" y="58" width="83.1" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="581.6" y="70.5" text-anchor="middle" style="fill:#aeb6c4">conventions</text>
+<rect x="245.1" y="142.3" width="77" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="283.6" y="154.8" text-anchor="middle" style="fill:#aeb6c4">transcript</text>
+<rect x="225.1" y="232" width="113.6" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="281.9" y="244.5" text-anchor="middle" style="fill:#6fd08a">paths and embeds</text>
+<rect x="536.9" y="232" width="89.2" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="581.6" y="244.5" text-anchor="middle" style="fill:#aeb6c4">HTML folders</text>
+<circle cx="271.4" cy="328" r="10" fill="#4fb56a" stroke="#1e222a" stroke-width="2"/><text x="271.4" y="332" text-anchor="middle" font-family='-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif' font-size="11" font-weight="700" fill="#14171c">1</text>
+<rect x="204" y="408.7" width="119.7" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="263.8" y="421.2" text-anchor="middle" style="fill:#aeb6c4">file, folder, URL</text>
+<rect x="378.1" y="532.5" width="89.2" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="422.7" y="545" text-anchor="middle" style="fill:#aeb6c4">svg, mermaid</text>
+<rect x="536.9" y="279.5" width="89.2" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="581.6" y="292" text-anchor="middle" style="fill:#aeb6c4">html, canvas</text>
+<circle cx="729.8" cy="328" r="10" fill="#4fb56a" stroke="#1e222a" stroke-width="2"/><text x="729.8" y="332" text-anchor="middle" font-family='-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif' font-size="11" font-weight="700" fill="#14171c">2</text>
+<rect x="838" y="319" width="107.5" height="18" rx="9" fill="#1e222a" stroke="#333a46"/><text class="l" x="891.7" y="331.5" text-anchor="middle" style="fill:#aeb6c4">sandboxed frame</text>
+</g>
+<circle cx="30" cy="691" r="4" fill="#4fb56a"/><text class="s" x="39" y="694.5">new</text><circle cx="82.2" cy="691" r="4" fill="#e0a030"/><text class="s" x="91.2" y="694.5">changed</text><text x="26" y="714.5" font-family='-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif' font-size="11.5" fill="#d5dae2">Agents keep writing Markdown. Commando resolves paths and embeds on the daemon, then renders cards, diagrams and live frames inline, maximised or as a tile.</text>
+</svg>

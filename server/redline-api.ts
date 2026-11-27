@@ -22,6 +22,7 @@ const ARTIFACT_ID = /^[0-9a-f]{16}$/
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
@@ -172,6 +173,10 @@ export class RedlineApi {
       this.serveFile(response, join(staticDir, 'canvas-frame.js'))
       return
     }
+    if (pathname === '/redline/embed-frame.js') {
+      this.serveFile(response, join(staticDir, 'embed-frame.js'))
+      return
+    }
     const design = /^\/redline\/design\/([^/]+)$/.exec(pathname)
     if (design && designFiles[design[1]]) {
       this.serveFile(response, designFiles[design[1]]())
@@ -191,7 +196,8 @@ export class RedlineApi {
       // Artifacts change during a review loop — never cache them.
       const frameId = url.searchParams.get('canvas-frame')
       if (frameId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(frameId)) throw new HttpError(400, 'Invalid canvas frame id')
-      this.serveFile(response, file, { cache: 'no-store', cached: false, frameId: frameId ?? undefined, rewriteLoopback: remoteReader })
+      const chatEmbed = url.searchParams.get('chat-embed') === '1'
+      this.serveFile(response, file, { cache: 'no-store', cached: false, frameId: frameId ?? undefined, chatEmbed, rewriteLoopback: remoteReader })
       return
     }
     throw new HttpError(404, 'Not found')
@@ -223,7 +229,7 @@ export class RedlineApi {
   private serveFile(
     response: ServerResponse,
     filePath: string,
-    options: { cache?: string; cached?: boolean; frameId?: string; rewriteLoopback?: boolean } = {},
+    options: { cache?: string; cached?: boolean; frameId?: string; chatEmbed?: boolean; rewriteLoopback?: boolean } = {},
   ): void {
     const cached = options.cached ?? true
     let body = cached ? this.fileCache.get(filePath) : undefined
@@ -235,8 +241,13 @@ export class RedlineApi {
       }
       if (cached) this.fileCache.set(filePath, body)
     }
-    if (options.frameId && extname(filePath).toLowerCase() === '.html') {
-      const script = `<script src="/redline/canvas-frame.js" data-canvas-frame="${options.frameId}"></script>`
+    const extension = extname(filePath).toLowerCase()
+    if ((options.frameId && extension === '.html') || (options.chatEmbed && (extension === '.html' || extension === '.htm'))) {
+      const script = [
+        options.frameId ? `<script src="/redline/canvas-frame.js" data-canvas-frame="${options.frameId}"></script>` : '',
+        // A page a chat reply shows inline relays Esc out of its sandbox (src/chat/EmbedFrame.tsx).
+        options.chatEmbed ? '<script src="/redline/embed-frame.js"></script>' : '',
+      ].join('')
       const html = body.toString('utf8')
       const end = [...html.matchAll(/<\/body\s*>/gi)].at(-1)
       body = Buffer.from(end ? html.slice(0, end.index) + script + html.slice(end.index) : html + script)

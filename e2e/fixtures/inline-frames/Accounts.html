@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Connected accounts</title>
+<style>
+  :root { --accent: #6d5dfc; --hue: 0deg; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1b1830; background: #f6f5fb; filter: hue-rotate(var(--hue)); }
+  header { display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: #fff; border-bottom: 1px solid #e6e3f0; }
+  header h1 { margin: 0; font-size: 16px; }
+  header span { color: #6f6a85; font-size: 12px; }
+  main { padding: 14px 18px 40px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 8px; background: #fff; border: 1px solid #e6e3f0; border-radius: 10px; }
+  .logo { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-weight: 700; }
+  .name { flex: 1; } .name b { display: block; } .name small { color: #6f6a85; }
+  .toggle { width: 42px; height: 24px; border-radius: 12px; border: 0; background: #d5d1e3; position: relative; cursor: pointer; }
+  .toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .12s; }
+  .toggle[aria-pressed="true"] { background: var(--accent); } .toggle[aria-pressed="true"]::after { left: 21px; }
+  .connect { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--accent); background: #fff; color: var(--accent); font-weight: 600; cursor: pointer; }
+  .connect.done { background: var(--accent); color: #fff; }
+  .filler { height: 520px; border: 1px dashed #d5d1e3; border-radius: 10px; display: grid; place-items: center; color: #9a95ad; }
+</style></head>
+<body>
+<header><h1>Connected accounts</h1><span id="summary">1 of 3 syncing</span></header>
+<main>
+  <div class="row"><div class="logo" style="background:#ea4335">G</div><div class="name"><b>Google</b><small>leo@example.com</small></div><button class="toggle" aria-label="Sync Google" aria-pressed="true"></button></div>
+  <div class="row"><div class="logo" style="background:#0a66c2">O</div><div class="name"><b>Outlook</b><small>Token expired</small></div><button class="toggle" aria-label="Sync Outlook" aria-pressed="false"></button></div>
+  <div class="row"><div class="logo" style="background:#24292f">GH</div><div class="name"><b>GitHub</b><small>Not connected</small></div><button class="connect" id="connect">Connect</button></div>
+  <div class="filler">More settings below</div>
+</main>
+<script>
+  const hue = new URLSearchParams(location.search).get('hue'); if (hue) document.documentElement.style.setProperty('--hue', hue + 'deg');
+  const summary = () => { const on = document.querySelectorAll('.toggle[aria-pressed="true"]').length; document.getElementById('summary').textContent = on + ' of 3 syncing'; };
+  document.querySelectorAll('.toggle').forEach((b) => b.addEventListener('click', () => { b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')); summary(); }));
+  document.getElementById('connect').addEventListener('click', (e) => { e.target.textContent = 'Connected'; e.target.classList.add('done'); });
+</script>
+</body></html>

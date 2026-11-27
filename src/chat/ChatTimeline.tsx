@@ -2,7 +2,7 @@ import { Fragment, Children, cloneElement, isValidElement, createContext, memo, 
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, parseAsideReports, type AsideReport, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, parseAsideReports, type AsideReport, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyDiagram, type ChatReplyEmbed, type ChatReplyImage, findChatReplyEmbed, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
 import { handoffDividerLabel, isHandoffNotice } from '../../shared/chat-handoff'
 import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
@@ -18,6 +18,8 @@ import { ResourceChip, ResourceCardList } from './ResourceChip'
 import { RichLinkCardList, RichLinkChip } from './RichLinks'
 import { parseRichLink } from '../../shared/rich-links'
 import { ReplyImage } from './ReplyImage'
+import { EmbedFrame } from './EmbedFrame'
+import { ReplyDiagramsContext } from './DiagramBlock'
 import { SubagentGroup, useNow } from './Subagents'
 import { TileEventCard } from './TileEventCard'
 import { AutofixCard } from './AutofixCard'
@@ -61,11 +63,15 @@ const ResourceActionsContext = createContext<{ cwd: string; onResourceAction?: R
 const keepImageSources: UrlTransform = (url, key, node) => (key === 'src' && node.tagName === 'img') || (key === 'href' && /^(?:\/(?!\/)|~\/|\.\.?\/|file:\/\/)/i.test(url)) ? url : defaultUrlTransform(url)
 
 /** The reply a Markdown image belongs to; context keeps `img` one component, so images don't reload as a reply streams. */
-const ReplyImagesContext = createContext<{ images?: readonly ChatReplyImage[]; running?: boolean }>({})
+const ReplyImagesContext = createContext<{ images?: readonly ChatReplyImage[]; embeds?: readonly ChatReplyEmbed[]; running?: boolean }>({})
 
 function MarkdownImage({ src, alt }: { src?: unknown; alt?: string }) {
-  const { images, running } = use(ReplyImagesContext)
-  return <ReplyImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} images={images} running={running} />
+  const { images, embeds, running } = use(ReplyImagesContext)
+  const { onAction, cwd } = use(ReplyResourcesContext)
+  // HTML mock-ups and canvas boards use image syntax too.
+  const embed = typeof src === 'string' ? findChatReplyEmbed(embeds, src) : undefined
+  if (embed) return <EmbedFrame embed={embed} alt={alt ?? ''} cwd={cwd} onAction={onAction} />
+  return <ReplyImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} images={images} running={running} onAction={onAction} />
 }
 
 const ReplyResourcesContext = createContext<{ resources?: readonly ChatReplyResource[]; text: string; cwd: string; onAction?: ResourceActionHandler }>({ text: '', cwd: '' })
@@ -145,20 +151,23 @@ const replyComponents: Components = {
 }
 
 /** Local images and resources are attached by the daemon while a reply streams. */
-export const Markdown = memo(function Markdown({ text, images, resources, running, itemId, answerable = false }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean; /** The assistant reply this text is; only its commando-ui blocks take answers. */ itemId?: string; answerable?: boolean }) {
+export const Markdown = memo(function Markdown({ text, images, resources, diagrams, embeds, running, itemId, answerable = false }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; diagrams?: readonly ChatReplyDiagram[]; embeds?: readonly ChatReplyEmbed[]; running?: boolean; /** The assistant reply this text is; only its commando-ui blocks take answers. */ itemId?: string; answerable?: boolean }) {
   const actions = use(ResourceActionsContext)
-  const reply = useMemo(() => ({ images, running }), [images, running])
+  const reply = useMemo(() => ({ images, embeds, running }), [images, embeds, running])
   const resourceReply = useMemo(() => ({ resources, text, cwd: actions.cwd, onAction: actions.onResourceAction }), [resources, text, actions])
   const uiReply = useMemo(() => ({ itemId, answerable, running }), [itemId, answerable, running])
+  const diagramReply = useMemo(() => ({ diagrams, running }), [diagrams, running])
   return (
     <CommandoUiReplyContext value={uiReply}>
     <ReplyImagesContext value={reply}>
       <ReplyResourcesContext value={resourceReply}>
-        <div className="chat-markdown">
-          <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={rehypePlugins} components={replyComponents} urlTransform={keepImageSources}>
-            {text}
-          </ReactMarkdown>
-        </div>
+        <ReplyDiagramsContext value={diagramReply}>
+          <div className="chat-markdown">
+            <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={rehypePlugins} components={replyComponents} urlTransform={keepImageSources}>
+              {text}
+            </ReactMarkdown>
+          </div>
+        </ReplyDiagramsContext>
       </ReplyResourcesContext>
     </ReplyImagesContext>
     </CommandoUiReplyContext>
@@ -459,7 +468,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
       const asks = context.askMarkers?.get(row.item.id)
       return (
         <div className="chat-reply pb-3" data-chat-item-id={row.item.id} {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
-          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} itemId={row.item.id} answerable />
+          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} diagrams={row.item.diagrams} embeds={row.item.embeds} running={row.item.status === 'running'} itemId={row.item.id} answerable />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
               <span className="chat-ask-marker-diamond" aria-hidden="true">◆</span>

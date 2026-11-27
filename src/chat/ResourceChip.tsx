@@ -74,7 +74,8 @@ function ResourceActions({ resource, run, disabled, local }: {
   </MenuPopup>
 }
 
-export function ResourceChip({ resource, children, onAction }: { resource: ChatReplyResource; children: ReactNode; onAction?: ResourceActionHandler }) {
+/** `primary` overrides what a click does, such as opening a page in the browser instead of a tile. */
+export function ResourceChip({ resource, children, onAction, primary, title }: { resource: ChatReplyResource; children: ReactNode; onAction?: ResourceActionHandler; primary?: ResourceAction; title?: string }) {
   const { local } = useHost()
   const { run, notice, busy } = useResourceActions(onAction)
   const [menu, setMenu] = useState(false)
@@ -82,8 +83,8 @@ export function ResourceChip({ resource, children, onAction }: { resource: ChatR
   const deck = deckOf(resource)
   return <span className="chat-resource-inline">
     <span className={`chat-resource-chip border-border bg-card ${missing ? 'chat-resource-missing' : 'text-primary'}`}
-      title={missing ? `${resource.path} — not found` : deck ? `${deck.title} · ${slideCount(deck.slides)} — ${resource.path}` : resource.path} onContextMenu={(event) => { event.preventDefault(); setMenu(true) }}>
-      <button type="button" className="chat-resource-label" disabled={busy} onClick={() => void run(resource, local && !missing ? primaryResourceAction(resource) : 'copy')}>
+      title={missing ? `${resource.path} — not found` : title ?? (deck ? `${deck.title} · ${slideCount(deck.slides)} — ${resource.path}` : resource.path)} onContextMenu={(event) => { event.preventDefault(); setMenu(true) }}>
+      <button type="button" className="chat-resource-label" disabled={busy} onClick={() => void run(resource, local && !missing ? primary ?? primaryResourceAction(resource) : 'copy')}>
         <ResourceIcon resource={resource} /><span>{children}</span>
         {deck ? <span className="chat-slides-count text-muted-foreground" aria-hidden="true">{slideCount(deck.slides)}</span> : null}
       </button>

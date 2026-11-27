@@ -159,6 +159,8 @@ import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
 import { ChatReplyResources } from './chat-reply-resources.js'
 import { ChatReplyImages } from './chat-reply-images.js'
+import { ChatReplyDiagrams } from './chat-reply-diagrams.js'
+import { ChatReplyEmbeds } from './chat-reply-embeds.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
 import { asideSessionIds, isMainChatKey, PersistedAsideSessions } from './chat-main-key.js'
 import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
@@ -712,10 +714,12 @@ async function main(): Promise<void> {
 
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port), retainedIds: [...boards.artifactIds(), ...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? [])] })
   boardOptions.artifacts = redlineArtifacts
-  /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
+  /** The registrations inline reply embeds show; set once the embed resolver exists (below). */
+  let embedArtifactIds = (): readonly string[] => []
+  /** Keeps artifact registrations alive while a live, parked or closed tab, a board or a chat reply points at them. */
   const retainTabArtifacts = (): void => {
     boards.prune()
-    redlineArtifacts.retain([...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []), ...boards.artifactIds()])
+    redlineArtifacts.retain([...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []), ...boards.artifactIds(), ...embedArtifactIds()])
   }
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
@@ -1131,6 +1135,22 @@ async function main(): Promise<void> {
   const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
   const replyResources = new ChatReplyResources(undefined, (message) => console.warn(`[chat-resources] ${message}`))
   const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
+  // A new embed is retained as it registers; the shared retain set catches up shortly after, once per burst.
+  let embedRetainTimer: ReturnType<typeof setTimeout> | undefined
+  const replyEmbeds = new ChatReplyEmbeds({
+    artifacts: redlineArtifacts,
+    log: (message) => console.warn(`[chat-embeds] ${message}`),
+    onRetainedChange: () => {
+      if (embedRetainTimer) return
+      embedRetainTimer = setTimeout(() => {
+        embedRetainTimer = undefined
+        try { retainTabArtifacts() } catch (error) { console.warn('[chat-embeds] Could not retain embed registrations', error) }
+      }, 1000)
+      embedRetainTimer.unref?.()
+    },
+  })
+  embedArtifactIds = () => replyEmbeds.retainedIds()
+  const replyDiagrams = new ChatReplyDiagrams(chatImages, { log: (message) => console.warn(`[chat-diagrams] ${message}`) })
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
   const modelCatalog = new ModelCatalog()
@@ -1177,7 +1197,9 @@ async function main(): Promise<void> {
     log: (message) => console.log(message),
     handoffs: chatHandoffs,
     replyResources: (items, cwd) => replyResources.attach(items, cwd),
-    replyImages: (items, cwd) => replyImages.attach(items, cwd),
+    // HTML mock-ups and canvas boards use image syntax too, so they resolve with the images.
+    replyImages: async (items, cwd) => replyEmbeds.attach(await replyImages.attach(items, cwd), cwd),
+    replyDiagrams: (items, cwd, wait) => replyDiagrams.attach(items, cwd, wait),
     onHandoffsChange: () => publishChatHandoffs(),
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
@@ -2071,7 +2093,7 @@ async function main(): Promise<void> {
     screenshots: paneScreenshots,
     artifacts: redlineArtifacts,
     onDeckReplaced: (artifactId) => canvasWatch.replaced(artifactId),
-    openResourceTile: (paneId, url, content) => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, engine: 'webkit', ...(content ? { content } : {}) }, 'owner').pane.id,
+    openResourceTile: (paneId, url, content, engine = 'webkit') => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, ...(content ? { engine: 'webkit', content } : { engine }) }, 'owner').pane.id,
     setPaneMark: (targetId, input) => paneMarks.set(targetId, input),
     acknowledgePaneMark: (targetId) => paneMarks.acknowledge(targetId),
     clearPaneMark: (targetId) => paneMarks.remove(targetId),

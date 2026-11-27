@@ -42,6 +42,23 @@ describe('canvas static serving without sockets', () => {
     await writeFile(join(dir, 'index.html'), '<body>new</body>')
     expect((await get(path + '?canvas-frame=settings_1-2')).body.toString()).toBe('<body>new' + script + '</body>')
   })
+  it('injects the Esc relay into a page a chat reply shows inline, and serves it', async () => {
+    await writeFile(join(dir, 'Accounts.html'), '<body>hi</body>')
+    await writeFile(join(dir, 'asset.js'), 'const x = "</body>"')
+    const relay = '<script src="/redline/embed-frame.js"></script>'
+    expect((await get(`/redline/artifacts/${id}/Accounts.html?chat-embed=1`)).body.toString()).toBe(`<body>hi${relay}</body>`)
+    expect((await get(`/redline/artifacts/${id}/Accounts.html?chat-embed=1&canvas-frame=f`)).body.toString()).toBe(`<body>hi${script.replace('settings_1-2', 'f')}${relay}</body>`)
+    expect((await get(`/redline/artifacts/${id}/Accounts.html?chat-embed=yes`)).body.toString()).toBe('<body>hi</body>')
+    expect((await get(`/redline/artifacts/${id}/asset.js?chat-embed=1`)).body.toString()).toBe('const x = "</body>"')
+    await writeFile(join(dir, 'Legacy.htm'), '<body>old</body>')
+    const legacy = await get(`/redline/artifacts/${id}/Legacy.htm?chat-embed=1`)
+    expect(legacy.body.toString()).toBe(`<body>old${relay}</body>`)
+    expect(legacy.headers['Content-Type']).toBe('text/html; charset=utf-8')
+    const served = await get('/redline/embed-frame.js')
+    expect(served.status).toBe(200)
+    expect(served.headers['Content-Type']).toMatch(/^text\/javascript/)
+    expect(served.body.toString()).toContain("type: 'escape'")
+  })
   it('leaves non-HTML intact and confines requests to registered files', async () => {
     await writeFile(join(dir, 'asset.js'), 'const x = "</body>"')
     expect((await get(`/redline/artifacts/${id}/asset.js?canvas-frame=f`)).body.toString()).toBe('const x = "</body>"')

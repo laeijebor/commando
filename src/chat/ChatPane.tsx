@@ -399,9 +399,9 @@ function ChatColumn({
   const openTileRef = useRef(onOpenTile)
   openTileRef.current = onOpenTile
   const resourcePaneId = paneId ?? hostChat.paneId
-  const resourceAction = useCallback<ResourceActionHandler>(async (path, action, line) => {
+  const resourceAction = useCallback<ResourceActionHandler>(async (path, action, line, options) => {
     if (!paneManagementApi) throw new Error('Resource actions are unavailable')
-    const result = await paneManagementApi.resourceAction(resourcePaneId, path, action, line)
+    const result = await paneManagementApi.resourceAction(resourcePaneId, path, action, line, options)
     if (result.webPaneId) openTileRef.current?.(result.webPaneId)
     return result
   }, [paneManagementApi, resourcePaneId])
@@ -617,7 +617,7 @@ function ChatColumn({
         pressedRange.current = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null
       }
       onFocus()
-    }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+    }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane" data-chat-overlay-root="">
       <RichLinksContext value={richLinks}>
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">

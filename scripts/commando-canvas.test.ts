@@ -51,6 +51,29 @@ describe('commando-canvas CLI', () => {
     const body = JSON.parse(calls[2][calls[2].indexOf('--data') + 1])
     expect(body).toEqual({ url: 'http://127.0.0.1:4410/redline/artifacts/0123456789abcdef/', anchor: '%12', engine: 'webkit', content: { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'board.json' } })
   })
+  it('with --inline registers and validates without opening a tile, and prints the Markdown line', async () => {
+    const f = await fixture()
+    delete f.env.TMUX_PANE
+    const result = await run([f.artifact, '--inline'], f.env)
+    expect(result.code, result.stderr).toBe(0)
+    // The folder name has a space, so the address is in angle brackets; the title comes from the manifest.
+    expect(result.stdout).toBe(`![Board](<${f.artifact}>)\n`)
+    const calls = (await readFile(f.calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as string[])
+    expect(calls.map((call) => call.find((arg) => arg.startsWith('http:')))).toEqual([
+      'http://127.0.0.1:4410/api/redline/artifacts', 'http://127.0.0.1:4410/api/redline/artifacts/0123456789abcdef/canvas',
+    ])
+    const custom = await run([f.artifact, '--manifest', 'board.json', '--inline'], f.env)
+    expect(custom.stdout).toBe(`![Board](<${f.artifact}/board.json>)\n`)
+  })
+  it('opens a tile with --tile as without a flag, and refuses both flags or a nested inline manifest', async () => {
+    const f = await fixture()
+    const result = await run(['--tile', f.artifact], f.env)
+    expect(result.code, result.stderr).toBe(0)
+    expect(result.stdout).toBe('w-12345678\n')
+    expect((await readFile(f.calls, 'utf8')).trim().split('\n')).toHaveLength(3)
+    expect((await run([f.artifact, '--inline', '--tile'], f.env)).code).toBe(2)
+    expect((await run([f.artifact, '--inline', '--manifest', 'boards/a.json'], f.env)).code).toBe(2)
+  })
   it.each([
     ['canvas.json', 'canvas.json: must be valid JSON', '200'],
     ['canvas.json', 'canvas.json: not found', '404'],

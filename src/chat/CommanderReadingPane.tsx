@@ -92,7 +92,8 @@ function ReadingPane({ peek, full }: { peek: CommanderPeek; full: boolean }) {
       </Menu> : null}
       {full ? null : <Button size="icon-xs" variant="ghost-muted" onClick={peek.onClose} aria-label="Close" title="Close"><X aria-hidden="true" /></Button>}
     </header>
-    <div className="commander-reading-body flex min-h-0 flex-1 flex-col">{peek.view}</div>
+    {/* A maximised inline mock-up covers the transcript and composer, below the header (EmbedFrame.tsx). */}
+    <div className="commander-reading-body flex min-h-0 flex-1 flex-col" data-chat-overlay-root="">{peek.view}</div>
   </section>
 }
 

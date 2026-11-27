@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # commando-canvas — register and open an agent canvas beside this tmux pane.
+# --tile (the default) opens it as a side tile; --inline registers it without
+# a tile and prints the Markdown line that shows it inside the agent's reply.
 set -euo pipefail
 
 command="open"
@@ -39,9 +41,13 @@ fi
 
 dir=""
 manifest="canvas.json"
+placement=""
 if [ "$command" = open ]; then
 while [ $# -gt 0 ]; do
   case "$1" in
+    --inline|--tile)
+      [ -z "$placement" ] || [ "$placement" = "${1#--}" ] || { echo "commando-canvas: use --inline or --tile, not both" >&2; exit 2; }
+      placement="${1#--}"; shift ;;
     --manifest)
       [ $# -ge 2 ] || { echo "commando-canvas: --manifest needs a value" >&2; exit 2; }
       manifest="$2"; shift 2 ;;
@@ -52,9 +58,14 @@ while [ $# -gt 0 ]; do
       dir="$1"; shift ;;
   esac
 done
-[ -n "$dir" ] || { echo "usage: commando-canvas <dir> [--manifest canvas.json]" >&2; exit 2; }
+[ -n "$dir" ] || { echo "usage: commando-canvas <dir> [--manifest canvas.json] [--inline | --tile]" >&2; exit 2; }
 pane="${TMUX_PANE:-}"
-[ -n "$pane" ] || { echo "commando-canvas: not inside a tmux pane (TMUX_PANE is unset)" >&2; exit 1; }
+case "$placement:$manifest" in
+  inline:*/*) echo "commando-canvas: --inline needs the manifest at the top of the canvas folder" >&2; exit 2 ;;
+esac
+if [ "$placement" != inline ]; then
+  [ -n "$pane" ] || { echo "commando-canvas: not inside a tmux pane (TMUX_PANE is unset)" >&2; exit 1; }
+fi
 fi
 token_file="${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}"
 if [ ! -r "$token_file" ]; then
@@ -107,6 +118,18 @@ node -e '
   for (const error of errors) console.error("commando-canvas: " + error);
   if (errors.some(error => error.startsWith(manifest + ":"))) process.exit(1);
 ' "$body_file" "$manifest"
+if [ "$placement" = inline ]; then
+  # The reply shows the board where this line sits: the folder, or the manifest when it isn't canvas.json.
+  node -e '
+    const result = JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+    const [dir, manifest] = process.argv.slice(2);
+    const target = manifest === "canvas.json" ? dir : dir + "/" + manifest;
+    const title = (result.manifest && result.manifest.title || "Canvas").replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g, " ");
+    const address = /[\s()<>]/.test(target) ? "<" + target.replace(/[<>]/g, encodeURIComponent) + ">" : target;
+    console.log("![" + title + "](" + address + ")");
+  ' "$body_file" "$dir" "$manifest"
+  exit 0
+fi
 body=$(node -e 'console.log(JSON.stringify({url:process.argv[1],anchor:process.argv[2],engine:"webkit",content:{kind:"canvas",artifactId:process.argv[3],manifest:process.argv[4]}}))' "$artifact_url" "$pane" "$artifact_id" "$manifest")
 request -X POST -H 'Content-Type: application/json' --data "$body" "$base/api/web-panes"
 node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).webPaneId)' "$body_file"

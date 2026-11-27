@@ -41,6 +41,9 @@ export function markdownImageSources(text: string): string[] {
   return [...new Set(sources)]
 }
 
+/** HTML mock-ups and canvas manifests: embeds (chat-reply-embeds.ts) own them, so they are never read as images. */
+export const isEmbedAddress = (path: string): boolean => /\.(?:html?|json)$/i.test(path)
+
 /** The file an image address names on this machine, or null for a web address or anything else. */
 export function localImagePath(src: string, cwd: string, home = homedir()): string | null {
   if (/^file:\/\//i.test(src)) {
@@ -57,7 +60,7 @@ export function localImagePath(src: string, cwd: string, home = homedir()): stri
   return isAbsolute(src) ? src : resolve(cwd, src)
 }
 
-type Resolved = { id: string } | { error: ChatReplyImageError }
+type Resolved = { id: string; path: string } | { error: ChatReplyImageError }
 
 /** A file that isn't there; any other failure is one the user can fix (permissions, a file for a folder). */
 const ABSENT = new Set(['ENOENT', 'ENOTDIR'])
@@ -85,9 +88,10 @@ export class ChatReplyImages {
     const images: ChatReplyImage[] = []
     for (const src of markdownImageSources(item.text).slice(0, MAX_IMAGES_PER_REPLY)) {
       const path = localImagePath(src, cwd, this.home)
-      if (!path) continue
+      if (!path || isEmbedAddress(path)) continue
       const resolved = await this.resolve(path)
-      // A relative or ~/ address: the notice says where the daemon looked.
+      // A relative or ~/ address: the notice says where the daemon looked. A stored
+      // image names its file, so the renderer can reveal it or open it as a tile.
       images.push({ src, ...resolved, ...('error' in resolved && path !== src ? { path } : {}) })
     }
     const { images: _previous, ...rest } = item
@@ -128,7 +132,7 @@ export class ChatReplyImages {
     let resolved: Resolved
     try {
       const saved = await this.store.saveReplyImage(bytes)
-      resolved = 'error' in saved ? { error: saved.error } : { id: saved.id }
+      resolved = 'error' in saved ? { error: saved.error } : { id: saved.id, path }
     } catch (error) {
       if (!this.loggedStoreFailure) {
         this.loggedStoreFailure = true

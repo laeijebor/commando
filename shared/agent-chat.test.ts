@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { takeQueueBatch, parseChatQueueAction, attachmentNote, chatImageContentType, hostTakesVideos, isChatAttachmentId, isChatVideoId, notedVideos, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
+import { findChatReplyEmbed, takeQueueBatch, parseChatQueueAction, attachmentNote, chatImageContentType, hostTakesVideos, isChatAttachmentId, isChatVideoId, notedVideos, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
@@ -370,6 +370,101 @@ it('validates reply resources, drops malformed entries, and preserves only known
   const capped = parseChatItem({ ...base, kind: 'assistant_message', text: 'files', resources: Array(60).fill(file) })
   expect(capped?.kind === 'assistant_message' && capped.resources?.length).toBe(50)
   expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'files', resources: [{ path: '/bad' }] })).not.toHaveProperty('resources')
+})
+
+it('keeps the path of a stored reply image only when it is a clean absolute path', () => {
+  const id = `${'b'.repeat(64)}.svg`
+  const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', images: [
+    { src: 'a.svg', id, path: '/work/a.svg' }, { src: 'b.svg', id, path: 'relative.svg' }, { src: 'c.svg', id, path: '/bad\u0007.svg' },
+  ] })
+  expect(parsed).toEqual({ ...base, kind: 'assistant_message', text: 'x', images: [{ src: 'a.svg', id, path: '/work/a.svg' }, { src: 'b.svg', id }, { src: 'c.svg', id }] })
+})
+
+it('validates rendered pr-diagram fences and drops malformed ones', () => {
+  const hash = 'c'.repeat(64)
+  const id = `${'d'.repeat(64)}.svg`
+  const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: [
+    { hash, id, extra: 'drop' },
+    { hash, error: 'invalid', message: 'title: is required' },
+    { hash, error: 'renderer_missing', message: '   ' },
+    { hash, id: `${'d'.repeat(64)}.png` },
+    { hash: 'short', id },
+    { hash, error: 'exploded' },
+    { hash, id: '../etc/passwd.svg' },
+  ] })
+  expect(parsed).toEqual({ ...base, kind: 'assistant_message', text: 'x', diagrams: [
+    { hash, id }, { hash, error: 'invalid', message: 'title: is required' }, { hash, error: 'renderer_missing' },
+  ] })
+  const long = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: [{ hash, error: 'invalid', message: 'x'.repeat(5000) }] })
+  expect(long?.kind === 'assistant_message' && long.diagrams?.[0]).toMatchObject({ message: 'x'.repeat(2000) })
+  const capped = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: Array(20).fill({ hash, id }) })
+  expect(capped?.kind === 'assistant_message' && capped.diagrams?.length).toBe(10)
+  expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: 'nope' })).not.toHaveProperty('diagrams')
+})
+
+describe('reply embeds', () => {
+  const url = '/redline/artifacts/0123456789abcdef/settings/Accounts.html'
+  it('keeps HTML and canvas embeds that point at artifact routes, and errors', () => {
+    const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', embeds: [
+      { src: 'a.html', kind: 'html', path: '/w/.canvas/a.html', url },
+      { src: '.canvas/settings', kind: 'canvas', path: '/w/.canvas/settings', url: '/redline/artifacts/0123456789abcdef/', title: 'Settings', frames: [
+        { id: 'accounts', title: 'Accounts', url, w: 390, h: 844 },
+        { id: 'bad id', title: 'x', url },
+        { id: 'web', title: 'x', url: 'https://example.com/a.html' },
+        { id: 'big', title: 'Big', url, w: -1, h: 'tall' },
+      ] },
+      { src: 'b.html', kind: 'html', path: '/w/b.html', error: 'not-embeddable' },
+      { src: 'gone.html', kind: 'html', error: 'missing' },
+    ] })
+    expect(parsed?.kind === 'assistant_message' && parsed.embeds).toEqual([
+      { src: 'a.html', kind: 'html', path: '/w/.canvas/a.html', url },
+      { src: '.canvas/settings', kind: 'canvas', path: '/w/.canvas/settings', url: '/redline/artifacts/0123456789abcdef/', title: 'Settings', frames: [
+        { id: 'accounts', title: 'Accounts', url, w: 390, h: 844 },
+        { id: 'big', title: 'Big', url },
+      ] },
+      { src: 'b.html', kind: 'html', path: '/w/b.html', error: 'not-embeddable' },
+      { src: 'gone.html', kind: 'html', error: 'missing' },
+    ])
+  })
+
+  it.each([
+    ['a web page', 'https://example.com/a.html'],
+    ['a protocol-relative page', '//example.com/a.html'],
+    ['another daemon route', '/api/pane-management/panes'],
+    ['a short artifact id', '/redline/artifacts/0123/a.html'],
+    ['a dot segment', '/redline/artifacts/0123456789abcdef/../../api'],
+    ['an encoded dot segment', '/redline/artifacts/0123456789abcdef/%2E%2E/x'],
+    ['a half-encoded dot segment', '/redline/artifacts/0123456789abcdef/.%2e/x'],
+    ['an encoded single dot', '/redline/artifacts/0123456789abcdef/%2e/x'],
+    ['a trailing dot segment', '/redline/artifacts/0123456789abcdef/a/..'],
+    ['an encoded slash', '/redline/artifacts/0123456789abcdef/..%2Fapi'],
+    ['an encoded backslash', '/redline/artifacts/0123456789abcdef/%5C..%5Capi'],
+    ['broken percent-encoding', '/redline/artifacts/0123456789abcdef/%E0%A4%A.html'],
+    ['a query', '/redline/artifacts/0123456789abcdef/a.html?x=1'],
+    ['a backslash', '/redline/artifacts/0123456789abcdef/a\\b.html'],
+  ])('drops an embed whose url is %s', (_name, bad) => {
+    const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', embeds: [{ src: 'a.html', kind: 'html', url: bad }] })
+    expect(parsed?.kind === 'assistant_message' && parsed.embeds).toBeUndefined()
+  })
+
+  it('keeps encoded names that are not dot segments', () => {
+    const url = '/redline/artifacts/0123456789abcdef/My%20Page%2E.html'
+    const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', embeds: [{ src: 'a.html', kind: 'html', url }] })
+    expect(parsed?.kind === 'assistant_message' && parsed.embeds?.[0].url).toBe(url)
+  })
+
+  it('drops unknown kinds and errors, and caps the list', () => {
+    const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', embeds: [
+      { src: 'a.html', kind: 'pdf', url }, { src: 'a.html', kind: 'html', error: 'nope' }, ...Array(20).fill({ src: 'a.html', kind: 'html', url }),
+    ] })
+    expect(parsed?.kind === 'assistant_message' && parsed.embeds).toHaveLength(8)
+  })
+
+  it('finds an embed by its address, encoded or not', () => {
+    const embeds = [{ src: '.canvas/My Board', kind: 'canvas' as const, error: 'missing' as const }]
+    expect(findChatReplyEmbed(embeds, '.canvas/My%20Board')).toBe(embeds[0])
+    expect(findChatReplyEmbed(embeds, '.canvas/Other')).toBeUndefined()
+  })
 })
 
 it('keeps a valid slides deck on a reply resource and drops a malformed one', () => {

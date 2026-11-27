@@ -65,7 +65,7 @@ describe('ChatReplyImages', () => {
     const [item] = await images.attach([reply(text)], dir)
     expect(item).toMatchObject({ kind: 'assistant_message', text, images: [
       { src: '~/Downloads/slide.png', id: expect.stringMatching(/^[0-9a-f]{64}\.png$/) },
-      { src: 'diagram.svg', id: expect.stringMatching(/^[0-9a-f]{64}\.svg$/) },
+      { src: 'diagram.svg', id: expect.stringMatching(/^[0-9a-f]{64}\.svg$/), path: join(dir, 'diagram.svg') },
     ] })
   })
 
@@ -91,6 +91,15 @@ describe('ChatReplyImages', () => {
     expect(item).toMatchObject({ images: [{ error: 'failed' }] })
     await failing.attach([reply('![a](~/Downloads/slide.png)')], dir)
     expect(logs).toEqual([expect.stringContaining('disk full')])
+  })
+
+  it('leaves HTML mock-ups and canvas manifests to the embed resolver', async () => {
+    await writeFile(join(dir, 'mock.html'), '<h1>Mock</h1>')
+    await writeFile(join(dir, 'canvas.json'), '{}')
+    const save = vi.spyOn(store, 'saveReplyImage')
+    const [item] = await images.attach([reply('![m](mock.html) ![c](canvas.json)')], dir)
+    expect(item).not.toHaveProperty('images')
+    expect(save).not.toHaveBeenCalled()
   })
 
   it('finds a percent-encoded path', async () => {

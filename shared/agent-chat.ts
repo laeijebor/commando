@@ -344,11 +344,55 @@ export type ChatReplyImageError = 'missing' | 'unreadable' | 'unsupported' | 'to
  * `src` is the address exactly as the Markdown parser reads it, so the
  * renderer can match it; the daemon stores the file and gives it an id.
  */
-export type ChatReplyImage = { src: string; id: string } | {
+export type ChatReplyImage = {
+  src: string
+  id: string
+  /** The file the daemon stored, so the renderer can reveal or tile it. */
+  path?: string
+} | {
   src: string
   error: ChatReplyImageError
   /** The file the daemon looked for, when `src` is relative or `~/`. */
   path?: string
+}
+
+/** Why a ```pr-diagram fence has no picture: see `ChatReplyDiagram`. */
+export type ChatReplyDiagramError = 'invalid' | 'too_large' | 'timeout' | 'failed' | 'renderer_missing'
+
+/**
+ * A ```pr-diagram fence the daemon rendered, attached under `prDiagramHash`
+ * of its source (shared/pr-diagram.ts). `id` is the stored SVG; `message`
+ * says what the renderer reported for an invalid document.
+ */
+export type ChatReplyDiagram = { hash: string; id: string } | {
+  hash: string
+  error: ChatReplyDiagramError
+  message?: string
+}
+
+/** Why a reply's HTML mock-up or canvas shows as a chip instead of a frame. */
+export type ChatReplyEmbedError = 'missing' | 'not-embeddable' | 'invalid'
+
+/** A frame of a canvas embed: its artifact URL and size in world pixels, for the thumbnail strip. */
+export type ChatReplyEmbedFrame = { id: string; title: string; url: string; w?: number; h?: number }
+
+/**
+ * An HTML mock-up or canvas board an agent shows in its reply with image
+ * syntax, `![Accounts](.canvas/settings/Accounts.html)`. `src` is the address
+ * as the Markdown parser reads it; `url` is where the daemon serves it from
+ * its artifact registry, only when the file passes the tile safety rules
+ * (server/artifact-folders.ts). Anything else carries `error` and shows as a chip.
+ */
+export type ChatReplyEmbed = {
+  src: string
+  kind: 'html' | 'canvas'
+  /** The file or canvas folder on this machine, for tile and chip actions. */
+  path?: string
+  url?: string
+  /** A canvas's manifest title. */
+  title?: string
+  frames?: ChatReplyEmbedFrame[]
+  error?: ChatReplyEmbedError
 }
 
 function decodedAddress(value: string): string {
@@ -367,6 +411,13 @@ export function findChatReplyImage(images: readonly ChatReplyImage[] | undefined
   if (!images?.length) return undefined
   const wanted = decodedAddress(src)
   return images.find((image) => image.src === src || decodedAddress(image.src) === wanted)
+}
+
+/** The reply embed a rendered `<img>` means; addresses compare decoded, as for images. */
+export function findChatReplyEmbed(embeds: readonly ChatReplyEmbed[] | undefined, src: string): ChatReplyEmbed | undefined {
+  if (!embeds?.length) return undefined
+  const wanted = decodedAddress(src)
+  return embeds.find((embed) => embed.src === src || decodedAddress(embed.src) === wanted)
 }
 
 /** An image in a message or tool result, stored by the daemon or host. */
@@ -469,6 +520,10 @@ export type ChatItem = ChatItemBase & (
       /** Local images the reply shows with Markdown; added by the daemon. */
       images?: ChatReplyImage[]
       resources?: ChatReplyResource[]
+      /** Rendered ```pr-diagram fences; added by the daemon. */
+      diagrams?: ChatReplyDiagram[]
+      /** HTML mock-ups and canvas boards the reply shows inline; added by the daemon. */
+      embeds?: ChatReplyEmbed[]
     }
   | { kind: 'reasoning'; text: string }
   | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
@@ -1084,12 +1139,72 @@ function parseChatReplyImages(value: unknown): ChatReplyImage[] | undefined {
   if (!Array.isArray(value)) return undefined
   const images = value.slice(0, MAX_ITEM_IMAGES).flatMap((image): ChatReplyImage[] => {
     if (!isRecord(image) || typeof image.src !== 'string' || !image.src || image.src.length > 4096) return []
-    if (isChatReplyImageId(image.id)) return [{ src: image.src, id: image.id }]
+    if (isChatReplyImageId(image.id)) {
+      const path = typeof image.path === 'string' && image.path.startsWith('/') && image.path.length <= 4096 && !/[\u0000-\u001f\u007f-\u009f]/u.test(image.path) ? image.path : undefined
+      return [withOptional({ src: image.src, id: image.id }, { path })]
+    }
     if (!REPLY_IMAGE_ERRORS.includes(image.error as ChatReplyImageError)) return []
     const path = typeof image.path === 'string' && image.path && image.path.length <= 4096 && image.path !== image.src ? image.path : undefined
     return [withOptional({ src: image.src, error: image.error as ChatReplyImageError }, { path })]
   })
   return images.length ? images : undefined
+}
+
+const REPLY_DIAGRAM_ERRORS: readonly ChatReplyDiagramError[] = ['invalid', 'too_large', 'timeout', 'failed', 'renderer_missing']
+const MAX_REPLY_DIAGRAMS = 10
+
+/** A reply's rendered diagrams; one that doesn't parse is dropped, and its fence shows as code. */
+export function parseChatReplyDiagrams(value: unknown): ChatReplyDiagram[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const diagrams = value.slice(0, MAX_REPLY_DIAGRAMS).flatMap((diagram): ChatReplyDiagram[] => {
+    if (!isRecord(diagram) || typeof diagram.hash !== 'string' || !/^[0-9a-f]{64}$/.test(diagram.hash)) return []
+    if (isChatReplyImageId(diagram.id) && diagram.id.endsWith('.svg')) return [{ hash: diagram.hash, id: diagram.id }]
+    if (!REPLY_DIAGRAM_ERRORS.includes(diagram.error as ChatReplyDiagramError)) return []
+    const message = typeof diagram.message === 'string' && diagram.message.trim() ? diagram.message.slice(0, 2000) : undefined
+    return [withOptional({ hash: diagram.hash, error: diagram.error as ChatReplyDiagramError }, { message })]
+  })
+  return diagrams.length ? diagrams : undefined
+}
+
+const REPLY_EMBED_ERRORS: readonly ChatReplyEmbedError[] = ['missing', 'not-embeddable', 'invalid']
+export const MAX_REPLY_EMBEDS = 10
+const MAX_EMBED_FRAMES = 50
+/** Only the daemon's own artifact routes: an embed never points a frame anywhere else. */
+const ARTIFACT_URL = /^\/redline\/artifacts\/[0-9a-f]{16}\/[^\s\\?#]*$/
+/** An artifact URL a browser resolves to itself: no `.` or `..` segment, however it is encoded. */
+function embedUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 4096 || !ARTIFACT_URL.test(value)) return false
+  return value.split('/').every((part) => {
+    let decoded: string
+    try { decoded = decodeURIComponent(part) } catch { return false }
+    return decoded !== '.' && decoded !== '..' && !decoded.includes('/') && !decoded.includes('\\')
+  })
+}
+const embedSize = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 100_000 ? value : undefined
+
+/** A reply's embeds; one that doesn't parse is dropped, and the reply shows its address instead. */
+export function parseChatReplyEmbeds(value: unknown): ChatReplyEmbed[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const embeds = value.slice(0, MAX_REPLY_EMBEDS).flatMap((embed): ChatReplyEmbed[] => {
+    if (!isRecord(embed) || typeof embed.src !== 'string' || !embed.src || embed.src.length > 4096) return []
+    if (embed.kind !== 'html' && embed.kind !== 'canvas') return []
+    const path = typeof embed.path === 'string' && embed.path.startsWith('/') && embed.path.length <= 4096 && !/[\u0000-\u001f\u007f-\u009f]/u.test(embed.path) ? embed.path : undefined
+    const base = withOptional({ src: embed.src, kind: embed.kind } as ChatReplyEmbed, { path })
+    if (embed.error !== undefined) {
+      if (!REPLY_EMBED_ERRORS.includes(embed.error as ChatReplyEmbedError)) return []
+      return [{ ...base, error: embed.error as ChatReplyEmbedError }]
+    }
+    if (!embedUrl(embed.url)) return []
+    const title = typeof embed.title === 'string' && embed.title.trim() ? embed.title.slice(0, 200) : undefined
+    if (embed.kind === 'html') return [withOptional({ ...base, url: embed.url }, { title })]
+    const frames = (Array.isArray(embed.frames) ? embed.frames : []).slice(0, MAX_EMBED_FRAMES).flatMap((frame): ChatReplyEmbedFrame[] => {
+      if (!isRecord(frame) || typeof frame.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(frame.id) ||
+        typeof frame.title !== 'string' || !embedUrl(frame.url)) return []
+      return [withOptional({ id: frame.id, title: frame.title.slice(0, 200), url: frame.url } as ChatReplyEmbedFrame, { w: embedSize(frame.w), h: embedSize(frame.h) })]
+    })
+    return [withOptional({ ...base, url: embed.url, frames }, { title })]
+  })
+  return embeds.length ? embeds : undefined
 }
 
 const COMMAND_NAME = /^[\w][\w:.@-]{0,127}$/
@@ -1219,7 +1334,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
         : null
     case 'assistant_message':
       return typeof value.text === 'string'
-        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images), resources: parseChatReplyResources(value.resources) })
+        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images), resources: parseChatReplyResources(value.resources), diagrams: parseChatReplyDiagrams(value.diagrams), embeds: parseChatReplyEmbeds(value.embeds) })
         : null
     case 'reasoning':
       return typeof value.text === 'string' ? { ...base, kind: value.kind, text: value.text.slice(0, MAX_TEXT) } : null
