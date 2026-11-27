@@ -70,7 +70,10 @@ function approvalProblems(pr) {
   for (const review of pr.reviews ?? []) {
     if (review.state === 'APPROVED' || review.state === 'CHANGES_REQUESTED' || review.state === 'DISMISSED') verdicts.set(review.author?.login, review.state)
   }
-  return [...verdicts.values()].includes('APPROVED') ? [] : ['no approving review']
+  const latest = [...verdicts.values()]
+  // reviewDecision is null without a required-review rule, so check the verdicts themselves.
+  if (latest.includes('CHANGES_REQUESTED')) return ['changes requested']
+  return latest.includes('APPROVED') ? [] : ['no approving review']
 }
 
 /** Codex keeps its review state as JSON in a summary comment. */
@@ -92,10 +95,11 @@ function botProblems(pr, threads) {
   if (codex?.commit_sha && codex.commit_sha !== pr.headRefOid && codex.has_unresolved_findings !== false) {
     problems.push('Codex has not reviewed the head commit; comment "@codex review"')
   }
-  // Codex's own threads are settled by its review state above (a fixed finding's thread often stays open).
+  // With a review state, Codex's own threads are settled by it (a fixed finding's thread often
+  // stays open); without one, its unresolved threads count like any other bot's.
   const open = threads.filter((thread) => !thread.isResolved && !thread.isOutdated)
     .map((thread) => thread.comments.nodes[0]?.author)
-    .filter((author) => author?.__typename === 'Bot' && !/codex/i.test(author.login))
+    .filter((author) => author?.__typename === 'Bot' && !(codex && /codex/i.test(author.login)))
   if (open.length) problems.push(`${open.length} unresolved bot thread(s) from ${[...new Set(open.map((author) => author.login))].join(', ')}`)
   return problems
 }
