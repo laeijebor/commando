@@ -67,6 +67,16 @@ export async function handleLinearApi(
       return true
     }
 
+    if (path.length === 1 && path[0] === 'lookup') {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      json(response, 200, { issue: await service.lookUpIssue(url.searchParams.get('url')) })
+      return true
+    }
+
     const accountId = path[1]
     if (path[0] !== 'accounts' || !accountId) {
       json(response, 404, { error: 'Not found' })

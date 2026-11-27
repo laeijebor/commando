@@ -12,6 +12,7 @@ import { PanePrRecords, isPanePrRef, recordRecency, recordRelation, type PanePrR
 import { resolvePrImpact, type PrImpactReport } from './pane-pr-impacts.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
+import { parsePrChipSummary, type PrChipSummary } from '../shared/rich-links.js'
 import { stripHtmlComments } from '../shared/chat-tile-events.js'
 import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 export type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
@@ -59,6 +60,8 @@ const RATE_LIMIT_BACKOFF_MS = 60_000
 const MAX_RATE_LIMIT_BACKOFF_MS = 15 * 60_000
 const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt cost limit }'
 const PR_METADATA_TTL_MS = 5 * 60_000
+/** Chat PR chips each read one PR; a long chat must not start dozens of `gh` processes at once. */
+const MAX_CONCURRENT_SUMMARIES = 4
 // Background pane reads (session tree counts) poll every 5 minutes, so a page
 // load can reuse any pane list fetched within that window instead of
 // searching GitHub once per pane.
@@ -793,6 +796,8 @@ export class PrService {
   private readonly entities = new PrEntities()
   private readonly conflictInspector = new PrConflictInspector()
   private readonly merging = new Set<string>()
+  private summaryReads = 0
+  private readonly summaryWaiters: Array<() => void> = []
   private readonly runner: GhRunner
   private readonly gitRunner: GitRunner
   private readonly preferences: PrPreferencesStore
@@ -1603,6 +1608,34 @@ export class PrService {
       if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
       return pr
     }, refresh)
+  }
+
+  /** Title and state for a chat PR chip; shares PR Quick Look's cached metadata read. At most four run at once. */
+  async pullRequestSummary(repoInput: unknown, numberInput: unknown): Promise<PrChipSummary> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    // A finished read hands its slot straight to the next waiter.
+    if (this.summaryReads >= MAX_CONCURRENT_SUMMARIES) await new Promise<void>((resolve) => this.summaryWaiters.push(resolve))
+    else this.summaryReads++
+    let pr: JsonRecord
+    try {
+      pr = (await this.metadata(repo, number)).value
+    } finally {
+      const next = this.summaryWaiters.shift()
+      if (next) next()
+      else this.summaryReads--
+    }
+    const user = optionalObject(pr, 'user')
+    const head = optionalObject(pr, 'head')
+    const state = pr.merged === true || typeof pr.merged_at === 'string' ? 'merged'
+      : pr.state === 'closed' ? 'closed' : pr.draft === true ? 'draft' : 'open'
+    const summary = parsePrChipSummary({
+      title: pr.title, state,
+      author: typeof user?.login === 'string' ? user.login : undefined,
+      branch: typeof head?.ref === 'string' ? head.ref : undefined,
+    })
+    if (!summary) throw invalidUpstream()
+    return summary
   }
 
   async pullRequestDetails(repoInput: unknown, numberInput: unknown, options: { refresh?: boolean } = {}): Promise<PrDetails> {

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { WebSocket } from 'ws'
 import { describe, expect, it } from 'vitest'
-import { AGENT_HOST_PROTOCOL_VERSION, type ChatItem, type ChatSessionInfo } from '../shared/agent-chat.js'
+import { AGENT_HOST_PROTOCOL_VERSION, CHAT_PLAN_USAGE_HOST_VERSION, type ChatItem, type ChatPlanUsage, type ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ServerMessage } from '../shared/protocol.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 
@@ -31,7 +31,7 @@ const item = (id: string, text: string, overrides: Partial<ChatItem> = {}): Chat
   id, turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text, ...overrides,
 } as ChatItem)
 
-function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined>; handoffs?: ConstructorParameters<typeof AgentHostHub>[0]['handoffs']; replyImages?: ConstructorParameters<typeof AgentHostHub>[0]['replyImages'] } = {}) {
+function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined>; handoffs?: ConstructorParameters<typeof AgentHostHub>[0]['handoffs']; replyImages?: ConstructorParameters<typeof AgentHostHub>[0]['replyImages']; planUsage?: ConstructorParameters<typeof AgentHostHub>[0]['planUsage'] } = {}) {
   const panes = options.panes ?? new Set(['%1', '%2'])
   const broadcasts: ServerMessage[] = []
   const hub = new AgentHostHub({
@@ -43,6 +43,7 @@ function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hos
     ...(options.currentHostBuild ? { currentHostBuild: options.currentHostBuild } : {}),
     ...(options.handoffs ? { handoffs: options.handoffs } : {}),
     ...(options.replyImages ? { replyImages: options.replyImages } : {}),
+    ...(options.planUsage ? { planUsage: options.planUsage } : {}),
   })
   const connect = () => {
     const socket = new FakeSocket()
@@ -356,6 +357,35 @@ describe('AgentHostHub richer input', () => {
     const pending = hub.searchFiles('%1', 'x')
     socket.close()
     expect((await pending).error).toMatch(/disconnected/)
+  })
+
+  it("sends each login's plan reading to its Claude chats on hosts that take it, and keeps a newer held one", async () => {
+    const shared: ChatPlanUsage = { limits: [{ kind: 'session', title: 'Current session', percent: 20, severity: 'normal' }], updatedAt: 5 }
+    const joined: [string | undefined, ChatPlanUsage | undefined][] = []
+    const { hub, connect } = setup({ panes: new Set(['%1', '%2', '%3', '%4']), planUsage: { joined: (configDir, held) => { joined.push([configDir, held]); return held ?? shared } } })
+    const personal = connect()
+    personal.host({ type: 'session_snapshot', session: session('%1', { hostVersion: CHAT_PLAN_USAGE_HOST_VERSION, configDir: '/p' }), items: [] })
+    const held: ChatPlanUsage = { ...shared, updatedAt: 9 }
+    const restarted = connect()
+    restarted.host({ type: 'session_snapshot', session: session('%2', { hostVersion: CHAT_PLAN_USAGE_HOST_VERSION, configDir: '/p', planUsage: held }), items: [] })
+    const old = connect()
+    old.host({ type: 'session_snapshot', session: session('%3', { hostVersion: CHAT_PLAN_USAGE_HOST_VERSION - 1, configDir: '/p' }), items: [] })
+    const codex = connect()
+    codex.host({ type: 'session_snapshot', session: session('%4', { provider: 'codex', hostVersion: CHAT_PLAN_USAGE_HOST_VERSION }), items: [] })
+    await settle()
+    expect(joined).toEqual([['/p', undefined], ['/p', held]])
+    expect(personal.sent.at(-1)).toEqual({ type: 'plan_usage', paneId: '%1', usage: shared })
+    // Its own reading is the newest: nothing to send back.
+    expect(restarted.sent.some((message) => (message as { type: string }).type === 'plan_usage')).toBe(false)
+    expect([...hub.claudeLogins()]).toEqual(['/p'])
+    hub.deliverPlanUsage('/p', held)
+    hub.deliverPlanUsage('/w', shared)
+    expect(personal.sent.at(-1)).toEqual({ type: 'plan_usage', paneId: '%1', usage: held })
+    expect(restarted.sent.at(-1)).toEqual({ type: 'plan_usage', paneId: '%2', usage: held })
+    for (const socket of [old, codex]) expect(socket.sent.some((message) => (message as { type: string }).type === 'plan_usage')).toBe(false)
+    personal.close()
+    restarted.close()
+    expect(hub.claudeLogins().size).toBe(0)
   })
 
   it('forwards image refs only to hosts that take them', async () => {
