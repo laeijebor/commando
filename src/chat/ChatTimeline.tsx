@@ -9,7 +9,9 @@ import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { providerLabel } from './ComposerControls'
-import { MarkdownPre } from '../MarkdownCode'
+import { MarkdownPre, fenceLanguage, textOf, type HastNode } from '../MarkdownCode'
+import { COMMANDO_UI_FENCE } from '../../shared/commando-ui'
+import { CommandoUiActionsContext, CommandoUiFence, CommandoUiReplyContext, stableAnswerPositions } from './CommandoUiBlock'
 import { PlanCard, type SavePlan } from './PlanCard'
 import type { ResourceActionHandler } from '../paneManagementApi'
 import { ResourceChip, ResourceCardList } from './ResourceChip'
@@ -52,6 +54,7 @@ const markdownComponents: Components = {
 const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void; onOpenReport?: (report: AsideReport) => void; onAsideFromHere?: (item: ChatItem) => void }>({ items: [], now: 0, provider: 'Claude' })
 
 /** Resource actions stay stable while timeline items and clocks update. */
+const NO_QUEUED: readonly string[] = []
 const ResourceActionsContext = createContext<{ cwd: string; onResourceAction?: ResourceActionHandler }>({ cwd: '' })
 
 /** Image addresses reach `ReplyImage` as written: it decides what loads, and a local path is never a link. */
@@ -89,6 +92,8 @@ function MarkdownCode({ children, node, ...props }: ComponentProps<'code'> & Ext
   return resource ? <ResourceChip resource={resource} onAction={onAction}>{children}</ResourceChip> : <code {...props}>{children}</code>
 }
 function MarkdownResourcePre(props: Parameters<typeof MarkdownPre>[0]) {
+  const hast = props.node as HastNode | undefined
+  if (hast && fenceLanguage(hast) === COMMANDO_UI_FENCE) return <CommandoUiFence source={textOf(hast).trimEnd()} />
   return <InlineResourceContext value={false}><MarkdownPre {...props} /></InlineResourceContext>
 }
 
@@ -140,11 +145,13 @@ const replyComponents: Components = {
 }
 
 /** Local images and resources are attached by the daemon while a reply streams. */
-export const Markdown = memo(function Markdown({ text, images, resources, running }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean }) {
+export const Markdown = memo(function Markdown({ text, images, resources, running, itemId, answerable = false }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean; /** The assistant reply this text is; only its commando-ui blocks take answers. */ itemId?: string; answerable?: boolean }) {
   const actions = use(ResourceActionsContext)
   const reply = useMemo(() => ({ images, running }), [images, running])
   const resourceReply = useMemo(() => ({ resources, text, cwd: actions.cwd, onAction: actions.onResourceAction }), [resources, text, actions])
+  const uiReply = useMemo(() => ({ itemId, answerable, running }), [itemId, answerable, running])
   return (
+    <CommandoUiReplyContext value={uiReply}>
     <ReplyImagesContext value={reply}>
       <ReplyResourcesContext value={resourceReply}>
         <div className="chat-markdown">
@@ -154,6 +161,7 @@ export const Markdown = memo(function Markdown({ text, images, resources, runnin
         </div>
       </ReplyResourcesContext>
     </ReplyImagesContext>
+    </CommandoUiReplyContext>
   )
 })
 
@@ -451,7 +459,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
       const asks = context.askMarkers?.get(row.item.id)
       return (
         <div className="chat-reply pb-3" data-chat-item-id={row.item.id} {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
-          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} />
+          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} itemId={row.item.id} answerable />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
               <span className="chat-ask-marker-diamond" aria-hidden="true">◆</span>
@@ -489,7 +497,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled, onOpenReport, onAsideFromHere, asideMarkers }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, queuedAnswers, refusedAnswers, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled, onOpenReport, onAsideFromHere, asideMarkers }: {
   onOpenReport?: (report: AsideReport) => void
   onAsideFromHere?: (item: ChatItem) => void
   asideMarkers?: { itemId: string; id: string; title: string; status: string; onSelect: () => void }[]
@@ -511,6 +519,12 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   /** Brings a redline/canvas card's tile forward; false when it is gone. */
   onOpenTile?: (webPaneId: string) => boolean
   onResourceAction?: ResourceActionHandler
+  /** Sends a commando-ui answer as a chat message; absent while the pane can't send, which disables the blocks. */
+  onUiAnswer?: (text: string) => string | void
+  /** Request ids of answers the host refused. */
+  refusedAnswers?: readonly string[]
+  /** Texts queued to send when the turn ends; a queued answer already counts as given. */
+  queuedAnswers?: readonly string[]
   /** Opens an auto-fix card's PR in the side panel. */
   onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   /** Replies where the agent raised asks that are still open, by item id, with how many. */
@@ -539,6 +553,9 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const now = useNow(live)
   const context = useMemo(() => ({ items, now, onOpenReport, onAsideFromHere, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenReport, onAsideFromHere, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
   const resourceActions = useMemo(() => ({ cwd, onResourceAction }), [cwd, onResourceAction])
+  const positionsRef = useRef<ReturnType<typeof stableAnswerPositions>>({ replyOrder: new Map(), userMessages: [], keys: [] })
+  const positions = (positionsRef.current = stableAnswerPositions(positionsRef.current, items))
+  const uiActions = useMemo(() => ({ ...(onUiAnswer ? { onAnswer: onUiAnswer } : {}), positions, queued: queuedAnswers ?? NO_QUEUED, refused: refusedAnswers ?? NO_QUEUED }), [onUiAnswer, positions, queuedAnswers, refusedAnswers])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const lastTop = useRef(0)
@@ -618,6 +635,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
         <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">
           {header}
           <ResourceActionsContext value={resourceActions}>
+            <CommandoUiActionsContext value={uiActions}>
             <TimelineContext value={context}>
               {rows.length === 0 && !header ? (
                 <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
@@ -630,6 +648,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
                 {markersByRow.get(index)?.map((marker) => <button key={marker.id} type="button" className={`chat-aside-marker${marker.status === 'closed' || marker.status === 'Opened as chat' ? ' is-closed' : ''}`} onClick={marker.onSelect}>↳ Aside: {marker.title} · {marker.status}</button>)}
               </Fragment>)}
             </TimelineContext>
+            </CommandoUiActionsContext>
           </ResourceActionsContext>
           {working && !streaming && !liveWork ? (
             <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">
