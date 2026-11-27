@@ -341,9 +341,83 @@ describe('authenticated Cursor native route', () => {
     expect((await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt'), { paneId: '%9' })).status).toBe(404)
     expect((await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt', { intent: 'x'.repeat(70_000) }))).status).toBe(413)
   })
+  it('records created and impacted PRs from native Cursor CLI postToolUse hooks', async () => {
+    const response = await post('/api/agent-status/hooks/cursor', native('postToolUse', {
+      toolName: 'Shell',
+      createdPullRequests: [{ repo: 'Save-All/Save-All', number: 32224 }],
+      impactedPullRequests: [{ relation: 'pushed', cwd: '/work/Save-All', remote: 'origin', branch: 'feat/live-instant-lobby' }],
+      cwd: '/work/Save-All',
+    }))
+    expect(response.status).toBe(200)
+    expect(createdPullRequests).toEqual([{ paneId: '%1', refs: [{ repo: 'Save-All/Save-All', number: 32224 }] }])
+    expect(impactedPullRequests).toEqual([{
+      paneId: '%1',
+      reports: [{ relation: 'pushed', cwd: '/work/Save-All', remote: 'origin', branch: 'feat/live-instant-lobby' }],
+    }])
+  })
 })
 
 describe('chat panes', () => {
+  it('accepts Cursor chat host hooks for session context and PR tracking without mutating terminal status', async () => {
+    const chatRegistry = new AgentStatusRegistry()
+    const created: Array<{ paneId: string; refs: unknown }> = []
+    const impacted: Array<{ paneId: string; reports: unknown }> = []
+    const api = new AgentStatusHookApi({
+      token,
+      registry: chatRegistry,
+      paneExists: (paneId) => paneId === '%1' || paneId === '%2',
+      paneCommand: () => 'node',
+      onChange: () => {},
+      onPullRequestsCreated: (paneId, refs) => created.push({ paneId, refs }),
+      onPullRequestsImpacted: (paneId, reports) => impacted.push({ paneId, reports }),
+      chatOwnsPane: () => true,
+      chatProvider: (paneId) => (paneId === '%1' ? 'cursor' : 'claude'),
+      chatAsideSession: (_paneId, sessionId) => sessionId === 'aside-conv',
+      now: () => 123,
+    })
+    const chatServer = createServer((request, response) => {
+      void api.handle(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'))
+    })
+    await new Promise<void>((resolve) => chatServer.listen(0, '127.0.0.1', resolve))
+    const address = chatServer.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    const send = (paneId: string, body: Record<string, unknown>) => fetch(`http://127.0.0.1:${address.port}/api/agent-status/hooks/cursor`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Commando-Pane': paneId },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(2_000),
+    })
+    try {
+      const started = await send('%1', { hook_event_name: 'sessionStart', conversation_id: 'main-conv', generation_id: 'main-conv', chatHost: true })
+      expect(await started.json()).toEqual({ ok: true, changed: false, accepted: true })
+
+      const postTool = await send('%1', {
+        hook_event_name: 'postToolUse',
+        conversation_id: 'main-conv',
+        generation_id: 'gen-1',
+        toolName: 'Shell',
+        chatHost: true,
+        createdPullRequests: [{ repo: 'Save-All/Save-All', number: 32224 }],
+        impactedPullRequests: [{ relation: 'pushed', cwd: '/work/Save-All', remote: 'origin', branch: 'feat/live-instant-lobby' }],
+        cwd: '/work/Save-All',
+      })
+      expect(await postTool.json()).toEqual({ ok: true, changed: false, accepted: true })
+      expect(created).toEqual([{ paneId: '%1', refs: [{ repo: 'Save-All/Save-All', number: 32224 }] }])
+      expect(impacted).toEqual([{ paneId: '%1', reports: [{ relation: 'pushed', cwd: '/work/Save-All', remote: 'origin', branch: 'feat/live-instant-lobby' }] }])
+      expect(chatRegistry.get('%1')).toBeUndefined()
+
+      // Aside session, non-Cursor chat pane, or missing chatHost flag stay unaccepted and record nothing.
+      const asideRes = await send('%1', { hook_event_name: 'sessionStart', conversation_id: 'aside-conv', generation_id: 'aside-conv', chatHost: true })
+      expect(await asideRes.json()).toEqual({ ok: true, changed: false })
+      const claudePaneRes = await send('%2', { hook_event_name: 'sessionStart', conversation_id: 'main-conv', generation_id: 'main-conv', chatHost: true })
+      expect(await claudePaneRes.json()).toEqual({ ok: true, changed: false })
+      const nonHostRes = await send('%1', { hook_event_name: 'sessionStart', conversation_id: 'main-conv', generation_id: 'main-conv' })
+      expect(await nonHostRes.json()).toEqual({ ok: true, changed: false })
+    } finally {
+      await new Promise<void>((resolve) => chatServer.close(() => resolve()))
+    }
+  })
+
   it('neither holds nor records PermissionRequest prompts that the chat host answers itself', async () => {
     const chatRegistry = new AgentStatusRegistry()
     const chatInteractions = new AgentInteractionBroker()

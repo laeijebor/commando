@@ -267,6 +267,10 @@ async function main(): Promise<void> {
   const tokenPath = process.env.COMMANDO_AGENT_HOOK_TOKEN_PATH || resolve(homedir(), '.commando', 'agent-hook-token')
   const launcher = process.env.COMMANDO_AGENT_LAUNCHER
   const resumeCommand = launcher ? chatResumeCommand(launcher, parsed) : undefined
+  if (parsed.provider === 'cursor') {
+    process.env.COMMANDO_CHAT_PROVIDER = 'cursor'
+    if (resumeCommand) process.env.COMMANDO_CHAT_RESUME = resumeCommand
+  }
   // Picker changes update these, so restarts and resumes carry them.
   let settings = parsed
   const write = (line: string) => process.stdout.write(`${line}\n`)
@@ -334,7 +338,11 @@ async function main(): Promise<void> {
       process.stdout.write(terminalTitle(next))
     }
     settings = withSessionSettings(parsed, info)
-    if (launcher) session.setResumeCommand(chatResumeCommand(launcher, settings))
+    if (launcher) {
+      const nextResume = chatResumeCommand(launcher, settings)
+      if (parsed.provider === 'cursor') process.env.COMMANDO_CHAT_RESUME = nextResume
+      session.setResumeCommand(nextResume)
+    }
   })
   let switching = false
   session.on('closed', () => {

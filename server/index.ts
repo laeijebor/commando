@@ -90,7 +90,8 @@ import { handleLinearApi } from './linear-api.js'
 import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
-import { PanePrRecords, defaultPanePrRecordsPath } from './pane-pr-records.js'
+import { PanePrRecords, defaultPanePrRecordsPath, type PanePrRef } from './pane-pr-records.js'
+import type { PrImpactReport } from './pane-pr-impacts.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { CloudDiscoveryService } from './cloud-discovery.js'
@@ -1146,8 +1147,21 @@ async function main(): Promise<void> {
     log: (message) => console.warn(`[commando] ${message}`),
   })
   claudePlanUsage.start()
+  const recordCreatedPullRequests = (paneId: string, refs: PanePrRef[]): void => {
+    const targetId = paneForId(paneId)?.targetId
+    if (!targetId) return
+    try { for (const ref of refs) boards.capturePr(targetId, ref, sessionBriefs.get(paneId)?.agentSession) }
+    catch (error) { boardOptions.onError(error) }
+    void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
+  }
+  const recordImpactedPullRequests = (paneId: string, reports: PrImpactReport[]): void => {
+    const targetId = paneForId(paneId)?.targetId
+    if (targetId) void prs.recordPaneImpacts(targetId, reports).then(() => prs.listPanePullRequests(targetId)).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
+  }
   const agentHosts: AgentHostHub = new AgentHostHub({
     onSessionInfo: (session) => void modelCatalog.record(session),
+    onPullRequestsCreated: recordCreatedPullRequests,
+    onPullRequestsImpacted: recordImpactedPullRequests,
     planUsage: claudePlanUsage,
     currentHostBuild,
     paneExists,
@@ -2180,21 +2194,12 @@ async function main(): Promise<void> {
     paneExists,
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
-    onPullRequestsCreated: (paneId, refs) => {
-      const targetId = paneForId(paneId)?.targetId
-      if (targetId) {
-        try { for (const ref of refs) boards.capturePr(targetId, ref, sessionBriefs.get(paneId)?.agentSession) }
-        catch (error) { boardOptions.onError(error) }
-      }
-      if (targetId) void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
-    },
-    onPullRequestsImpacted: (paneId, reports) => {
-      const targetId = paneForId(paneId)?.targetId
-      if (targetId) void prs.recordPaneImpacts(targetId, reports).then(() => prs.listPanePullRequests(targetId)).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
-    },
+    onPullRequestsCreated: recordCreatedPullRequests,
+    onPullRequestsImpacted: recordImpactedPullRequests,
     interactions,
     chatAsideSession: (paneId, sessionId) => agentHosts.isAsideSession(paneId, sessionId),
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
+    chatProvider: (paneId) => agentHosts.providerFor(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,
     cursorForeground: cursorForegroundIsCurrent,
   })
