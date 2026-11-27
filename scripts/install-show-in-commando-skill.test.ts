@@ -98,6 +98,20 @@ describe('Commando skill distribution (isolated HOME and profiles)', () => {
     }
   })
 
+  it('distributes the commando-ui skill, with frontmatter that names it', async () => {
+    const f = await fixture()
+    const canonical = await readFile(join(f.checkout, 'skills/commando-ui/SKILL.md'), 'utf8')
+    expect(canonical).toMatch(/^---\nname: commando-ui\ndescription: .+\n---\n/)
+    for (const component of ['choice', 'approve', 'checklist', 'table', 'stats']) expect(canonical).toContain(`"component": "${component}"`)
+    for (const convention of ['![caption](', 'mermaid', 'pr-diagram', 'commando-ui']) expect(canonical).toContain(convention)
+    const result = await run(f, ['commando-ui'])
+    expect(result.code, result.stderr).toBe(0)
+    for (const root of f.roots) {
+      expect(await readdir(root)).toEqual(['commando-ui'])
+      await expectDistributed(join(f.checkout, 'skills/commando-ui'), join(root, 'commando-ui'))
+    }
+  })
+
   it('installs only selected names, refreshes their canonical files, and preserves unrelated content on repeat runs', async () => {
     const f = await fixture()
     for (const root of f.roots) {

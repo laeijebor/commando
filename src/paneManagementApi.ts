@@ -1,6 +1,6 @@
 import type { PaneMarkTone } from '../shared/protocol'
 
-export type ResourceAction = 'open' | 'reveal' | 'editor' | 'tile'
+export type ResourceAction = 'open' | 'reveal' | 'editor' | 'tile' | 'slides'
 export type ResourceActionResult = { ok: true; performed: ResourceAction; webPaneId?: string }
 /** `engine: 'chromium'` opens a tile for redline review. */
 export type ResourceActionOptions = { engine?: 'chromium' }
@@ -63,8 +63,8 @@ export function createPaneManagementApi(
       const body = await request(`/panes/${encodeURIComponent(paneId)}/resource`, {
         method: 'POST', body: JSON.stringify({ path, action, ...(line !== undefined ? { line } : {}), ...(options?.engine ? { engine: options.engine } : {}) }),
       }) as Partial<ResourceActionResult> | null
-      if (body?.ok !== true || !['open', 'reveal', 'editor', 'tile'].includes(body.performed ?? '') ||
-        (body.performed === 'tile' && typeof body.webPaneId !== 'string')) throw new Error('The daemon did not report a resource action')
+      if (body?.ok !== true || !['open', 'reveal', 'editor', 'tile', 'slides'].includes(body.performed ?? '') ||
+        ((body.performed === 'tile' || body.performed === 'slides') && typeof body.webPaneId !== 'string')) throw new Error('The daemon did not report a resource action')
       return body as ResourceActionResult
     },
     renamePane: (paneId, title) => send(`/panes/${encodeURIComponent(paneId)}/rename`, {

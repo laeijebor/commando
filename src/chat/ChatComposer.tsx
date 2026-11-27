@@ -57,6 +57,7 @@ import { filterPullRequests, pullRequestText, useTriggerState, type PullRequestO
 import { StashMenu } from './StashMenu'
 import { useNow } from './Subagents'
 import { shortPath, type PlanItem } from '../../shared/chat-timeline'
+import type { LinearChipIssue } from '../../shared/rich-links'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
 import { CHAT_SEND_REFUSAL_MS, loadDraft, saveDraft } from './draftStore'
@@ -70,6 +71,8 @@ export interface ChatInputServices {
   uploadImage: (image: PreparedImage) => Promise<ChatImageRef>
   /** Uploads a video as it is; absent where the app can't. */
   uploadVideo?: (file: File, signal?: AbortSignal) => Promise<ChatImageRef>
+  /** The Linear issue a reply links to, for its chip; absent where the app can't look one up. */
+  linearIssue?: (url: string) => Promise<LinearChipIssue | null>
 }
 
 /** Sends the daemon refused, named by the request ids `onSend` returned. */

@@ -83,6 +83,20 @@ describe('PR pane repository API', () => {
     await expect(invalid.json()).resolves.toMatchObject({ code: 'invalid_request' })
   })
 
+  it('serves a chat chip summary through the client, and GitHub being off as a 503', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    vi.spyOn(service, 'pullRequestSummary').mockResolvedValue({ title: 'feat: thing', state: 'merged', author: 'leo' })
+    const base = await startApi(() => undefined, () => undefined, service)
+    const client = createPrsApi('', ((input: string, init?: RequestInit) => fetch(`${base}${input}`, init)) as typeof fetch)
+    expect(await client.summary('acme/widgets', 12)).toEqual({ title: 'feat: thing', state: 'merged', author: 'leo' })
+    expect(service.pullRequestSummary).toHaveBeenCalledWith('acme/widgets', '12')
+    expect((await fetch(`${base}/api/prs/summary?repo=acme/widgets&number=12`, { method: 'POST' })).status).toBe(405)
+    const off = await startApi(() => undefined, () => undefined, new PrService({ githubDisabledReason: 'GitHub is off for this daemon' }))
+    const response = await fetch(`${off}/api/prs/summary?repo=acme/widgets&number=12`)
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toMatchObject({ code: 'github_disabled' })
+  })
+
   it('compares a PR with main by default and with its own base when asked', async () => {
     const service = new PrService({ runner: vi.fn() })
     const diff = vi.spyOn(service, 'pullRequestDiff').mockResolvedValue({ base: 'b', head: 'h', files: [], truncated: false })

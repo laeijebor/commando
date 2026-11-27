@@ -59,14 +59,16 @@ describe('compact resource cards', () => {
   it.each([' — ', ' – ', ' - ', ' : '])('strips a leading %s separator and preserves inline formatting', (separator) => {
     render(<ResourceCardList rows={[{ resource: file, description: <p>{separator}<strong>the carousel</strong></p> }, { resource: folder }]} cwd="/work" />)
     const rows = screen.getAllByRole('listitem')
-    expect(rows[0].querySelector('.chat-resource-title')).toHaveTextContent('main.ts · the carousel')
+    expect(rows[0].querySelector('.chat-resource-title')).toHaveTextContent(/^main\.ts$/)
+    expect(rows[0].querySelector('.chat-resource-description')).toHaveTextContent(/^the carousel$/)
     expect(screen.getByText('the carousel').tagName).toBe('STRONG')
     expect(rows[0].querySelector('p')).toBeNull()
     expect(rows[1].querySelector('.chat-resource-title')).toHaveTextContent(/^src$/)
   })
   it('keeps punctuation within a description', () => {
     render(<ResourceCardList rows={[{ resource: file, description: 'the carousel - updated' }]} cwd="/work" />)
-    expect(screen.getByRole('listitem').querySelector('.chat-resource-title')).toHaveTextContent('main.ts · the carousel - updated')
+    expect(screen.getByRole('listitem').querySelector('.chat-resource-title')).toHaveTextContent(/^main\.ts$/)
+    expect(screen.getByRole('listitem').querySelector('.chat-resource-description')).toHaveTextContent(/^the carousel - updated$/)
   })
   it.each([
     { resource: folder, name: 'Open', action: 'open', icon: 'folder-open' },

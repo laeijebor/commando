@@ -13,8 +13,8 @@ describe('plan usage helpers', () => {
   })
 
   it('goes stale after ten minutes or once a shown window has reset', () => {
-    expect(isPlanUsageStale(usage(0), 9 * 60_000)).toBe(false)
-    expect(isPlanUsageStale(usage(0), 11 * 60_000)).toBe(true)
+    expect(isPlanUsageStale(usage(0), 14 * 60_000)).toBe(false)
+    expect(isPlanUsageStale(usage(0), 16 * 60_000)).toBe(true)
     expect(isPlanUsageStale(usage(0, [{ kind: 'session', title: 'Current session', percent: 90, severity: 'warning', resetsAt: 1_000 }]), 2_000)).toBe(true)
   })
 

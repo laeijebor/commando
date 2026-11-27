@@ -1,12 +1,9 @@
-import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
-import { promisify } from 'node:util'
 
 import type { ProviderUsage, UsageWindow } from '../shared/protocol.js'
 
-const execFileAsync = promisify(execFile)
 export const USAGE_REFRESH_INTERVAL_MS = 60_000
 const REQUEST_TIMEOUT_MS = 5_000
 
@@ -15,7 +12,11 @@ type Fetch = typeof fetch
 type ProviderUsageOptions = {
   fetch?: Fetch
   now?: () => number
-  readClaudeCredentials?: () => Promise<unknown>
+  /**
+   * Claude's usage, from the per-login reading chats share (claude-plan-usage.ts):
+   * Claude's endpoint is rate limited per account, so this loop never fetches it.
+   */
+  readClaude?: () => Promise<ProviderUsage>
   readCodexCredentials?: () => Promise<unknown>
 }
 
@@ -63,25 +64,6 @@ function usageWindow(
   }
 }
 
-export function parseClaudeUsage(value: unknown, updatedAt: number): ProviderUsage {
-  const source = isRecord(value) ? value : {}
-  const windows = [
-    ['5h', source.five_hour],
-    ['7d', source.seven_day],
-  ].flatMap(([label, candidate]) => {
-    if (!isRecord(candidate)) return []
-    const parsed = usageWindow(label as string, candidate.utilization, candidate.resets_at)
-    return parsed ? [parsed] : []
-  })
-  return {
-    provider: 'claude',
-    state: windows.length ? 'available' : 'error',
-    windows,
-    updatedAt,
-    ...(windows.length ? {} : { message: 'Claude usage is unavailable' }),
-  }
-}
-
 export function parseCodexUsage(value: unknown, updatedAt: number): ProviderUsage {
   const source = isRecord(value) ? value : {}
   const rateLimit = isRecord(source.rate_limit) ? source.rate_limit : {}
@@ -111,18 +93,6 @@ export function parseCodexUsage(value: unknown, updatedAt: number): ProviderUsag
     updatedAt,
     ...(windows.length ? {} : { message: 'Codex usage is unavailable' }),
   }
-}
-
-async function defaultClaudeCredentials(): Promise<unknown> {
-  const environmentToken = text(process.env.CLAUDE_CODE_OAUTH_TOKEN)
-  if (environmentToken) return { claudeAiOauth: { accessToken: environmentToken } }
-  if (process.platform !== 'darwin') return null
-  const { stdout } = await execFileAsync(
-    '/usr/bin/security',
-    ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-    { encoding: 'utf8', timeout: 2_000, maxBuffer: 1024 * 1024 },
-  )
-  return JSON.parse(stdout) as unknown
 }
 
 async function defaultCodexCredentials(): Promise<unknown> {
@@ -157,7 +127,7 @@ type UsageConsumer = { notify: (usage: ProviderUsage[]) => void }
 export class ProviderUsageService {
   private readonly fetch: Fetch
   private readonly now: () => number
-  private readonly readClaudeCredentials: () => Promise<unknown>
+  private readonly readClaude: () => Promise<ProviderUsage>
   private readonly readCodexCredentials: () => Promise<unknown>
   private readonly consumers = new Set<UsageConsumer>()
   private timer: NodeJS.Timeout | undefined
@@ -168,7 +138,7 @@ export class ProviderUsageService {
   constructor(options: ProviderUsageOptions = {}) {
     this.fetch = options.fetch ?? globalThis.fetch
     this.now = options.now ?? Date.now
-    this.readClaudeCredentials = options.readClaudeCredentials ?? defaultClaudeCredentials
+    this.readClaude = options.readClaude ?? (async () => unavailable('claude', this.now()))
     this.readCodexCredentials = options.readCodexCredentials ?? defaultCodexCredentials
   }
 
@@ -230,27 +200,10 @@ export class ProviderUsageService {
   }
 
   private async loadClaude(): Promise<ProviderUsage> {
-    const updatedAt = this.now()
     try {
-      const credentials = await this.readClaudeCredentials()
-      const oauth = isRecord(credentials) && isRecord(credentials.claudeAiOauth)
-        ? credentials.claudeAiOauth
-        : {}
-      const accessToken = text(oauth.accessToken)
-      if (!accessToken) return unavailable('claude', updatedAt)
-      const response = await this.fetch('https://api.anthropic.com/api/oauth/usage', {
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-          'anthropic-beta': 'oauth-2025-04-20',
-          'User-Agent': 'commando-island/0.1',
-        },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      })
-      if (!response.ok) return failed('claude', updatedAt)
-      return parseClaudeUsage(await response.json(), updatedAt)
+      return await this.readClaude()
     } catch {
-      return unavailable('claude', updatedAt)
+      return failed('claude', this.now())
     }
   }
 

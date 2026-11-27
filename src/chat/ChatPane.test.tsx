@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane } from '../../shared/protocol'
 import type { ChatItem, ChatState } from '../../shared/agent-chat'
 import { ChatPane } from './ChatPane'
+import * as commandoUi from '../../shared/commando-ui'
 import { deriveTimelineRows, patchLines, pendingRequests, shortPath, thoughtLabel, workSummary } from '../../shared/chat-timeline'
 
 afterEach(cleanup)
@@ -170,6 +171,24 @@ function pickerChat(session: Partial<ChatState['session']> = {}): ChatState {
 function optionLabels(menu: HTMLElement): string[] {
   return within(menu).getAllByRole('menuitemradio').map((item) => `${item.getAttribute('aria-checked') === 'true' ? '*' : ''}${item.children[1]?.textContent ?? ''}`)
 }
+
+describe('commando-ui answers in ChatPane', () => {
+  it('keeps the blocks from re-rendering when the pane re-renders with new handlers and items', () => {
+    const spy = vi.spyOn(commandoUi, 'settledAnswer')
+    const block = '```commando-ui\n{"component":"choice","prompt":"Pick","options":["a","b"]}\n```'
+    const state = chat({}, [{ ...base, id: 'ui', kind: 'assistant_message', text: block }])
+    const handlers = () => ({ onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() })
+    const view = render(<ChatPane chat={state} connected focused={false} {...handlers()} />)
+    const calls = spy.mock.calls.length
+    expect(calls).toBeGreaterThan(0)
+    const more = chat({}, [{ ...base, id: 'ui', kind: 'assistant_message', text: block }, { ...base, id: 'c', kind: 'command', toolUseId: 'c', command: 'ls' }])
+    view.rerender(<ChatPane chat={more} connected focused={false} {...handlers()} />)
+    view.rerender(<ChatPane chat={{ ...more, items: [...more.items] }} connected focused={false} {...handlers()} />)
+    expect(spy.mock.calls.length).toBe(calls)
+    fireEvent.click(screen.getByRole('button', { name: 'b' }))
+    spy.mockRestore()
+  })
+})
 
 describe('composer pickers', () => {
   it('names the running model and effort, and switches model from the menu', () => {

@@ -4,13 +4,13 @@ import { DiagramBlock, PrDiagramFence, standaloneSvg } from './chat/DiagramBlock
 import { documentMermaidThemeVariables, useThemeName } from './mermaidTheme'
 import './markdown-code.css'
 
-type HastNode = { type: string; value?: string; tagName?: string; properties?: { className?: unknown }; children?: HastNode[] }
+export type HastNode = { type: string; value?: string; tagName?: string; properties?: { className?: unknown }; children?: HastNode[] }
 
-function textOf(node: HastNode): string {
+export function textOf(node: HastNode): string {
   return node.value ?? node.children?.map(textOf).join('') ?? ''
 }
 
-function fenceLanguage(node: HastNode | undefined): string | undefined {
+export function fenceLanguage(node: HastNode | undefined): string | undefined {
   const code = node?.children?.find((child) => child.tagName === 'code')
   const classes = code?.properties?.className
   const language = Array.isArray(classes) ? classes.find((name) => String(name).startsWith('language-')) : undefined

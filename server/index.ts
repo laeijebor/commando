@@ -194,6 +194,7 @@ import { answerAgentRequest, IdempotencyKeyMemory } from './agent-request-answer
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
+import { ClaudePlanUsage } from './claude-plan-usage.js'
 import { handleUsageApi } from './usage-api.js'
 import { ExpoPushSender } from './expo-push.js'
 import { PushApi } from './push-api.js'
@@ -1158,8 +1159,16 @@ async function main(): Promise<void> {
     imagePath: (image) => chatImages.path(image.id),
     fingerprint: (model) => loginFingerprint(model),
   })
+  // One plan-limits reading per Claude login for all its chats (the endpoint is rate limited per account).
+  const claudePlanUsage = new ClaudePlanUsage({
+    logins: () => agentHosts.claudeLogins(),
+    deliver: (configDir, usage) => agentHosts.deliverPlanUsage(configDir, usage),
+    log: (message) => console.warn(`[commando] ${message}`),
+  })
+  claudePlanUsage.start()
   const agentHosts: AgentHostHub = new AgentHostHub({
     onSessionInfo: (session) => void modelCatalog.record(session),
+    planUsage: claudePlanUsage,
     currentHostBuild,
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
@@ -2083,8 +2092,8 @@ async function main(): Promise<void> {
     paneTargetId: (paneId) => paneForId(paneId)?.targetId,
     screenshots: paneScreenshots,
     artifacts: redlineArtifacts,
-    openResourceTile: (paneId, url, engine = 'webkit') => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, engine }, 'owner').pane.id,
-    openCanvasTile: (paneId, url, artifactId, manifest) => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, engine: 'webkit', content: { kind: 'canvas', artifactId, manifest } }, 'owner').pane.id,
+    onDeckReplaced: (artifactId) => canvasWatch.replaced(artifactId),
+    openResourceTile: (paneId, url, content, engine = 'webkit') => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, ...(content ? { engine: 'webkit', content } : { engine }) }, 'owner').pane.id,
     setPaneMark: (targetId, input) => paneMarks.set(targetId, input),
     acknowledgePaneMark: (targetId) => paneMarks.acknowledge(targetId),
     clearPaneMark: (targetId) => paneMarks.remove(targetId),
@@ -2115,7 +2124,12 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
-  const providerUsage = new ProviderUsageService()
+  // The Island shows the default profile's Claude usage, from the same per-login reading.
+  const providerUsage = new ProviderUsageService({
+    readClaude: async () => claudePlanUsage.providerUsage(
+      defaultClaudeProfile(await agentProfilePreferences.claudeProfiles({ includeHidden: false }))?.configDir,
+    ),
+  })
   const pushDevices = new PushDeviceRegistry()
   await pushDevices.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted push devices', error)
@@ -3700,6 +3714,7 @@ async function main(): Promise<void> {
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
     boardChanges.stop()
+    claudePlanUsage.stop()
     boardThumbWorker.stop()
     turnBriefs.stop()
     commanderRelays.stop()
