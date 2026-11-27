@@ -23,12 +23,13 @@ export class RedlineArtifactError extends Error {
 type RegistryOptions = {
   /** Durable owners (boards) keep registrations across a daemon's downtime. */
   retainedIds?: Iterable<string>
+  readOnlyRoot?: string
   /** Where registrations persist across daemon restarts; omit for in-memory only. */
   statePath?: string
   now?: () => number
 }
 
-type Entry = { dir: string; registeredAt: number }
+type Entry = { dir: string; registeredAt: number; readOnly?: true }
 
 /**
  * Registry of directories the daemon serves as redline artifacts. Ids are
@@ -46,15 +47,17 @@ export class RedlineArtifactRegistry {
   private readonly entries = new Map<string, Entry>()
   private readonly statePath: string | null
   private readonly now: () => number
+  private readonly readOnlyRoot?: string
 
   constructor(options: RegistryOptions = {}) {
+    this.readOnlyRoot = options.readOnlyRoot
     this.retained = new Set(options.retainedIds)
     this.statePath = options.statePath ?? null
     this.now = options.now ?? Date.now
     this.load()
   }
 
-  register(dir: string): { id: string } {
+  register(dir: string, readOnly = false): { id: string } {
     if (typeof dir !== 'string' || !isAbsolute(dir)) {
       throw new RedlineArtifactError(400, 'dir must be an absolute path')
     }
@@ -73,7 +76,7 @@ export class RedlineArtifactRegistry {
     for (const [id, entry] of nextEntries) {
       if (entry.dir === real) {
         // Same directory keeps its id (and its URLs) across re-registrations.
-        nextEntries.set(id, { ...entry, registeredAt })
+        nextEntries.set(id, { ...entry, registeredAt, ...(readOnly ? { readOnly: true as const } : {}) })
         this.trim(nextEntries)
         this.commit(nextEntries)
         return { id }
@@ -83,7 +86,7 @@ export class RedlineArtifactRegistry {
     do {
       id = randomBytes(8).toString('hex')
     } while (this.entries.has(id))
-    nextEntries.set(id, { dir: real, registeredAt })
+    nextEntries.set(id, { dir: real, registeredAt, ...(readOnly ? { readOnly: true as const } : {}) })
     this.trim(nextEntries)
     this.commit(nextEntries)
     return { id }
@@ -119,6 +122,11 @@ export class RedlineArtifactRegistry {
   directory(id: string): string | null {
     const entry = this.entries.get(id)
     return entry && entry.registeredAt >= this.now() - REDLINE_ARTIFACT_TTL_MS ? entry.dir : null
+  }
+
+  isReadOnly(id: string): boolean {
+    const entry = this.entries.get(id), root = this.readOnlyRoot
+    return !!entry && (entry.readOnly === true || !!root && (entry.dir === root || entry.dir.startsWith(root + sep)))
   }
 
   /** Whether a live registration still serves this directory, including symlink aliases. */
@@ -214,7 +222,7 @@ export class RedlineArtifactRegistry {
         dirty = true
         continue
       }
-      candidates.push([id, { dir: real, registeredAt: clampedRegisteredAt }])
+      candidates.push([id, { dir: real, registeredAt: clampedRegisteredAt, ...((item as Record<string, unknown>).readOnly === true ? { readOnly: true as const } : {}) }])
     }
     candidates.sort(([, a], [, b]) => b.registeredAt - a.registeredAt)
     const dirs = new Set<string>()
@@ -246,6 +254,7 @@ export class RedlineArtifactRegistry {
       id,
       dir: entry.dir,
       registeredAt: entry.registeredAt,
+      ...(entry.readOnly ? { readOnly: true } : {}),
     }))
     mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 })
     const tmp = `${this.statePath}.${process.pid}.tmp`

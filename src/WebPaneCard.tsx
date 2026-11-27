@@ -1,3 +1,4 @@
+import { SnapshotCopyBanner } from './SnapshotCopyBanner'
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PanelRightOpen, PictureInPicture2, Columns2, RotateCw, ShieldAlert, Smartphone, Wrench, X } from 'lucide-react'
 import type { WebPane, WebPaneFeedbackInfo, WebPaneNavigateRequest } from '../shared/protocol'
@@ -180,7 +181,7 @@ export function WebPaneCard({
   phaseRef.current = phase
 
   useEffect(() => {
-    if (!nativeBridge) return
+    if (!nativeBridge || webPane.readOnly) return
     let active = true
     void nativeBridge.connect().then((negotiation) => {
       if (active) setTier(negotiation.available ? 'native' : 'iframe')
@@ -188,16 +189,16 @@ export function WebPaneCard({
     return () => {
       active = false
     }
-  }, [nativeBridge])
+  }, [nativeBridge, webPane.readOnly])
 
   useEffect(() => {
-    if (webPane.content || webPane.status !== 'open' || tier !== 'iframe' || chromium) return
+    if (webPane.readOnly || webPane.content || webPane.status !== 'open' || tier !== 'iframe' || chromium) return
     setPhase('loading')
     const watchdog = window.setTimeout(() => {
       if (phaseRef.current === 'loading') setPhase('stalled')
     }, LOAD_WATCHDOG_MS)
     return () => window.clearTimeout(watchdog)
-  }, [reloadKey, tier, webPane.status, webPane.url])
+  }, [reloadKey, tier, webPane.readOnly, webPane.status, webPane.url])
 
   useEffect(() => {
     if (!attributionVisible) return
@@ -251,13 +252,13 @@ export function WebPaneCard({
   const CanvasView = webPane.content?.kind === 'canvas' && isDeckPath(webPane.content.manifest) ? SlidesPane : CanvasPane
   if (webPane.content?.kind === 'canvas') return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
-      <CanvasView key={`${webPane.content.artifactId}/${webPane.content.manifest}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
+      <CanvasView key={`${webPane.content.artifactId}/${webPane.content.manifest}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} readOnly={webPane.readOnly || webPane.content.readOnly} snapshotSavedAt={webPane.snapshotSavedAt} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
     </article>
   )
 
   if (webPane.content?.kind === 'guide') return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
-      <GuidePane key={`${webPane.content.artifactId}/${webPane.content.file}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} file={webPane.content.file} artifactUrl={webPane.url} onTitle={onTitle} />
+      <GuidePane key={`${webPane.content.artifactId}/${webPane.content.file}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} file={webPane.content.file} readOnly={webPane.readOnly || webPane.content.readOnly} snapshotSavedAt={webPane.snapshotSavedAt} artifactUrl={webPane.url} onTitle={onTitle} />
     </article>
   )
 
@@ -290,7 +291,7 @@ export function WebPaneCard({
         title={onDragStart && !detached ? 'Drag onto a terminal pane to move this tile' : undefined}
       >
         <Globe className="web-pane-glyph" aria-hidden="true" />
-        {urlDraft !== null && onNavigate ? (
+        {!webPane.readOnly && urlDraft !== null && onNavigate ? (
           <form
             className="web-pane-url-form"
             onSubmit={(event) => {
@@ -320,7 +321,7 @@ export function WebPaneCard({
               }}
             />
           </form>
-        ) : onNavigate ? (
+        ) : onNavigate && !webPane.readOnly ? (
           <button
             type="button"
             className="web-pane-url is-editable"
@@ -364,7 +365,7 @@ export function WebPaneCard({
               type="button"
               className="web-pane-button"
               onClick={() => setReview((current) => !current)}
-              aria-pressed={review}
+              disabled={webPane.readOnly} aria-pressed={review}
               title="Review this page"
               aria-label="Review this page"
             >
@@ -375,6 +376,7 @@ export function WebPaneCard({
             <button
               type="button"
               className="web-pane-button"
+              disabled={webPane.readOnly}
               onClick={onOpenDevtools}
               title="Open DevTools as a tile"
               aria-label="Open DevTools as a tile"
@@ -489,8 +491,9 @@ export function WebPaneCard({
           <p className="web-pane-confirm-note">localhost pages open without asking</p>
         </div>
       ) : (
-        <div className="web-pane-body">
-          {chromium ? (
+        <div className={`web-pane-body${webPane.readOnly ? ' is-saved-copy' : ''}`}>
+          {webPane.readOnly && <SnapshotCopyBanner webPaneId={webPane.id} savedAt={webPane.snapshotSavedAt} token={wsToken} />}
+          {webPane.readOnly ? <iframe className="web-pane-frame" src={webPane.url} title="Saved read-only page" sandbox="allow-same-origin" /> : chromium ? (
             <>
               {nativeChromium && (
                 <NativeWebViewTile
@@ -542,7 +545,7 @@ export function WebPaneCard({
               }}
             />
           ) : null}
-          {!chromium && tier === 'iframe' && phase !== 'loaded' && (
+          {!webPane.readOnly && !chromium && tier === 'iframe' && phase !== 'loaded' && (
             <div className={`web-pane-overlay${phase === 'stalled' ? ' is-stalled' : ''}`}>
               {phase === 'loading' ? (
                 <span className="web-pane-overlay-note">Loading {host}…</span>

@@ -354,3 +354,20 @@ describe('RedlineArtifactRegistry', () => {
     expect(reborn.resolve(id, 'index.html')).toBeNull()
   })
 })
+
+it('persists read-only registrations and protects snapshot subdirectories registered through aliases', () => {
+  const root = realpathSync(artifactDir()), statePath = join(root, 'registry.json')
+  try {
+    const source = join(root, 'assets')
+    const registry = new RedlineArtifactRegistry({ statePath })
+    const id = registry.register(source, true).id
+    expect(registry.register(source).id).toBe(id)
+    expect(registry.isReadOnly(id)).toBe(true)
+    expect(new RedlineArtifactRegistry({ statePath }).isReadOnly(id)).toBe(true)
+    const snapshotRegistry = new RedlineArtifactRegistry({ readOnlyRoot: source })
+    mkdirSync(join(source, 'nested'))
+    symlinkSync(join(source, 'nested'), join(root, 'alias'))
+    expect(snapshotRegistry.isReadOnly(snapshotRegistry.register(join(root, 'alias')).id)).toBe(true)
+    expect(snapshotRegistry.isReadOnly(snapshotRegistry.register(root).id)).toBe(false)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

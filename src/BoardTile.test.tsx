@@ -49,6 +49,25 @@ beforeEach(() => {
 afterEach(() => { cleanup(); localStorage.clear(); sessionStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('BoardTile', () => {
+  it('shows the newest six closed tiles above the type rows and opens them through Board quick look', async () => {
+    const { props, api } = setup({ ...fixture, items: [...fixture.items.slice(1), ...Array.from({ length: 8 }, (_, i) => ({ ...fixture.items[0], key: `canvas:${i}`, title: `Closed ${i}`, closedAt: i, updatedAt: 100 - i }))] })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); showByType()
+    const recent = screen.getByRole('region', { name: 'Recently closed' })
+    expect(within(recent).getAllByRole('button').map((node) => node.textContent)).toEqual(['Closed 7', 'Closed 6', 'Closed 5', 'Closed 4', 'Closed 3', 'Closed 2'])
+    expect(recent.parentElement?.firstElementChild).toBe(recent)
+    fireEvent.click(within(recent).getByRole('button', { name: 'Open recently closed: Closed 7' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen in a tile' }))
+    await waitFor(() => expect(api.revive).toHaveBeenCalledWith(brief.targetId, 'canvas:7', brief.paneId))
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
+    expect(document.querySelector('.pane-worklog-closed-tabs')).toBeNull()
+  })
+  it('omits Recently closed when there are no closed tiles', async () => {
+    const { props } = setup({ ...fixture, items: fixture.items.slice(1) })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); showByType()
+    expect(screen.queryByLabelText('Recently closed')).toBeNull()
+  })
   it('shows the brief, tasks, default Board view and groups without embedding live frames', async () => {
     const { props, api } = setup()
     const { container } = render(<BoardTile {...props} />)
@@ -296,6 +315,27 @@ describe('BoardTile', () => {
   it.each(['null', '{bad', '{"x":0,"y":0,"scale":0}', '{"x":0,"y":0,"scale":3}', '{"x":0,"y":"0","scale":1}'])('ignores invalid saved camera %s', (value) => {
     sessionStorage.setItem('camera', value)
     expect(storedBoardCamera('camera')).toBeNull()
+  })
+  it('makes every narrow closed tile reachable, including snapshots beyond the six recent cards', async () => {
+    vi.stubGlobal('ResizeObserver', class { constructor(private cb: ResizeObserverCallback) {} observe() { this.cb([], this as unknown as ResizeObserver) } disconnect() {} })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 350, height: 600, left: 0, right: 350, top: 0, bottom: 600, x: 0, y: 0, toJSON() {} })
+    const closed = Array.from({ length: 9 }, (_, i) => ({ ...fixture.items[0], key: `page:closed-${i}`, title: `Closed ${i}`, kind: 'page' as const, state: i === 0 ? 'snapshot' as const : 'closed' as const, addedAt: i, closedAt: i, ref: { url: `http://localhost/${i}`, engine: i === 0 ? 'chromium' as const : 'webkit' as const } }))
+    const { props, api } = setup({ ...fixture, items: closed })
+    render(<BoardTile {...props} />)
+    const toggle = await screen.findByRole('button', { name: 'Recently closed (9)' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    const list = within(screen.getByRole('region', { name: 'Recently closed' }))
+    expect(list.getAllByRole('button', { name: /^Reopen / })).toHaveLength(9)
+    expect(list.getAllByRole('button', { name: /^Forget / })).toHaveLength(9)
+    expect(list.getByText('Page · Chromium')).toBeInTheDocument()
+    fireEvent.click(list.getByRole('button', { name: 'Reopen Closed 0' }))
+    await waitFor(() => expect(api.revive).toHaveBeenCalledWith(brief.targetId, 'page:closed-0', brief.paneId))
+    await waitFor(() => expect(list.getByRole('button', { name: 'Forget Closed 0' })).toBeEnabled())
+    fireEvent.click(list.getByRole('button', { name: 'Forget Closed 0' }))
+    await waitFor(() => expect(api.remove).toHaveBeenCalledWith(brief.targetId, 'page:closed-0'))
+    await waitFor(() => expect(list.queryByRole('button', { name: 'Reopen Closed 0' })).toBeNull())
+    expect(list.getAllByRole('button', { name: /^Reopen / })).toHaveLength(8)
   })
   it('renders compact Recent, counts and tasks when the tile is narrower than 420px', async () => {
     vi.stubGlobal('ResizeObserver', class { constructor(private cb: ResizeObserverCallback) {} observe() { this.cb([], this as unknown as ResizeObserver) } disconnect() {} })

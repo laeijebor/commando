@@ -542,7 +542,10 @@ export type ClosedWebPane = {
  */
 export type WebPane = {
   /** Built-in content bypasses browser engines and URL navigation. */
-  content?: { kind: 'simulator'; udid: string } | { kind: 'canvas'; artifactId: string; manifest: string } | { kind: 'guide'; artifactId: string; file: string }
+  content?: { kind: 'simulator'; udid: string } | { kind: 'canvas'; artifactId: string; manifest: string; readOnly?: true } | { kind: 'guide'; artifactId: string; file: string; readOnly?: true }
+  /** URL snapshots use the same protection as built-in content. */
+  readOnly?: true
+  snapshotSavedAt?: number
   id: string
   url: string
   /** Daemon page title, available even when a Chromium tile is hidden. */
@@ -1002,3 +1005,6 @@ export type ClientMessage =
   | { type: 'chat_carry_taken'; paneId: string; carryId: string; images?: number; requestId: string }
   /** The whole history of one chat, for a client whose copy is bounded; answered with its `chat_state`. */
   | { type: 'chat_history'; paneId: string; requestId: string }
+
+/** Saved Board copies and History rounds share read-only presentation. */
+export const isReadOnlyWebPane = (pane: WebPane | undefined): boolean => !!pane && (pane.readOnly === true || (pane.content?.kind !== 'simulator' && pane.content?.readOnly === true))

@@ -517,3 +517,26 @@ describe('dock actions', () => {
     expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
   })
 })
+
+it('renders a redline saved copy as a static page with restore, then swaps to the editable pane', () => {
+  const pane: WebPane = { id: 'w-12345678', url: 'http://localhost/redline/artifacts/0123456789abcdef/index.html', engine: 'webkit', sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', openedBy: 'user', status: 'open', createdAt: 1, readOnly: true, snapshotSavedAt: 1 }
+  const view = render(<WebPaneCard webPane={pane} onClose={() => {}} onConfirm={() => {}} />)
+  expect(screen.getByTitle('Saved read-only page')).toHaveAttribute('sandbox', 'allow-same-origin')
+  expect(screen.getByRole('button', { name: 'Restore to folder…' })).toBeEnabled()
+  view.rerender(<WebPaneCard webPane={{ ...pane, url: 'http://localhost/redline/artifacts/fedcba9876543210/index.html', readOnly: undefined, snapshotSavedAt: undefined }} onClose={() => {}} onConfirm={() => {}} />)
+  expect(screen.queryByText(/Read-only copy saved/)).toBeNull()
+  expect(screen.queryByTitle('Saved read-only page')).toBeNull()
+})
+
+it.each(['webkit', 'chromium'] as const)('does not offer URL editing on a saved %s tab and enables it after restore', (engine) => {
+  const pane: WebPane = { id: 'w-12345678', url: 'http://localhost/redline/artifacts/0123456789abcdef/index.html', engine, sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', openedBy: 'user', status: 'open', createdAt: 1, readOnly: true }
+  const onNavigate = vi.fn()
+  const view = render(<WebPaneCard webPane={pane} onClose={() => {}} onConfirm={() => {}} onNavigate={onNavigate} onOpenDevtools={() => {}} />)
+  expect(screen.queryByRole('button', { name: 'Change URL' })).toBeNull()
+  expect(screen.queryByRole('textbox')).toBeNull()
+  if (engine === 'chromium') expect(screen.getByRole('button', { name: 'Open DevTools as a tile' })).toBeDisabled()
+  view.rerender(<WebPaneCard webPane={{ ...pane, readOnly: undefined }} onClose={() => {}} onConfirm={() => {}} onNavigate={onNavigate} onOpenDevtools={() => {}} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Change URL' }))
+  expect(screen.getByRole('textbox')).toBeInTheDocument()
+  expect(onNavigate).not.toHaveBeenCalled()
+})

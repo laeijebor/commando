@@ -90,7 +90,6 @@ import type {
   SessionIde,
   SpecialKey,
   TmuxPane,
-  ClosedWebPane,
   WebPane,
   WebPaneEngine,
   WebPaneFeedbackInfo,
@@ -1239,7 +1238,6 @@ function HostApp() {
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
   const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
   const [dismissedPrTabs, setDismissedPrTabs] = useState<Record<string, Record<string, string>>>({})
-  const [closedTabs, setClosedTabs] = useState<Record<string, ClosedWebPane[]>>({})
   // Impacted PRs only get a tab once opened from the worklog; created PRs always have one.
   const [openedPrTabs, setOpenedPrTabs] = useState<Record<string, string[]>>({})
   const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
@@ -1761,7 +1759,6 @@ function HostApp() {
         }
         setPanelActiveTabs(message.activeTabs ?? {})
         setDismissedPrTabs(message.dismissedPrTabs ?? {})
-        setClosedTabs(message.closedTabs ?? {})
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
@@ -4192,9 +4189,6 @@ function HostApp() {
       }}
       processesApi={trackedProcessesApi}
       {...local ? {
-        closedTabs: closedTabs[pane.targetId],
-        onReopenClosedTab: (id: string) => webPanesApi.reopenClosedTab(pane.targetId, id),
-        onForgetClosedTab: (id: string) => webPanesApi.forgetClosedTab(pane.targetId, id),
       } : {}} />
   }
 

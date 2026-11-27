@@ -1,3 +1,4 @@
+import { BoardClosedTiles } from './BoardClosedTiles'
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import { Search, X } from 'lucide-react'
 import { PaneWorklog } from './PaneWorklog'
@@ -75,6 +76,8 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
   const completed = tasks.filter((task) => task.status === 'completed').length
   const terms = (brief.references?.length ?? 0) + (local ? (brief.simulator ? 1 : 0) + (brief.devices?.length ?? 0) : 0)
   const items = useMemo(() => board?.items.filter((item) => boardMatches(item, query)) ?? [], [board, query])
+  const allClosed = [...board?.items ?? []].filter((item) => boardMatchesClosed(item, true)).sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt))
+  const recentlyClosed = items.filter((item) => boardMatchesClosed(item, true) && (filter === null || boardType(item) === filter)).sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt)).slice(0, 6)
   const counts = useMemo(() => Object.fromEntries(BOARD_TYPES.map((type) => [type.id, items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).length])) as Record<BoardType, number>, [items, closedOnly])
   const cachedPrs = panePrs
   const prs = new Map<string, PanePrSummary>()
@@ -101,6 +104,9 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
       {error && !selected && <div className="board-error" role="alert">{error}<button type="button" onClick={retry}>Retry</button></div>}
       {!board && !error && <p className="board-loading" role="status">Loading board…</p>}
       {board && (narrow ? <div className="board-compact">
+        <BoardClosedTiles items={allClosed} disabled={pending || !connected}
+          onReopen={async (item) => { await api.revive(targetId, item.key, brief.paneId); retry() }}
+          onForget={(item) => mutate((current) => ({ ...current, items: current.items.filter((i) => i.key !== item.key) }), () => api.remove(targetId, item.key))} />
         <section><h3>Recent <small>· newest first</small></h3><div className="board-filmstrip">{[...board.items].sort((a, b) => b.addedAt - a.addedAt).slice(0, 6).map((item) => card(item, true))}</div>{!board.items.length && <p>Artifacts appear here as you work.</p>}</section>
         <section><h3>On the board</h3><div className="board-type-counts">{BOARD_TYPES.map((type) => <span key={type.id}>{type.label}<b>{counts[type.id]}</b></span>)}</div>
           <button type="button" disabled title="Widen this tile to at least 420 px to open the board">Open board ↗</button><small>Widen this tile to open the board.</small></section>
@@ -111,7 +117,7 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
           <button type="button" aria-pressed={filter === null} onClick={() => setFilter(null)}>All <b>{Object.values(counts).reduce((sum, count) => sum + count, 0)}</b></button>
           {BOARD_TYPES.map((type) => <button key={type.id} type="button" aria-pressed={filter === type.id} onClick={() => setFilter((current) => current === type.id ? null : type.id)}>{type.label} <b>{counts[type.id]}</b></button>)}
           <button type="button" aria-pressed={closedOnly} onClick={() => setClosedOnly((current) => !current)}>Closed tiles</button>
-        </div><div className="board-type-scroll">{BOARD_TYPES.filter((type) => filter === null || type.id === filter).map((type) => {
+        </div><div className="board-type-scroll">{recentlyClosed.length > 0 && <section className="board-type-row" aria-label="Recently closed"><h3>Recently closed</h3><div className="board-filmstrip">{recentlyClosed.map((item) => <button type="button" key={item.key} className="board-recently-closed" aria-label={`Open recently closed: ${item.title}`} onClick={(event) => open(item, event.currentTarget)}>{item.title}</button>)}</div></section>}{BOARD_TYPES.filter((type) => filter === null || type.id === filter).map((type) => {
           const entries = items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).sort((a, b) => b.addedAt - a.addedAt)
           return entries.length > 0 && <section className="board-type-row" key={type.id} aria-label={type.label}><h3>{type.label} <small>{entries.length}</small></h3><div className="board-type-cards">{entries.map((item) => card(item))}</div></section>
         })}{!BOARD_TYPES.some((type) => (filter === null || type.id === filter) && counts[type.id] > 0) && <p className="board-empty">{query || closedOnly || filter ? 'No matching items.' : 'Artifacts appear here as you work.'}</p>}</div></div>)}

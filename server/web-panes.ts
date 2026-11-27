@@ -1,3 +1,4 @@
+import { isReadOnlyWebPane } from '../shared/protocol.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -161,16 +162,17 @@ function layoutSplitApplied(
 export function parseWebPaneContent(value: unknown): WebPane['content'] | null {
   if (value === undefined) return undefined
   if (!isRecord(value)) return null
+  if (value.readOnly !== undefined && value.readOnly !== true) return null
   if (value.kind === 'simulator' && typeof value.udid === 'string' && SIM_UDID.test(value.udid)) {
     return { kind: 'simulator', udid: value.udid.toUpperCase() }
   }
   if (value.kind === 'canvas' && typeof value.artifactId === 'string' && /^[0-9a-f]{16}$/.test(value.artifactId)) {
     const manifest = canvasRelativePath(value.manifest === undefined ? 'canvas.json' : value.manifest)
-    if (manifest) return { kind: 'canvas', artifactId: value.artifactId, manifest }
+    if (manifest) return { kind: 'canvas', artifactId: value.artifactId, manifest, ...(value.readOnly === true ? { readOnly: true } : {}) }
   }
   if (value.kind === 'guide' && typeof value.artifactId === 'string' && /^[0-9a-f]{16}$/.test(value.artifactId)) {
     const file = guideRelativePath(value.file)
-    if (file) return { kind: 'guide', artifactId: value.artifactId, file }
+    if (file) return { kind: 'guide', artifactId: value.artifactId, file, ...(value.readOnly === true ? { readOnly: true } : {}) }
   }
   return null
 }
@@ -207,6 +209,8 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   ) {
     return null
   }
+  if (value.readOnly !== undefined && value.readOnly !== true) return null
+  if (value.snapshotSavedAt !== undefined && (typeof value.snapshotSavedAt !== 'number' || !Number.isSafeInteger(value.snapshotSavedAt) || value.snapshotSavedAt < 0)) return null
   const parsedContent = parseWebPaneContent(content)
   if (parsedContent === null) return null
   const simulator = parsedContent?.kind === 'simulator'
@@ -216,6 +220,8 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   return {
     id,
     url: decision.url,
+    ...(value.readOnly === true ? { readOnly: true as const } : {}),
+    ...(typeof value.snapshotSavedAt === 'number' ? { snapshotSavedAt: value.snapshotSavedAt } : {}),
     ...(typeof title === 'string' && title ? { title: title.slice(0, MAX_WEB_PANE_TITLE_LENGTH) } : {}),
     ...(parsedContent ? { content: parsedContent } : {}),
     sessionId,
@@ -380,6 +386,8 @@ function defaultMigrationStatePath(
 }
 
 export type OpenWebPaneInput = {
+  readOnly?: true
+  snapshotSavedAt?: number
   content?: WebPane['content']
   url: string
   anchorPaneId: string
@@ -535,15 +543,19 @@ export class WebPaneService {
     return live ? Object.fromEntries(Object.entries(all).filter(([targetId]) => live.has(targetId))) : all
   }
 
+  /** Full retained records for Board startup migration, including absent targets. */
+  closedEntries(): ClosedWebPaneEntry[] { return this.closedPanes.list() }
+
   /** Changes when a target with closed tabs gains or loses its live pane, e.g. on session restore. */
   closedTabOwners(): string {
     return Object.keys(this.closedTabs()).sort().join(',')
   }
 
   /** Brings a closed tab back beside its pane under its original id, selected. */
-  reopenClosed(targetId: string, id: string, anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>): WebPane {
-    const entry = this.closedPanes.list().find((candidate) => candidate.targetId === targetId && candidate.pane.id === id)
-    if (!entry) throw new WebPaneError(404, 'Closed tab does not exist')
+  reopenClosed(targetId: string, id: string, anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>, replacement?: Pick<WebPane, 'url' | 'content' | 'readOnly' | 'snapshotSavedAt'>): WebPane {
+    const original = this.closedPanes.list().find((candidate) => candidate.targetId === targetId && candidate.pane.id === id)
+    if (!original) throw new WebPaneError(404, 'Closed tab does not exist')
+    const entry = replacement ? { ...original, pane: { ...original.pane, ...replacement } } : original
     if (!PANE_ID.test(anchor.anchorPaneId)) throw new WebPaneError(400, 'Invalid anchor pane id')
     const live = [...this.panes.values()].find((pane) => pane.id === id ||
       (pane.anchorPaneId === anchor.anchorPaneId && pane.dock === 'panel' && sameTabContent(pane, entry.pane)))
@@ -577,6 +589,15 @@ export class WebPaneService {
     this.activeTabs[anchor.anchorPaneId] = id
     this.persist()
     return pane
+  }
+
+  replaceArtifact(id: string, replacement: Pick<WebPane, 'url' | 'content' | 'readOnly' | 'snapshotSavedAt'>): WebPane {
+    const pane = this.panes.get(id)
+    if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
+    const next = { ...pane, ...replacement }
+    this.panes.set(id, next)
+    this.persist()
+    return next
   }
 
   forgetClosed(targetId: string, id: string): boolean {
@@ -685,6 +706,8 @@ export class WebPaneService {
     const pane: WebPane = {
       id: `w-${randomUUID().replaceAll('-', '').slice(0, 8)}`,
       url: decision.url,
+      ...(input.readOnly ? { readOnly: true as const } : {}),
+      ...(input.snapshotSavedAt !== undefined ? { snapshotSavedAt: input.snapshotSavedAt } : {}),
       ...(content ? { content } : {}),
       sessionId: input.sessionId,
       windowId: input.windowId,
@@ -733,6 +756,7 @@ export class WebPaneService {
   repend(id: string, url: string): WebPane | undefined {
     const pane = this.panes.get(id)
     if (!pane) return undefined
+    if (isReadOnlyWebPane(pane)) throw new WebPaneError(409, 'Saved copies cannot navigate; restore to a folder first')
     if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : pane.content.kind === 'guide' ? 'Guide tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind !== 'confirm') return pane
@@ -937,6 +961,7 @@ export class WebPaneService {
   ): WebPane {
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
+    if (isReadOnlyWebPane(pane)) throw new WebPaneError(409, 'Saved copies cannot navigate; restore to a folder first')
     if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : pane.content.kind === 'guide' ? 'Guide tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind === 'invalid') throw new WebPaneError(400, decision.reason)

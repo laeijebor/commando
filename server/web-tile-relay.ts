@@ -1,3 +1,4 @@
+import { isReadOnlyArtifactPane } from './web-pane-access.js'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
@@ -29,6 +30,7 @@ export function webTilePathId(pathname: string): string | null {
 type RelayDependencies = {
   engine: ChromiumEngine
   service: WebPaneService
+  readOnlyArtifact?: (id: string) => boolean
   /** Current queued-but-unsent review notes for a tile, for connect-time hydration. */
   pendingNotes: (webPaneId: string) => WebPanePendingSnapshot
 }
@@ -115,7 +117,7 @@ export class WebTileRelay {
 
   private connect(socket: WebSocket, webPaneId: string, reviewOnly: boolean): void {
     const pane = this.dependencies.service.get(webPaneId)
-    if (!pane || pane.engine !== 'chromium' || pane.status !== 'open') {
+    if (!pane || pane.engine !== 'chromium' || pane.status !== 'open' || isReadOnlyArtifactPane(pane, this.dependencies.readOnlyArtifact)) {
       socket.close(4404, 'No streamable chromium tile with this id')
       return
     }
@@ -165,15 +167,19 @@ export class WebTileRelay {
 
     if (reviewOnly) return
 
-    const subscribe = () => this.dependencies.engine.subscribeScreencast(webPaneId, pane.url, (frame) => {
-      if (socket.readyState !== WebSocket.OPEN) return
-      socket.send(JSON.stringify({
-        type: 'frame',
-        data: frame.data,
-        format: frame.format,
-        metadata: frame.metadata,
-      }))
-    })
+    const subscribe = () => {
+      const current = this.dependencies.service.get(webPaneId)
+      if (!current || isReadOnlyArtifactPane(current, this.dependencies.readOnlyArtifact)) return Promise.reject(new Error('Saved copies cannot start an interactive target'))
+      return this.dependencies.engine.subscribeScreencast(webPaneId, current.url, (frame) => {
+        if (socket.readyState !== WebSocket.OPEN) return
+        socket.send(JSON.stringify({
+          type: 'frame',
+          data: frame.data,
+          format: frame.format,
+          metadata: frame.metadata,
+        }))
+      })
+    }
 
     subscribe()
       .catch((error: unknown) => {
@@ -212,7 +218,7 @@ export class WebTileRelay {
     }
     if (typeof message !== 'object' || message === null) return
     const pane = this.dependencies.service.get(webPaneId)
-    if (!pane || pane.engine !== 'chromium' || pane.status !== 'open') return
+    if (!pane || pane.engine !== 'chromium' || pane.status !== 'open' || isReadOnlyArtifactPane(pane, this.dependencies.readOnlyArtifact)) return
 
     if (message.type === 'input') {
       const event = parseTileInputEvent(message.event)

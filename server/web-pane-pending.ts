@@ -332,6 +332,7 @@ export class WebPanePendingStore {
     private readonly journal: PendingNotesJournal = new PendingNotesJournal(),
     private readonly releaseAttachment: ReleaseAttachment = () => undefined,
     private readonly sentAnswers?: Pick<SentAnswerStore, 'forPage' | 'record'>,
+    private readonly canWrite: (webPaneId: string, pageUrl: string) => boolean = () => true,
   ) {}
 
   list(webPaneId: string): WebPanePendingNote[] {
@@ -359,6 +360,7 @@ export class WebPanePendingStore {
    * page's sent answers. Only a move to a different page is a change.
    */
   setPage(webPaneId: string, url: string): WebPanePendingSnapshot {
+    this.assertWritable(webPaneId, url)
     const state = this.state(webPaneId)
     const current = state.viewedPage ?? state.url
     if (current === undefined || redlinePageKey(current) !== redlinePageKey(url)) {
@@ -377,6 +379,7 @@ export class WebPanePendingStore {
    * without bound. Drops are counted, not silent — the tile shows them.
    */
   addResponse(webPaneId: string, url: string, response: RedlinePageResponse, canvas?: CanvasNoteContext): WebPanePendingSnapshot {
+    this.assertWritable(webPaneId, url)
     const state = this.state(webPaneId)
     this.rememberUrl(webPaneId, state, url)
     const existing = response.queueKey === undefined
@@ -446,6 +449,8 @@ export class WebPanePendingStore {
 
   /** Queues a manual annotation (or a client-side restore of one). */
   addNote(webPaneId: string, url: string, input: PendingNoteInput): WebPanePendingSnapshot {
+    this.assertWritable(webPaneId, url)
+    if (input.pageUrl) this.assertWritable(webPaneId, input.pageUrl)
     const state = this.state(webPaneId)
     this.rememberUrl(webPaneId, state, url)
     if (state.notes.length >= MAX_PENDING_NOTES) {
@@ -504,6 +509,7 @@ export class WebPanePendingStore {
     const index = state.notes.findIndex((note) => note.id === noteId)
     const current = state.notes[index]
     this.assertRevision(current, expectedRevision)
+    this.assertWritable(webPaneId, current.pageUrl ?? '')
     const hasAnswer = Object.prototype.hasOwnProperty.call(change, 'answer')
     const hasNote = Object.prototype.hasOwnProperty.call(change, 'note')
     const hasResponse = Object.prototype.hasOwnProperty.call(change, 'response')
@@ -601,6 +607,7 @@ export class WebPanePendingStore {
     const index = state.notes.findIndex((note) => note.id === noteId)
     const current = state.notes[index]
     this.assertRevision(current, expectedRevision)
+    this.assertWritable(webPaneId, current.pageUrl ?? '')
     if (!isImageAttachment(metadata)) throw new WebPaneError(400, 'Attachment metadata is malformed')
     const attachments = current.attachments ?? []
     if (attachments.some((attachment) => attachment.id === metadata.id) || this.referencedAttachmentIds().has(metadata.id)) {
@@ -631,6 +638,7 @@ export class WebPanePendingStore {
     const index = state.notes.findIndex((note) => note.id === noteId)
     const current = state.notes[index]
     this.assertRevision(current, expectedRevision)
+    this.assertWritable(webPaneId, current.pageUrl ?? '')
     const attachments = current.attachments ?? []
     const detached = attachments.find((attachment) => attachment.id === attachmentId)
     if (!detached) throw new WebPaneError(404, 'Attachment is not attached to this note')
@@ -678,7 +686,9 @@ export class WebPanePendingStore {
     intent?: WebPanePendingSendIntent,
     expectedQueueRevision?: number,
   ): WebPanePendingSnapshot {
+    this.assertWritable(webPaneId, pageUrl)
     const state = this.state(webPaneId)
+    for (const note of state.notes) this.assertWritable(webPaneId, note.pageUrl ?? pageUrl)
     if (expectedQueueRevision !== undefined && state.revision !== expectedQueueRevision) {
       throw new WebPaneError(409, 'Pending queue revision is stale')
     }
@@ -745,6 +755,7 @@ export class WebPanePendingStore {
    * absorbed journals are deleted so a third tile cannot adopt them twice.
    */
   adopt(webPaneId: string, url: string, liveIds: ReadonlySet<string>): WebPanePendingSnapshot {
+    this.assertWritable(webPaneId, url)
     const state = this.state(webPaneId)
     this.rememberUrl(webPaneId, state, url)
     const orphans = this.journal
@@ -826,6 +837,10 @@ export class WebPanePendingStore {
         console.warn('[web-pane-pending] could not record sent answers for', page, error)
       }
     }
+  }
+
+  private assertWritable(webPaneId: string, pageUrl: string): void {
+    if (!this.canWrite(webPaneId, pageUrl)) throw new WebPaneError(409, 'This saved copy is read-only; restore it before editing')
   }
 
   private rememberUrl(webPaneId: string, state: PaneState, url: string): void {

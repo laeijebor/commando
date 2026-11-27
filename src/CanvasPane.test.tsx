@@ -36,6 +36,28 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const push = (changed: string[], id = artifactId) => act(() => publishCanvasChange({ artifactId: id, changed }))
 describe('CanvasPane', () => {
+  it('uses History read-only controls for a saved Board copy and restores through the owner API', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('/tmp/restored-board')
+    const savedAt = Date.UTC(2026, 10, 26)
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" webPaneId="w-12345678" token="owner" readOnly snapshotSavedAt={savedAt} />)
+    await screen.findByTitle('Settings')
+    expect(screen.getByText(/Read-only copy saved/)).toHaveTextContent('the original folder no longer exists')
+    expect(screen.getByRole('button', { name: 'Comment tool' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    expect(screen.queryByLabelText('History')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Settings, regrouped status' })).toBeDisabled()
+    expect(screen.queryByRole('tab', { name: 'Threads' })).toBeNull()
+    fireEvent.doubleClick(screen.getByTitle('Settings').closest('.canvas-frame')!)
+    expect(screen.getByTitle('Settings').closest('.canvas-frame')).not.toHaveClass('is-live')
+    const label = container.querySelector('.canvas-frame-label') as HTMLElement
+    label.setPointerCapture = vi.fn()
+    fireEvent.pointerDown(label, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    expect(label.setPointerCapture).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Restore to folder…' }))
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/api/web-panes/w-12345678/restore', expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Authorization: 'Bearer owner' }), body: JSON.stringify({ destination: '/tmp/restored-board' }) })))
+    expect(prompt).toHaveBeenCalledOnce()
+  })
   it('opens read-only history, keeps overview, ignores live updates and restores the live camera and tools', async () => {
     vi.stubGlobal('matchMedia', () => ({ matches: true }))
     vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })

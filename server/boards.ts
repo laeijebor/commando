@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
-import { BOARD_ARTIFACT_ID, BOARD_ID, BOARD_ITEM_KEY, BOARD_ITEM_KINDS, BOARD_SNAPSHOT_ID, boardPrRefForUrl, boardItemKeyForCanvas, boardItemKeyForClip, boardItemKeyForFile, boardItemKeyForGuide, boardItemKeyForPage, boardItemKeyForPr, boardItemKeyForRedline, boardItemKeyForUrl, normalizeBoardUrl, type Board, type BoardGroup, type BoardItem, type BoardItemKind, type BoardItemSource, type BoardItemState, type BoardLink, type BoardPlacement, type BoardView } from '../shared/board.js'
+import { BOARD_ARTIFACT_ID, BOARD_ID, BOARD_ITEM_KEY, BOARD_ITEM_KINDS, BOARD_SNAPSHOT_ID, boardPrRefForUrl, boardItemKeyForCanvas, boardItemKeyForClip, boardItemKeyForFile, boardItemKeyForGuide, boardItemKeyForPr, boardItemKeyForRedline, boardItemKeyForUrl, normalizeBoardUrl, type Board, type BoardGroup, type BoardItem, type BoardItemKind, type BoardItemSource, type BoardItemState, type BoardLink, type BoardPlacement, type BoardView } from '../shared/board.js'
 import { redlineArtifactId } from '../shared/chat-tile-events.js'
 import { canvasRelativePath } from '../shared/canvas-manifest.js'
 import { guideRelativePath } from '../shared/guide.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
-import type { AgentSessionRef, SessionBrief, WebPane } from '../shared/protocol.js'
+import { isReadOnlyWebPane, type AgentSessionRef, type SessionBrief, type WebPane } from '../shared/protocol.js'
 import { closedWebPaneKind, revivable } from './closed-web-panes.js'
 import { isPanePrRef } from './pane-pr-records.js'
 import type { RedlineArtifactRegistry } from './redline-artifacts.js'
@@ -33,6 +33,60 @@ const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v ===
 const sourceValid = (v: unknown): v is BoardItemSource => typeof v === 'string' && sources.includes(v)
 const overlaps = (a: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>, b: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 export const isBoardFileItem = (item: BoardItem) => ['screenshot', 'video', 'file'].includes(item.kind) || (item.kind === 'diagram' && !!item.ref.path)
+
+type UrlItem = Pick<BoardItem, 'key' | 'kind' | 'ref'>
+/** Keys retain the original page identity when a snapshot changes its serving URL. */
+function urlIdentity(item: UrlItem): { url: string; engine?: WebPane['engine'] } | undefined {
+  if (!['page', 'redline', 'link'].includes(item.kind) || !item.ref.url) return
+  const qualified = /^(?:page|redline):(webkit|chromium):(https?:.*)$/.exec(item.key)
+  const legacy = /^(?:page|redline|url):(https?:.*)$/.exec(item.key)
+  return { url: normalizeBoardUrl(qualified?.[2] ?? legacy?.[1] ?? item.ref.url), engine: item.ref.engine ?? qualified?.[1] as WebPane['engine'] | undefined }
+}
+function matchingUrlItem(items: readonly BoardItem[], input: UrlItem): BoardItem | undefined {
+  const identity = urlIdentity(input)
+  if (!identity) return
+  const matches = items.filter((item) => urlIdentity(item)?.url === identity.url)
+  if (identity.engine) return matches.find((item) => urlIdentity(item)?.engine === identity.engine) ?? matches.find((item) => !urlIdentity(item)?.engine)
+  // Manual URL adds do not choose an engine. Prefer WebKit, then an existing
+  // unbound card, then the first other engine; never create a third card.
+  return matches.find((item) => urlIdentity(item)?.engine === 'webkit') ?? matches.find((item) => !urlIdentity(item)?.engine) ?? matches[0]
+}
+
+/** Normalize old raw engine keys and merge their aliases without losing Board references. */
+function migrateUrlItems(board: Board, history: Record<string, string>): boolean {
+  const before = JSON.stringify(board), original = board.items, aliases = new Map<string, string>(), items: BoardItem[] = []
+  const priority = (item: BoardItem) => item.source === 'user' ? 2 : item.source === 'agent' ? 1 : 0
+  // Resolve engine-qualified cards before attaching engine-unspecified manual adds.
+  for (const old of [...original].sort((a, b) => Number(!!urlIdentity(b)?.engine) - Number(!!urlIdentity(a)?.engine))) {
+    const item = clone(old), qualified = /^(page|redline):(webkit|chromium):(https?:.*)$/.exec(item.key)
+    if (qualified) { item.key = `${qualified[1]}:${qualified[2]}:${normalizeBoardUrl(qualified[3])}`; item.ref.engine ??= qualified[2] as WebPane['engine'] }
+    const existing = matchingUrlItem(items, item)
+    if (!existing) { items.push(item); aliases.set(old.key, item.key); continue }
+    const preferred = priority(item) > priority(existing) || priority(item) === priority(existing) && item.updatedAt > existing.updatedAt ? item : existing
+    const other = preferred === item ? existing : item
+    const bindings = [existing, item].filter((i) => i.ref.webPaneId).sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt))
+    const bound = bindings[0] ?? (urlIdentity(existing)?.engine ? existing : item)
+    const merged: BoardItem = { ...other, ...preferred, key: existing.key, kind: bound.kind, ref: { ...other.ref, ...preferred.ref, ...bound.ref }, addedAt: Math.min(existing.addedAt, item.addedAt), updatedAt: Math.max(existing.updatedAt, item.updatedAt) }
+    if (existing.closedAt !== undefined || item.closedAt !== undefined) merged.closedAt = Math.max(existing.closedAt ?? 0, item.closedAt ?? 0)
+    items[items.indexOf(existing)] = merged
+    aliases.set(old.key, existing.key)
+  }
+  const order = new Map<string, number>(), placements: Board['placements'] = {}, scores = new Map<string, number>()
+  original.forEach((item, index) => {
+    const key = aliases.get(item.key)!
+    order.set(key, Math.min(order.get(key) ?? index, index))
+    const placement = board.placements[item.key], score = (placement?.fixed ? 10 : 0) + priority(item)
+    if (placement && score > (scores.get(key) ?? -1)) { placements[key] = placement; scores.set(key, score) }
+  })
+  board.items = items.sort((a, b) => order.get(a.key)! - order.get(b.key)!)
+  board.placements = placements
+  board.links = board.links.map((link) => ({ ...link, from: aliases.get(link.from) ?? link.from, to: aliases.get(link.to) ?? link.to }))
+  for (const [key, value] of Object.entries(history)) {
+    const alias = aliases.get(key)
+    if (alias && alias !== key) { delete history[key]; history[alias] = value }
+  }
+  return JSON.stringify(board) !== before
+}
 
 /** Absolute board coordinates; append into a free cell, including cells occupied by fixed items. */
 export function packBoardItem(board: Board, key: string, groupId: string): { placement: BoardPlacement; group: BoardGroup } {
@@ -61,11 +115,14 @@ export function packBoardGroup(groups: readonly BoardGroup[], group: BoardGroup,
 function validItem(value: unknown): value is BoardItem {
   if (!record(value) || !safeText(value.key) || !BOARD_ITEM_KEY.test(value.key) || !BOARD_ITEM_KINDS.includes(value.kind as BoardItemKind) || !safeText(value.title, 500) || !value.title.trim() || !sourceValid(value.source) || !record(value.ref)) return false
   if (![value.addedAt, value.updatedAt].every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)) return false
+  if (value.closedAt !== undefined && (typeof value.closedAt !== 'number' || !Number.isSafeInteger(value.closedAt) || value.closedAt < 0)) return false
   const ref = value.ref
   for (const key of ['url', 'path', 'manifest', 'file', 'artifactId', 'webPaneId', 'snapshotId']) if (ref[key] !== undefined && !safeText(ref[key])) return false
+  if (ref.engine !== undefined && !['webkit', 'chromium'].includes(ref.engine as string)) return false
   if (ref.url !== undefined) { try { normalizeBoardUrl(ref.url as string) } catch { return false } }
   if (ref.path !== undefined && !isAbsolute(ref.path as string)) return false
   if (ref.artifactId !== undefined && !BOARD_ARTIFACT_ID.test(ref.artifactId as string)) return false
+  if (ref.snapshotAt !== undefined && (typeof ref.snapshotAt !== 'number' || !Number.isSafeInteger(ref.snapshotAt) || ref.snapshotAt < 0)) return false
   if (ref.snapshotId !== undefined && !BOARD_SNAPSHOT_ID.test(ref.snapshotId as string)) return false
   if (ref.webPaneId !== undefined && !/^w-[0-9a-f]{8}$/.test(ref.webPaneId as string)) return false
   if (ref.manifest !== undefined && !canvasRelativePath(ref.manifest)) return false
@@ -119,6 +176,7 @@ type Options = {
 export class BoardStore {
   private readonly boards = new Map<string, Board>()
   private readonly observed = new Map<string, Record<string, string>>()
+  private readonly backfilledClosedTabs = new Map<string, Set<string>>()
   private readonly folderScans = new Map<string, number>()
   private readonly dirty = new Set<string>()
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -139,7 +197,9 @@ export class BoardStore {
             const board = clone(data.board)
             for (const item of board.items) delete (item as BoardItem & { state?: string }).state
             this.boards.set(targetId, board)
+            if (Array.isArray(data.backfilledClosedTabs)) this.backfilledClosedTabs.set(targetId, new Set(data.backfilledClosedTabs.filter((id): id is string => typeof id === 'string' && /^w-[0-9a-f]{8}$/.test(id))))
             if (record(data.observed)) this.observed.set(targetId, Object.fromEntries(Object.entries(data.observed).filter(([k, v]) => BOARD_ITEM_KEY.test(k) && typeof v === 'string').slice(-MAX_BOARD_HISTORY).map(([k, v]) => [k, fingerprintHash(v as string)])) as Record<string, string>)
+            if (migrateUrlItems(board, this.observed.get(targetId) ?? {})) this.save(board)
           } catch (error) { this.report(error) }
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') options.onError?.(error) }
@@ -178,7 +238,7 @@ export class BoardStore {
     else console.error('[commando] Board persistence failed', error)
   }
   private save(board: Board): void {
-    const payload = JSON.stringify({ version: 1, board: { ...board, rev: board.rev + 1 }, observed: {} })
+    const payload = JSON.stringify({ version: 1, board: { ...board, rev: board.rev + 1 }, backfilledClosedTabs: [...this.backfilledClosedTabs.get(board.targetId) ?? []], observed: {} })
     if (Buffer.byteLength(payload) > MAX_BOARD_STATE_BYTES) throw new BoardError(413, 'Board state exceeds the 16 MiB limit')
     board.rev++
     this.boards.set(board.targetId, board)
@@ -214,7 +274,7 @@ export class BoardStore {
     }
   }
   private persistedBoard(board: Board): string {
-    const prefix = `{"version":1,"board":${JSON.stringify(board)},"observed":{`
+    const prefix = `{"version":1,"board":${JSON.stringify(board)},"backfilledClosedTabs":${JSON.stringify([...this.backfilledClosedTabs.get(board.targetId) ?? []])},"observed":{`
     let bytes = Buffer.byteLength(prefix) + 2
     if (bytes > MAX_BOARD_STATE_BYTES) {
       const error = new BoardError(413, `Board state exceeds the 16 MiB limit: ${board.targetId}`)
@@ -259,12 +319,13 @@ export class BoardStore {
     }
   }
   upsert(targetId: string, input: InputItem, group?: string): BoardItem {
-    const b = this.get(targetId), now = this.now(), current = b.items.find((i) => i.key === input.key)
+    const b = this.get(targetId), now = this.now(), current = matchingUrlItem(b.items, input) ?? b.items.find((i) => i.key === input.key)
     if (group && !b.groups.some((g) => g.id === group)) throw new BoardError(404, 'Group does not exist')
-    let next: BoardItem = { ...current, ...input, ref: { ...current?.ref, ...input.ref }, addedAt: current?.addedAt ?? now, updatedAt: now }
+    let next: BoardItem = { ...current, ...input, key: current?.key ?? input.key, ref: { ...current?.ref, ...input.ref }, addedAt: current?.addedAt ?? now, updatedAt: now }
+    if (current?.ref.engine && !input.ref.engine && urlIdentity(input)) next = { ...next, kind: current.kind, ref: { ...input.ref, ...current.ref } }
     if (current && input.source === 'auto' && current.source !== 'auto') next = { ...next, title: current.title, source: current.source, caption: current.caption, pinned: current.pinned }
     if (!validItem(next)) throw new BoardError(400, 'Invalid board item')
-    if (current) b.items[b.items.findIndex((i) => i.key === input.key)] = next
+    if (current) b.items[b.items.indexOf(current)] = next
     else {
       if (b.items.length >= MAX_BOARD_ITEMS) {
         const victim = b.items.filter((i) => !i.pinned && i.source === 'auto').sort((a, z) => a.updatedAt - z.updatedAt || a.addedAt - z.addedAt)[0]
@@ -273,7 +334,7 @@ export class BoardStore {
       }
       b.items.push(next)
     }
-    if (group && !(input.source !== 'user' && b.placements[input.key]?.fixed)) this.pack(b, input.key, group)
+    if (group && !(input.source !== 'user' && b.placements[next.key]?.fixed)) this.pack(b, next.key, group)
     this.save(b)
     return clone(next)
   }
@@ -293,7 +354,24 @@ export class BoardStore {
     const item = this.item(targetId, key)
     return this.upsert(targetId, { ...item, ...patch, source: by })
   }
-  remove(targetId: string, key: string): void { this.item(targetId, key); const b = this.get(targetId); this.drop(b, key); this.save(b) }
+  remove(targetId: string, key: string): void {
+    const item = this.item(targetId, key), b = this.get(targetId)
+    const closed = (this.options.webPanes?.closedEntries() ?? []).filter((entry) => {
+      if (entry.targetId !== targetId) return false
+      if (entry.pane.id === item.ref.webPaneId) return true
+      if (entry.pane.content) return false
+      const identity = urlIdentity(item)
+      return !!identity?.engine && entry.pane.engine === identity.engine && normalizeBoardUrl(entry.pane.url) === identity.url
+    })
+    for (const entry of closed) this.rememberClosedTab(targetId, entry.pane.id)
+    this.drop(b, key)
+    this.save(b)
+    if (closed.length) {
+      // Make the removal and markers durable before the separate web-pane writes.
+      this.flush()
+      for (const entry of closed) this.options.webPanes!.forgetClosed(targetId, entry.pane.id)
+    }
+  }
   private pack(b: Board, key: string, group: string): void {
     const result = packBoardItem(b, key, group)
     b.placements[key] = result.placement
@@ -360,7 +438,7 @@ export class BoardStore {
       if (p.id !== item.ref.webPaneId && !sameOwner) return false
       if (item.ref.manifest) return p.content?.kind === 'canvas' && p.content.artifactId === item.ref.artifactId && p.content.manifest === item.ref.manifest
       if (item.kind === 'guide') return p.content?.kind === 'guide' && p.content.artifactId === item.ref.artifactId && p.content.file === item.ref.file
-      try { return !p.content && !!item.ref.url && normalizeBoardUrl(p.url) === normalizeBoardUrl(item.ref.url) } catch { return false }
+      try { return !p.content && (!item.ref.engine || p.engine === item.ref.engine) && !!item.ref.url && normalizeBoardUrl(p.url) === normalizeBoardUrl(item.ref.url) } catch { return false }
     })
   }
   private sourceExists(item: BoardItem): boolean {
@@ -415,10 +493,11 @@ export class BoardStore {
     if (!file && kind === 'redline') {
       try { file = decodeURIComponent(new URL(pane.url).pathname.split(`/artifacts/${artifactId}/`)[1] || 'index.html') } catch { return undefined }
     }
-    if (artifactId && !path) return undefined
     const existing = this.board(targetId).items.find((i) => i.ref.webPaneId === pane.id && i.ref.url === pane.url && i.ref.artifactId === artifactId && i.ref.manifest === manifest && i.ref.file === file)
-    const key = existing?.key ?? (kind === 'canvas' || kind === 'slides' ? boardItemKeyForCanvas(path!, manifest) : kind === 'guide' ? boardItemKeyForGuide(path!, file!) : kind === 'redline' ? boardItemKeyForRedline(pane.url) : boardItemKeyForPage(pane.url))
-    this.capture(targetId, { key, kind, title: (title || pane.title || (manifest ?? file ?? pane.url)).slice(0, 500), ref: { url: pane.url, webPaneId: pane.id, ...(artifactId ? { artifactId } : {}), ...(path ? { path } : {}), ...(manifest ? { manifest } : {}), ...(file ? { file } : {}) }, origin: { at: this.now(), ...(agentSession ? { agentSession } : {}) } }, JSON.stringify([pane.id, pane.url, pane.content, title || pane.title, pane.openRevision]))
+    const qualifiedKey = `${kind}:${pane.engine}:${normalizeBoardUrl(pane.url)}`
+    const merged = !content ? matchingUrlItem(this.board(targetId).items, { key: qualifiedKey, kind, ref: { url: pane.url, engine: pane.engine } }) : undefined
+    const key = existing?.key ?? merged?.key ?? (kind === 'canvas' || kind === 'slides' ? boardItemKeyForCanvas(path ?? `artifact:${artifactId}`, manifest) : kind === 'guide' ? boardItemKeyForGuide(path ?? `artifact:${artifactId}`, file!) : qualifiedKey)
+    this.capture(targetId, { key, kind, title: (title || pane.title || (manifest ?? file ?? pane.url)).slice(0, 500), ref: { url: pane.url, webPaneId: pane.id, ...(!content ? { engine: pane.engine } : {}), ...(artifactId ? { artifactId } : {}), ...(path ? { path } : {}), ...(manifest ? { manifest } : {}), ...(file ? { file } : {}) }, origin: { at: this.now(), ...(agentSession ? { agentSession } : {}) } }, JSON.stringify([pane.id, pane.url, pane.content, title || pane.title, pane.openRevision]))
     return key
   }
   captureBrief(brief: SessionBrief): void {
@@ -460,12 +539,17 @@ export class BoardStore {
     const key = this.captureWebPane(targetId, pane, agentSession, title)
     if (!key) return
     const item = this.item(targetId, key)
-    if (item.ref.path && item.ref.artifactId && this.options.snapshotRoot) {
+    const closed = this.get(targetId)
+    closed.items.find((i) => i.key === key)!.closedAt = this.now()
+    this.save(closed)
+    if (!isReadOnlyWebPane(pane) && item.ref.path && item.ref.artifactId && this.options.snapshotRoot) {
       const snapshotId = copyBoardSnapshot(item.ref.path, this.options.snapshotRoot, item.ref.manifest ?? item.ref.file)
       if (snapshotId) {
+        const savedAt = this.now()
         const b = this.get(targetId), stored = b.items.find((i) => i.key === key)!, old = stored.ref.snapshotId
         stored.ref.snapshotId = snapshotId
-        stored.updatedAt = this.now()
+        stored.ref.snapshotAt = savedAt
+        stored.updatedAt = savedAt
         this.save(b)
         // Only delete an old folder once the replacement reference is durable.
         this.flush()
@@ -473,6 +557,90 @@ export class BoardStore {
       }
     }
     this.changed(targetId)
+  }
+  /** Migrate the old closed-tab affordance without refreshing retention on every restart. */
+  backfillClosedTabs(): void {
+    for (const entry of [...(this.options.webPanes?.closedEntries() ?? [])].reverse()) {
+      try {
+        const existing = this.board(entry.targetId).items.find((i) => i.ref.webPaneId === entry.pane.id)
+        if (existing) {
+          if (existing.closedAt !== entry.closedAt || (!entry.pane.content && existing.ref.engine !== entry.pane.engine)) {
+            const b = this.get(entry.targetId), item = b.items.find((i) => i.key === existing.key)!
+            item.closedAt = entry.closedAt
+            if (!entry.pane.content) item.ref.engine = entry.pane.engine
+            this.save(b)
+          }
+          if (!this.backfilledClosedTabs.get(entry.targetId)?.has(entry.pane.id)) this.rememberClosedTab(entry.targetId, entry.pane.id)
+          continue
+        }
+        if (this.backfilledClosedTabs.get(entry.targetId)?.has(entry.pane.id)) continue
+        const key = this.captureWebPane(entry.targetId, entry.pane, entry.pane.agentSession, entry.title)
+        if (!key) continue
+        const b = this.get(entry.targetId), item = b.items.find((i) => i.key === key)
+        if (!item) continue
+        item.closedAt = entry.closedAt
+        item.addedAt = Math.min(item.addedAt, entry.closedAt)
+        item.updatedAt = entry.closedAt
+        this.rememberClosedTab(entry.targetId, entry.pane.id)
+        this.save(b)
+      } catch (error) { this.report(error) }
+    }
+  }
+  private rememberClosedTab(targetId: string, id: string): void {
+    const ids = this.backfilledClosedTabs.get(targetId) ?? new Set<string>()
+    ids.delete(id)
+    ids.add(id)
+    // Keep markers independent of item eviction and capture fingerprints: an
+    // interrupted forget can leave an older closed record on disk. The board
+    // state's existing byte limit includes these markers.
+    this.backfilledClosedTabs.set(targetId, ids)
+    this.schedule(targetId)
+  }
+
+  /** Restore only a live saved-copy tab, preserving its pane id and discussions. */
+  restoreSnapshot(webPaneId: string, destination: string): WebPane {
+    const service = this.options.webPanes, artifacts = this.options.artifacts
+    const pane = service?.get(webPaneId)
+    if (!pane) throw new BoardError(404, 'Web pane does not exist')
+    if (!isReadOnlyWebPane(pane)) throw new BoardError(409, 'This tab is not a saved copy')
+    const artifactId = pane.content && pane.content.kind !== 'simulator' ? pane.content.artifactId : redlineArtifactId(pane.url)
+    const source = artifactId && artifacts?.directory(artifactId)
+    const root = this.options.snapshotRoot
+    if (!source || !root || dirname(source) !== root || !BOARD_SNAPSHOT_ID.test(basename(source))) throw new BoardError(409, 'Saved copy is unavailable')
+    if (!safeText(destination, 4096) || !isAbsolute(destination) || destination !== join(dirname(destination), basename(destination))) throw new BoardError(400, 'Destination must be an absolute folder path')
+    let parent: string
+    try { parent = realpathSync(dirname(destination)) } catch { throw new BoardError(400, 'Destination parent must exist') }
+    if (parent === root || parent.startsWith(root + sep)) throw new BoardError(400, 'Choose a folder outside saved copies')
+    const dest = join(parent, basename(destination))
+    if (existsSync(dest)) throw new BoardError(409, 'Destination already exists; choose a new folder')
+    const priority = pane.content?.kind === 'canvas' ? pane.content.manifest : pane.content?.kind === 'guide' ? pane.content.file : decodeURIComponent(new URL(pane.url).pathname.split(`/artifacts/${artifactId}/`)[1] || 'index.html')
+    // Reuse the bounded, symlink-excluding snapshot copier before publishing anything.
+    const copyId = copyBoardSnapshot(source, parent, priority)
+    if (!copyId) throw new BoardError(409, 'Saved copy could not be restored')
+    const staging = join(parent, copyId)
+    let reserved = false
+    try {
+      try { mkdirSync(dest, { mode: 0o700 }); reserved = true }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new BoardError(409, 'Destination already exists; choose a new folder'); throw error }
+      for (const name of readdirSync(staging)) cpSync(join(staging, name), join(dest, name), { recursive: true, force: false, errorOnExist: true })
+      const restoredId = artifacts!.register(dest).id
+      const url = new URL(pane.url)
+      url.pathname = url.pathname.replace(`/artifacts/${artifactId}/`, `/artifacts/${restoredId}/`)
+      const content = pane.content && pane.content.kind !== 'simulator' ? { ...pane.content, artifactId: restoredId } : undefined
+      if (content) delete content.readOnly
+      const restored = service!.replaceArtifact(webPaneId, { url: url.href, content, readOnly: undefined, snapshotSavedAt: undefined })
+      // Update the original card rather than creating another card for this tab.
+      for (const target of this.targets()) {
+        const b = this.get(target), item = b.items.find((i) => i.ref.webPaneId === webPaneId)
+        if (!item) continue
+        item.ref = { ...item.ref, artifactId: restoredId, path: dest, url: url.href }
+        this.save(b)
+      }
+      return restored
+    } catch (error) {
+      if (reserved && service?.get(webPaneId) === pane) rmSync(dest, { recursive: true, force: true })
+      throw error
+    } finally { rmSync(staging, { recursive: true, force: true }) }
   }
   revive(targetId: string, key: string, anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>, by: 'agent' | 'user'): { webPaneId?: string; path?: string } {
     const item = this.item(targetId, key), state = this.state(item, targetId), webPanes = this.options.webPanes
@@ -488,7 +656,7 @@ export class BoardStore {
     const path = state === 'snapshot' ? this.snapshotDir(item) : item.ref.artifactId ? item.ref.path : undefined
     let url = item.ref.url, content: WebPane['content'], artifactId = item.ref.artifactId
     if (path) {
-      artifactId = this.options.artifacts?.register(path).id
+      artifactId = this.options.artifacts?.register(path, state === 'snapshot').id
       if (!artifactId) throw new BoardError(503, 'Artifact registry is unavailable')
       const parsed = new URL(url ?? this.options.origin ?? 'http://127.0.0.1/')
       parsed.pathname = `/redline/artifacts/${artifactId}/${(item.ref.file ?? '').split('/').map(encodeURIComponent).join('/')}`
@@ -497,7 +665,11 @@ export class BoardStore {
       else if (item.kind === 'guide' && item.ref.file) content = { kind: 'guide', artifactId, file: item.ref.file }
     }
     if (!url) throw new BoardError(409, 'This item has no URL to open')
-    const pane = webPanes.open({ ...anchor, url, content, openedBy: by })
+    if (state === 'snapshot' && content && content.kind !== 'simulator') content = { ...content, readOnly: true }
+    const replacement = { url, content, ...(state === 'snapshot' ? { readOnly: true as const, snapshotSavedAt: item.ref.snapshotAt ?? item.closedAt ?? item.updatedAt } : {}) }
+    const pane = item.ref.webPaneId && webPanes.closedEntries().some((e) => e.targetId === targetId && e.pane.id === item.ref.webPaneId)
+      ? webPanes.reopenClosed(targetId, item.ref.webPaneId, anchor, replacement)
+      : webPanes.open({ ...anchor, ...replacement, engine: item.ref.engine, openedBy: by })
     webPanes.setActiveTab(pane.id)
     const b = this.get(targetId), stored = b.items.find((i) => i.key === key)!
     stored.ref = { ...stored.ref, webPaneId: pane.id, url, ...(artifactId ? { artifactId } : {}) }

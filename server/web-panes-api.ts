@@ -1,3 +1,5 @@
+import { BoardError } from './boards.js'
+import { isReadOnlyArtifactPane } from './web-pane-access.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasNoteContext } from '../shared/canvas-feedback.js'
 import type { CanvasThreadsStore } from './canvas-threads.js'
@@ -50,6 +52,9 @@ type AnchorPane = {
 
 type WebPanesApiDependencies = {
   service: WebPaneService
+  restoreSnapshot?: (id: string, destination: string) => WebPane
+  onRestored?: (pane: WebPane) => void
+  readOnlyArtifact?: (id: string) => boolean
   /** The agent hook token — the same secret agents already use for status hooks. */
   agentToken: string
   /** Owner auth (session cookie or COMMANDO_TOKEN bearer/query token). */
@@ -401,6 +406,25 @@ export class WebPanesApi {
 
     try {
       const caller = await this.authenticate(request, url)
+      const paneMatch = /^\/api\/web-panes\/(w-[0-9a-f]{8})(?:\/|$)/.exec(url.pathname)
+      const pane = paneMatch && this.dependencies.service.get(paneMatch[1])
+      const restore = paneMatch && url.pathname === `/api/web-panes/${paneMatch[1]}/restore`
+      if (restore) {
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can restore a saved copy')
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (!this.dependencies.restoreSnapshot) throw new HttpError(503, 'Restore is unavailable')
+        const body = await readJson(request)
+        if (typeof body.destination !== 'string') throw new HttpError(400, 'destination must be an absolute folder path')
+        const restored = this.dependencies.restoreSnapshot(paneMatch![1], body.destination)
+        this.dependencies.onRestored?.(restored)
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true, webPane: restored })
+        return true
+      }
+      const readOnly = !!pane && isReadOnlyArtifactPane(pane, this.dependencies.readOnlyArtifact)
+      if (readOnly && /\/(cdp|navigate|navigate-requests|reload)(?:\/|$)/.test(url.pathname)) throw new HttpError(409, 'This saved copy is read-only; restore it to a folder before interacting')
+      // Closing, selecting and moving a tab do not mutate the saved artifact.
+      if (readOnly && !['GET', 'HEAD'].includes(request.method ?? '') && /\/(guide|feedback|pending|threads|spotlight)(?:\/|$)/.test(url.pathname)) throw new HttpError(409, 'This saved copy is read-only; restore it to a folder before editing')
       const guide = /^\/api\/web-panes\/(w-[0-9a-f]{8})\/guide(?:\/(steps|update|reset))?$/.exec(url.pathname)
       if (guide) {
         await this.handleGuide(request, response, guide[1], guide[2] as 'steps' | 'update' | 'reset' | undefined, caller)
@@ -975,7 +999,7 @@ export class WebPanesApi {
       writeJson(response, 200, { ok: true, webPaneId: route.id })
       return true
     } catch (error) {
-      if (error instanceof WebPaneError || error instanceof WebPaneAttachmentError || error instanceof HttpError) {
+      if (error instanceof BoardError || error instanceof WebPaneError || error instanceof WebPaneAttachmentError || error instanceof HttpError) {
         if (error.status === 401) {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
         }
@@ -1032,7 +1056,7 @@ export class WebPanesApi {
    * URL. Only chromium tiles have a review mode, so only they can inherit.
    */
   private adoptPending(pane: WebPane): void {
-    if (pane.engine !== 'chromium' || pane.status !== 'open') return
+    if (pane.engine !== 'chromium' || pane.status !== 'open' || isReadOnlyArtifactPane(pane, this.dependencies.readOnlyArtifact)) return
     const liveIds = new Set(this.dependencies.service.list().map((entry) => entry.id))
     const snapshot = this.dependencies.pending.adopt(pane.id, pane.url, liveIds)
     if (snapshot.notes.length > 0) this.dependencies.onPendingChanged?.(pane.id, snapshot)
@@ -1173,7 +1197,7 @@ export class WebPanesApi {
     const existingIds = new Set(this.dependencies.service.list().map((pane) => pane.id))
     const pane = this.openPane(body, caller)
     const reused = !pane.content && existingIds.has(pane.id)
-    if (reused && pane.status === 'open') {
+    if (reused && pane.status === 'open' && !isReadOnlyArtifactPane(pane, this.dependencies.readOnlyArtifact)) {
       this.dependencies.agentRequests.reload(pane.id)
       this.dependencies.onReopen?.(pane)
     }

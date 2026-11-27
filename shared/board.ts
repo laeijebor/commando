@@ -1,4 +1,4 @@
-import type { AgentSessionRef } from './protocol.js'
+import type { AgentSessionRef, WebPaneEngine } from './protocol.js'
 
 export type BoardItemKind = 'pr' | 'canvas' | 'redline' | 'slides' | 'guide' | 'page' | 'diagram' | 'screenshot' | 'video' | 'link' | 'file' | 'clip'
 export type BoardItemSource = 'auto' | 'agent' | 'user'
@@ -10,7 +10,7 @@ export type BoardItem = {
   kind: BoardItemKind
   title: string
   source: BoardItemSource
-  ref: { url?: string; path?: string; artifactId?: string; manifest?: string; file?: string; webPaneId?: string; snapshotId?: string; pr?: { repo: string; number: number } }
+  ref: { engine?: WebPaneEngine; url?: string; path?: string; artifactId?: string; manifest?: string; file?: string; webPaneId?: string; snapshotId?: string; snapshotAt?: number; pr?: { repo: string; number: number } }
   origin?: { at: number; agentSession?: AgentSessionRef; prompt?: string }
   caption?: string
   tone?: 'decision' | 'gotcha' | 'note'
@@ -18,6 +18,7 @@ export type BoardItem = {
   thumb?: { hash: string; w: number; h: number }
   /** image/favicon are local SHA-256 thumbnail hashes, served at /api/boards/thumbs/:hash/:width (320 or 960). */
   preview?: { title?: string; description?: string; siteName?: string; image?: string; favicon?: string }
+  closedAt?: number
   addedAt: number
   updatedAt: number
 }

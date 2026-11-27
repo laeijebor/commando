@@ -23,8 +23,6 @@ export interface WebPanesApiClient {
   confirm(webPaneId: string, allowOrigin: boolean): Promise<void>
   /** `title` is the label shown for the tab, kept with its closed-tab entry. */
   close(webPaneId: string, title?: string): Promise<void>
-  reopenClosedTab(targetId: string, id: string): Promise<void>
-  forgetClosedTab(targetId: string, id: string): Promise<void>
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
   submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
   threads(webPaneId: string): Promise<CanvasThread[]>
@@ -170,8 +168,6 @@ export function createWebPanesApi(
     close: async (webPaneId, title) => {
       await request(`/${encodeURIComponent(webPaneId)}${title ? `?title=${encodeURIComponent(title)}` : ''}`, { method: 'DELETE' })
     },
-    reopenClosedTab: async (targetId, id) => { await request('/closed-tabs/reopen', { method: 'POST', body: JSON.stringify({ targetId, id }) }) },
-    forgetClosedTab: async (targetId, id) => { await request('/closed-tabs/forget', { method: 'POST', body: JSON.stringify({ targetId, id }) }) },
     cdp: async (webPaneId) => {
       return await request(`/${encodeURIComponent(webPaneId)}/cdp`, { method: 'GET' }) as {
         target: string

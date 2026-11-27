@@ -233,15 +233,256 @@ describe('pure packing', () => {
 })
 
 describe('artifact lifetime, snapshot and revive', () => {
-  async function fixture() {
+  async function fixture(now: () => number = Date.now) {
     const dir = temp(), root = temp(), snapshots = temp()
     writeFileSync(join(dir, 'canvas.json'), '{"title":"Review","frames":[]}'); writeFileSync(join(dir, 'deck.html'), '<main class="deck"></main>'); writeFileSync(join(dir, 'guide.md'), '# Guide'); writeFileSync(join(dir, 'index.html'), '<h1>Redline</h1>')
     const artifacts = new RedlineArtifactRegistry(), id = artifacts.register(dir).id
     const webPanes = new WebPaneService(join(root, 'web.json'), undefined, undefined, 'board-test', () => session)
-    const s = store({ root: join(root, 'boards'), snapshotRoot: snapshots, artifacts, webPanes })
+    const s = store({ root: join(root, 'boards'), snapshotRoot: snapshots, artifacts, webPanes, now })
     webPanes.closedTabHooks = { targetIdFor: () => target, onClosed: (t, p, title) => s.snapshotOnClose(t, p, title, session) }
     return { dir, root, snapshots, artifacts, id, webPanes, s }
   }
+  it.each(['canvas', 'guide', 'redline'] as const)('revives %s as a durable read-only copy and restores to an editable folder under the same id', async (kind) => {
+    // Advancing on every read makes a second saved-time read fail deterministically.
+    let now = Date.UTC(2026, 10, 26)
+    const f = await fixture(() => now++)
+    const content: WebPane['content'] = kind === 'canvas' ? { kind, artifactId: f.id, manifest: 'canvas.json' } : kind === 'guide' ? { kind, artifactId: f.id, file: 'guide.md' } : undefined
+    const pane = f.webPanes.open({ ...anchor, url: `http://localhost/redline/artifacts/${f.id}/index.html`, content, openedBy: 'user' })
+    const key = f.s.captureWebPane(target, pane)!
+    f.webPanes.close(pane.id)
+    const savedAt = f.s.item(target, key).updatedAt
+    expect(f.s.item(target, key).ref.snapshotAt).toBe(savedAt)
+    const persisted = JSON.parse(readFileSync(join(f.root, 'boards', `${target}.json`), 'utf8'))
+    expect(persisted.board.items.find((item: BoardItem) => item.key === key).ref.snapshotAt).toBe(savedAt)
+    rmSync(f.dir, { recursive: true })
+    expect(f.s.revive(target, key, anchor, 'user')).toEqual({ webPaneId: pane.id })
+    const copy = f.webPanes.get(pane.id)!
+    expect(copy).toMatchObject({ readOnly: true, snapshotSavedAt: savedAt })
+    if (copy.content?.kind !== 'simulator' && copy.content) expect(copy.content.readOnly).toBe(true)
+    const copyId = f.s.item(target, key).ref.artifactId!
+    expect(f.artifacts.isReadOnly(copyId)).toBe(true)
+    expect(f.artifacts.register(f.artifacts.directory(copyId)!).id).toBe(copyId)
+    expect(f.artifacts.isReadOnly(copyId)).toBe(true)
+    await f.webPanes.flush()
+    const loaded = new WebPaneService(join(f.root, 'web.json'), undefined, undefined, 'board-test')
+    await loaded.load()
+    expect(loaded.get(pane.id)).toMatchObject({ readOnly: true, snapshotSavedAt: savedAt, ...(copy.content ? { content: copy.content } : {}) })
+    const dest = join(f.root, 'restored')
+    mkdirSync(dest)
+    writeFileSync(join(dest, 'keep.txt'), 'keep')
+    expect(() => f.s.restoreSnapshot(pane.id, dest)).toThrow('already exists')
+    expect(readFileSync(join(dest, 'keep.txt'), 'utf8')).toBe('keep')
+    expect(() => f.s.restoreSnapshot(pane.id, 'relative')).toThrow('absolute')
+    expect(() => f.s.restoreSnapshot(pane.id, join(f.snapshots, 'unsafe'))).toThrow('outside saved copies')
+    rmSync(dest, { recursive: true })
+    const restored = f.s.restoreSnapshot(pane.id, dest)
+    expect(restored.id).toBe(pane.id)
+    expect(restored.readOnly).toBeUndefined()
+    if (restored.content && restored.content.kind !== 'simulator') expect(restored.content.readOnly).toBeUndefined()
+    expect(f.s.get(target).items).toHaveLength(1)
+    expect(f.s.item(target, key).ref.path).toBe(dest)
+    expect(readFileSync(join(dest, 'guide.md'), 'utf8')).toBe('# Guide')
+    expect(f.artifacts.isReadOnly(f.s.item(target, key).ref.artifactId!)).toBe(false)
+    expect(f.s.view(target).items[0].state).toBe('open')
+    expect(() => f.s.restoreSnapshot(pane.id, join(f.root, 'again'))).toThrow('not a saved copy')
+    await f.webPanes.flush()
+    await loaded.flush()
+  })
+  it('backfills every retained kind, including absent owners, once with the original close time', async () => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => other }
+    for (const kind of ['canvas', 'slides', 'guide', 'redline', 'page'] as const) {
+      const content: WebPane['content'] = kind === 'canvas' || kind === 'slides' ? { kind: 'canvas', artifactId: f.id, manifest: kind === 'slides' ? 'deck.html' : 'canvas.json' } : kind === 'guide' ? { kind, artifactId: f.id, file: 'guide.md' } : undefined
+      const pane = f.webPanes.open({ ...anchor, url: kind === 'page' ? 'http://localhost/docs' : `http://localhost/redline/artifacts/${f.id}/index.html`, content, openedBy: 'user' })
+      f.webPanes.close(pane.id)
+    }
+    f.webPanes.closedTabHooks.liveTargets = () => new Set()
+    expect(f.webPanes.closedTabs()).toEqual({})
+    f.s.backfillClosedTabs()
+    expect(f.s.view(other).items.map((i) => i.kind).sort()).toEqual(['canvas', 'guide', 'page', 'redline', 'slides'])
+    for (const entry of f.webPanes.closedEntries()) expect(f.s.get(other).items.find((i) => i.ref.webPaneId === entry.pane.id)?.closedAt).toBe(entry.closedAt)
+    const before = f.s.get(other)
+    f.s.backfillClosedTabs()
+    expect(f.s.get(other)).toEqual(before)
+    const page = before.items.find((i) => i.kind === 'page')!
+    expect(f.s.revive(other, page.key, anchor, 'user')).toEqual({ webPaneId: page.ref.webPaneId })
+    await f.webPanes.flush()
+  })
+  it.each(['page', 'redline'] as const)('preserves separate WebKit and Chromium %s cards, discussions ids, revival and forgetting', async (kind) => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const url = kind === 'page' ? 'http://localhost/same-page' : `http://localhost/redline/artifacts/${f.id}/index.html`
+    const panes = (['webkit', 'chromium'] as const).map((engine) => {
+      const pane = f.webPanes.open({ ...anchor, url, engine, openedBy: 'user' })
+      f.webPanes.close(pane.id)
+      return pane
+    })
+    f.s.backfillClosedTabs(); f.s.flush()
+    const s = store({ root: join(f.root, 'boards'), artifacts: f.artifacts, webPanes: f.webPanes })
+    expect(s.get(target).items).toHaveLength(2)
+    for (const pane of panes) {
+      const item = s.get(target).items.find((i) => i.ref.webPaneId === pane.id)!
+      expect(item.ref.engine).toBe(pane.engine)
+      expect(s.revive(target, item.key, anchor, 'user').webPaneId).toBe(pane.id)
+      expect(f.webPanes.get(pane.id)?.engine).toBe(pane.engine)
+    }
+    for (const pane of panes) f.webPanes.close(pane.id)
+    const removed = s.get(target).items.find((i) => i.ref.webPaneId === panes[0].id)!
+    s.remove(target, removed.key)
+    expect(f.webPanes.closedEntries().map((e) => e.pane.id)).toEqual([panes[1].id])
+    expect(s.get(target).items[0].ref.webPaneId).toBe(panes[1].id)
+    expect(s.revive(target, s.get(target).items[0].key, anchor, 'user').webPaneId).toBe(panes[1].id)
+    f.webPanes.close(panes[1].id); f.webPanes.forgetClosed(target, panes[1].id)
+    const fresh = s.revive(target, s.get(target).items[0].key, anchor, 'user')
+    expect(f.webPanes.get(fresh.webPaneId!)?.engine).toBe('chromium')
+    await f.webPanes.flush()
+  })
+  it.each([
+    ['http://localhost/x/', 'http://localhost/x'],
+    ['http://localhost/x?utm_source=chat#notes', 'http://localhost/x'],
+    ['http://localhost/x?b=2&a=1', 'http://localhost/x?a=1&b=2'],
+  ])('merges cosmetic URL aliases %s and %s within one engine', async (first, second) => {
+    const f = await fixture()
+    const panes = [first, second].map((url) => {
+      const pane = f.webPanes.open({ ...anchor, url, engine: 'chromium', openedBy: 'user' })
+      f.webPanes.close(pane.id)
+      return pane
+    })
+    expect(f.s.get(target).items).toHaveLength(1)
+    const card = f.s.get(target).items[0]
+    expect(card.key).toBe(`page:chromium:${second}`)
+    expect(card.ref.webPaneId).toBe(panes[1].id)
+    f.s.remove(target, card.key)
+    expect(f.webPanes.closedEntries()).toEqual([])
+    f.s.backfillClosedTabs()
+    expect(f.s.get(target).items).toEqual([])
+    await f.webPanes.flush()
+  })
+  it.each(['webkit', 'chromium'] as const)('merges a manual redline URL with a later %s close while preserving user fields', async (engine) => {
+    const f = await fixture(), url = `http://localhost/redline/artifacts/${f.id}/index.html`
+    const manual = f.s.upsert(target, boardInput({ url, title: 'Curated redline', caption: 'Keep this', pinned: true }, 'user', f.artifacts))
+    const pane = f.webPanes.open({ ...anchor, url: `${url}?utm_source=preview#notes`, engine, openedBy: 'user' })
+    f.webPanes.close(pane.id)
+    expect(f.s.get(target).items).toHaveLength(1)
+    expect(f.s.get(target).items[0]).toMatchObject({ key: manual.key, kind: 'redline', source: 'user', title: 'Curated redline', caption: 'Keep this', pinned: true, ref: { engine, webPaneId: pane.id } })
+    expect(f.s.revive(target, manual.key, anchor, 'user').webPaneId).toBe(pane.id)
+    await f.webPanes.flush()
+  })
+  it('migrates raw engine keys and duplicate manual cards while retaining metadata, placements, links and other engines', async () => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const panes = [
+      f.webPanes.open({ ...anchor, url: 'http://localhost/x/?utm_source=one#note', engine: 'webkit', openedBy: 'user' }),
+      f.webPanes.open({ ...anchor, url: 'http://localhost/x', engine: 'webkit', openedBy: 'user' }),
+      f.webPanes.open({ ...anchor, url: 'http://localhost/x/', engine: 'chromium', openedBy: 'user' }),
+    ]
+    for (const pane of panes) f.webPanes.close(pane.id)
+    const cards: BoardItem[] = panes.map((pane, i) => ({ key: `page:${pane.engine}:${pane.url}`, kind: 'page', title: 'Captured', source: 'auto', ref: { url: pane.url, engine: pane.engine, webPaneId: pane.id }, addedAt: 1, updatedAt: 10 + i, closedAt: 10 + i }))
+    const manual: BoardItem = { ...boardInput({ url: 'http://localhost/x', title: 'My page', caption: 'Preserve this', pinned: true }, 'user'), addedAt: 0, updatedAt: 2 }
+    const clip: BoardItem = { key: 'clip:evidence', kind: 'clip', title: 'Evidence', source: 'user', ref: {}, addedAt: 1, updatedAt: 1 }
+    const board: Board = { targetId: target, rev: 1, items: [...cards, manual, clip], groups: [], placements: { [manual.key]: { x: 50, y: 60, fixed: true }, [cards[0].key]: { x: 0, y: 0 } }, links: [{ id: 'evidence', from: cards[0].key, to: clip.key }, { id: 'existing-self-link', from: clip.key, to: clip.key }] }
+    const root = join(f.root, 'boards'); mkdirSync(root)
+    writeFileSync(join(root, `${target}.json`), JSON.stringify({ version: 1, board, observed: { [cards[0].key]: 'old capture' } }))
+    const s = store({ root, now: () => 1000, webPanes: f.webPanes })
+    const migrated = s.get(target), key = 'page:webkit:http://localhost/x'
+    expect(migrated.items).toHaveLength(3)
+    expect(migrated.items.find((i) => i.key === key)).toMatchObject({ title: 'My page', caption: 'Preserve this', source: 'user', pinned: true, addedAt: 0, ref: { engine: 'webkit', webPaneId: panes[1].id } })
+    expect(migrated.items.find((i) => i.ref.engine === 'chromium')?.key).toBe('page:chromium:http://localhost/x')
+    expect(migrated.placements).toEqual({ [key]: { x: 50, y: 60, fixed: true } })
+    expect(migrated.links).toEqual([{ id: 'evidence', from: key, to: clip.key }, { id: 'existing-self-link', from: clip.key, to: clip.key }])
+    s.flush()
+    expect(store({ root, now: () => 1000, webPanes: f.webPanes }).get(target)).toEqual(migrated)
+    const history = JSON.parse(readFileSync(join(root, `${target}.json`), 'utf8')).observed
+    expect(history[cards[0].key]).toBeUndefined()
+    expect(history[key]).toMatch(/^sha256:/)
+    s.remove(target, key)
+    expect(f.webPanes.closedEntries().map((e) => e.pane.id)).toEqual([panes[2].id])
+    await f.webPanes.flush()
+  })
+  it('repairs close timestamps on existing cards, including previously marked migration ids', async () => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const pane = f.webPanes.open({ ...anchor, url: 'http://localhost/long-running', openedBy: 'user' })
+    const key = f.s.captureWebPane(target, pane)!
+    f.webPanes.close(pane.id)
+    const closedAt = f.webPanes.closedEntries()[0].closedAt
+    expect(f.s.item(target, key).closedAt).toBeUndefined()
+    f.s.backfillClosedTabs(); f.s.flush()
+    expect(f.s.item(target, key).closedAt).toBe(closedAt)
+    const path = join(f.root, 'boards', `${target}.json`), saved = JSON.parse(readFileSync(path, 'utf8'))
+    delete saved.board.items[0].closedAt // A previous v2 run marked this id before copying its timestamp.
+    writeFileSync(path, JSON.stringify(saved))
+    const s = store({ root: join(f.root, 'boards'), webPanes: f.webPanes })
+    s.backfillClosedTabs()
+    expect(s.item(target, key).closedAt).toBe(closedAt)
+    const rev = s.get(target).rev
+    s.backfillClosedTabs()
+    expect(s.get(target).rev).toBe(rev)
+    await f.webPanes.flush()
+  })
+  it.each(['canvas', 'slides', 'guide', 'redline', 'page'] as const)('removing a closed %s card forgets only its retained tab', async (kind) => {
+    const f = await fixture()
+    const content: WebPane['content'] = kind === 'canvas' || kind === 'slides' ? { kind: 'canvas', artifactId: f.id, manifest: kind === 'slides' ? 'deck.html' : 'canvas.json' } : kind === 'guide' ? { kind, artifactId: f.id, file: 'guide.md' } : undefined
+    const pane = f.webPanes.open({ ...anchor, url: kind === 'page' ? 'http://localhost/docs' : `http://localhost/redline/artifacts/${f.id}/index.html`, content, openedBy: 'user' })
+    f.webPanes.close(pane.id)
+    const key = f.s.get(target).items.find((i) => i.ref.webPaneId === pane.id)!.key
+    const keep = f.webPanes.open({ ...anchor, url: 'http://localhost/keep', openedBy: 'user' })
+    f.webPanes.close(keep.id)
+    expect(f.webPanes.closedEntries().map((e) => e.pane.id)).toContain(pane.id)
+    f.s.remove(target, key)
+    expect(f.webPanes.closedEntries().map((e) => e.pane.id)).toEqual([keep.id])
+    expect(f.webPanes.closedTabs()[target].map((p) => p.id)).toEqual([keep.id])
+    expect(() => f.webPanes.reopenClosed(target, pane.id, anchor)).toThrow('Closed tab does not exist')
+    f.s.backfillClosedTabs()
+    expect(f.s.get(target).items.map((i) => i.ref.webPaneId)).toEqual([keep.id])
+    await f.webPanes.flush()
+  })
+  it.each([{ backfilled: false, stale: false }, { backfilled: false, stale: true }, { backfilled: true, stale: false }, { backfilled: true, stale: true }])('does not resurrect a removed card across restarts (backfilled: $backfilled, stale closed-tab file: $stale)', async ({ backfilled, stale }) => {
+    const f = await fixture()
+    if (backfilled) f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const pane = f.webPanes.open({ ...anchor, url: 'http://localhost/legacy', openedBy: 'user' })
+    f.webPanes.close(pane.id)
+    await f.webPanes.flush()
+    const webPath = join(f.root, 'web.json'), closedState = readFileSync(webPath, 'utf8')
+    if (backfilled) f.s.backfillClosedTabs()
+    f.s.flush()
+    const key = f.s.get(target).items[0].key
+    const reloaded = store({ root: join(f.root, 'boards'), snapshotRoot: f.snapshots, artifacts: f.artifacts, webPanes: f.webPanes })
+    reloaded.remove(target, key)
+    // remove() must persist the Board marker even before callers flush either store.
+    const removed = store({ root: join(f.root, 'boards') })
+    expect(removed.get(target).items).toEqual([])
+    await f.webPanes.flush()
+    if (stale) writeFileSync(webPath, closedState)
+    for (let restart = 0; restart < 2; restart++) {
+      const webPanes = new WebPaneService(webPath, undefined, undefined, 'board-test')
+      await webPanes.load()
+      expect(webPanes.closedEntries().map((e) => e.pane.id)).toEqual(stale ? [pane.id] : [])
+      const s = store({ root: join(f.root, 'boards'), artifacts: f.artifacts, webPanes })
+      const before = s.get(target)
+      s.backfillClosedTabs(); s.backfillClosedTabs(); s.flush()
+      expect(s.get(target)).toEqual(before)
+      expect(s.get(target).items).toEqual([])
+      await webPanes.flush()
+    }
+  })
+  it('remembers backfilled ids after restart without replaying an entry whose card disappeared', async () => {
+    const f = await fixture()
+    f.webPanes.closedTabHooks = { targetIdFor: () => target }
+    const pane = f.webPanes.open({ ...anchor, url: 'http://localhost/legacy', openedBy: 'user' })
+    f.webPanes.close(pane.id)
+    f.s.backfillClosedTabs(); f.s.flush()
+    const path = join(f.root, 'boards', `${target}.json`), saved = JSON.parse(readFileSync(path, 'utf8'))
+    expect(saved.backfilledClosedTabs).toEqual([pane.id])
+    // Model a card evicted independently of the still-retained closed-tab record.
+    saved.board.items = []
+    writeFileSync(path, JSON.stringify(saved))
+    const s = store({ root: join(f.root, 'boards'), webPanes: f.webPanes })
+    s.backfillClosedTabs()
+    expect(s.get(target).items).toEqual([])
+    expect(f.webPanes.closedEntries().map((e) => e.pane.id)).toEqual([pane.id])
+    await f.webPanes.flush()
+  })
   it.each(['canvas', 'slides', 'guide', 'redline'] as const)('captures %s, snapshots on close, reopens same id, revives after source and history disappear', async (kind) => {
     const f = await fixture()
     const content: WebPane['content'] = kind === 'canvas' || kind === 'slides' ? { kind: 'canvas', artifactId: f.id, manifest: kind === 'slides' ? 'deck.html' : 'canvas.json' } : kind === 'guide' ? { kind: 'guide', artifactId: f.id, file: 'guide.md' } : undefined
@@ -260,7 +501,7 @@ describe('artifact lifetime, snapshot and revive', () => {
     expect(f.s.get(target).items).toHaveLength(1)
     await f.webPanes.flush()
   })
-  it.each(['live', 'parked', 'closed'] as const)('retains snapshot folders backing %s panes after their Board card is removed', async (owner) => {
+  it.each(['live', 'parked', 'closed'] as const)('preserves snapshot ownership when removing a Board card for a %s pane', async (owner) => {
     const f = await fixture()
     const pane = f.webPanes.open({ ...anchor, url: `http://127.0.0.1:4410/redline/artifacts/${f.id}/`, content: { kind: 'canvas', artifactId: f.id, manifest: 'canvas.json' }, openedBy: 'agent' })
     const key = f.s.captureWebPane(target, pane, session)!
@@ -272,8 +513,12 @@ describe('artifact lifetime, snapshot and revive', () => {
     if (owner === 'parked') f.webPanes.prune([{ id: '@2', sessionId: '$2', paneIds: ['%2'] }])
     expect(f.webPanes.retainedUrls().some((url) => url.includes(f.s.item(target, key).ref.artifactId!))).toBe(true)
     f.s.remove(target, key); f.s.flush()
-    expect(existsSync(join(path, 'canvas.json'))).toBe(true)
-    if (owner === 'closed') { f.webPanes.forgetClosed(target, revived.webPaneId!); f.s.flush(); expect(existsSync(path)).toBe(false) }
+    expect(existsSync(join(path, 'canvas.json'))).toBe(owner !== 'closed')
+    if (owner === 'closed') {
+      expect(f.webPanes.closedEntries()).toEqual([])
+      f.s.backfillClosedTabs()
+      expect(f.s.get(target).items).toEqual([])
+    }
     await f.webPanes.flush()
   })
   it.each(['canvas', 'slides', 'guide'] as const)('uses the daemon origin to revive path-added %s artifacts', async (kind) => {

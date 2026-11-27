@@ -164,3 +164,13 @@
 .board-inbox .board-favicon span { display: none; }
 .board-inbox .board-clip-text, .board-filmstrip .board-clip-text { padding: 7px 8px; }
 .board-filmstrip .board-clip-text blockquote { font-size: 10px; }
+
+.board-recently-closed { flex: 0 0 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+
+.board-closed-tiles > button { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.board-closed-tiles ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.board-closed-tiles li { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.board-closed-tiles li > span { flex: 1; min-width: 0; }
+.board-closed-tiles strong, .board-closed-tiles small { display: block; overflow: hidden; text-overflow: ellipsis; }
+.board-closed-tiles small { color: var(--muted); font-size: 10px; }
+.board-closed-tiles li > button { flex: none; padding: 4px; font-size: 11px; }

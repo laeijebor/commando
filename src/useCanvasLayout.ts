@@ -81,7 +81,7 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
     if (move) setResult((result) => ({ ...result, manifest: applyCanvasMove(result.manifest, move) }))
   }
   const write = async (change: CanvasLayoutChange, after?: () => Promise<unknown>) => {
-    if (lock.current) return
+    if (viewRef.current?.readOnly || lock.current) return
     const lifetime = generation.current
     lock.current = true; ++loadEpoch.current; setBusy(true); setError('')
     try {

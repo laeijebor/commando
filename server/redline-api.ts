@@ -108,6 +108,7 @@ type RedlineApiDependencies = {
   agentToken: string
   ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>
   artifacts: RedlineArtifactRegistry
+  readOnlyArtifact?: (artifactId: string) => boolean
   /** Origin artifacts are reachable at, e.g. http://127.0.0.1:4310 */
   baseUrl: string
   snapshots?: CanvasSnapshotsStore
@@ -280,6 +281,7 @@ export class RedlineApi {
       // Owner only: the agent token is deliberately not accepted for user layout edits.
       if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
       if (request.method !== 'PATCH') throw new HttpError(405, 'Method not allowed')
+      if (this.dependencies.readOnlyArtifact?.(write[1])) throw new HttpError(409, 'This saved copy is read-only; restore it to a folder before editing')
       this.writeJson(response, 200, writeCanvas(this.dependencies.artifacts, write[1], await this.readJson(request), write[2] as 'frames' | 'annotations' | 'sections'))
       return
     }
