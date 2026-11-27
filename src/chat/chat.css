@@ -190,6 +190,25 @@
 .chat-work-resource-actions { display: inline-flex; align-items: center; gap: 3px; }
 @container resource-cards (width < 520px) { .chat-resource-meta { display: none; } }
 
+/* PR and Linear chips, and the slides chip's count, extend the resource chip. */
+.chat-rich-chip { max-width: min(100%, 560px); }
+.chat-rich-chip .chat-resource-label { gap: 5px; }
+.chat-markdown a.chat-resource-label, .chat-markdown a.chat-resource-primary { color: inherit; text-decoration: none; }
+.chat-rich-name { flex-shrink: 0; }
+.chat-rich-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--font-sans); }
+.chat-rich-badge { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; border-radius: 999px; padding: 0 6px; font: 500 10.5px/16px var(--font-sans); white-space: nowrap; color: var(--muted); background: color-mix(in srgb, currentColor 12%, transparent); }
+.chat-pr-open { color: var(--green); }
+.chat-pr-draft { color: var(--muted); }
+.chat-pr-merged { color: var(--purple); }
+.chat-pr-closed { color: var(--red); }
+.chat-linear-state { color: var(--text); background: var(--surface-soft); }
+.chat-linear-dot { display: inline-block; width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--muted); }
+.chat-linear-icon { box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 18%, transparent); }
+.chat-linear-icon-large { width: 10px; height: 10px; }
+.chat-slides-count { flex-shrink: 0; font-family: var(--font-sans); }
+.chat-slides-first { display: flex; align-items: center; gap: 6px; }
+.chat-slides-first-number { display: inline-flex; min-width: 16px; height: 14px; align-items: center; justify-content: center; padding: 0 3px; font-size: 10px; }
+
 .chat-reply-image {
   display: block;
   max-width: 100%;

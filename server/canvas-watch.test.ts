@@ -40,4 +40,48 @@ describe('canvas watch', () => {
     directory.mockReturnValue('/tmp/registered'); watcher.sync([pane('missing')])
     directory.mockReturnValue(null); watcher.sync([pane('missing')]); expect(close).toHaveBeenCalledOnce()
   })
+  it('rebinds to a folder replaced in place and tells open tabs everything changed', () => {
+    const closes: ReturnType<typeof vi.fn>[] = []
+    const factory = vi.fn(() => { const close = vi.fn(); closes.push(close); return { close, on: vi.fn() } as unknown as FSWatcher })
+    const notify = vi.fn()
+    const watcher = new CanvasWatch({ directory: (id) => `/tmp/${id}` }, notify, factory as unknown as typeof watch)
+    watcher.sync([pane('deck')])
+    watcher.replaced('deck')
+    expect(closes[0]).toHaveBeenCalledOnce()
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(notify).toHaveBeenCalledWith({ artifactId: 'deck', changed: ['*'] })
+    // An artifact no tab shows is only announced, not watched.
+    watcher.replaced('other')
+    expect(factory).toHaveBeenCalledTimes(2)
+    watcher.close()
+  })
+  it('keeps reporting edits after the watched folder is swapped for a new copy', async () => {
+    const { mkdtemp, mkdir, rename, rm, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'canvas-watch-swap-'))
+    const live = join(root, 'deck')
+    await mkdir(live)
+    await writeFile(join(live, 'deck.html'), 'one')
+    const notify = vi.fn()
+    const watcher = new CanvasWatch({ directory: () => live }, notify)
+    try {
+      watcher.sync([pane('deck')])
+      // Present again: a new copy is renamed into place over the watched folder.
+      await mkdir(join(root, 'next'))
+      await writeFile(join(root, 'next', 'deck.html'), 'two')
+      await rename(live, join(root, 'old'))
+      await rename(join(root, 'next'), live)
+      await rm(join(root, 'old'), { recursive: true })
+      watcher.replaced('deck')
+      expect(notify).toHaveBeenLastCalledWith({ artifactId: 'deck', changed: ['*'] })
+      notify.mockClear()
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      await writeFile(join(live, 'deck.html'), 'three')
+      await vi.waitFor(() => expect(notify).toHaveBeenCalledWith({ artifactId: 'deck', changed: expect.arrayContaining(['deck.html']) }), { timeout: 10_000 })
+    } finally {
+      watcher.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })

@@ -1,3 +1,4 @@
+import { parseLinearChipIssue, type LinearChipIssue } from '../shared/rich-links'
 export type LinearAccount = { id: string; label: string; workspaceName: string; viewerName: string; createdAt: number }
 export type LinearUser = { id: string; name: string; avatarUrl: string | null }
 export type LinearState = { id: string; name: string; type: string; color: string; position: number; teamId: string; teamName: string }
@@ -6,6 +7,17 @@ export type LinearIssue = { id: string; identifier: string; title: string; prior
 export type LinearComment = { id: string; body: string; createdAt: string; updatedAt: string; parentId: string | null; author: LinearUser | null; children: LinearComment[] }
 export type LinearBoard = { project: LinearProject; states: LinearState[]; issues: LinearIssue[]; truncated: boolean }
 export type LinearIssueDetail = LinearIssue & { description: string; createdAt: string; creator: LinearUser | null; project: { id: string; name: string } | null; cycle: { id: string; name: string } | null; availableStates: LinearState[]; comments: LinearComment[]; commentsTruncated: boolean }
+
+/** The issue a chat's Linear link names; null when no connected account has it. */
+export async function lookUpLinearIssue(token: string, url: string, fetcher: typeof fetch = fetch): Promise<LinearChipIssue | null> {
+  const response = await fetcher(`/api/linear/lookup?url=${encodeURIComponent(url)}`, {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  })
+  const result = await response.json().catch(() => ({})) as { error?: string; issue?: unknown }
+  if (!response.ok) throw new Error(result.error ?? `Linear request failed (${response.status})`)
+  return result.issue === null ? null : parseLinearChipIssue(result.issue)
+}
 
 export function createLinearApi(token: string, fetcher: typeof fetch = fetch) {
   const request = async <T>(path: string, init?: RequestInit): Promise<T> => {

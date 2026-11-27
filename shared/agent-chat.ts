@@ -321,6 +321,9 @@ export function chatImageContentType(id: string): string {
   return id.endsWith('.svg.png') ? 'image/png' : chatImageType(id)
 }
 
+/** A slides deck a reply resource resolves to: `folder` holds deck.html, and `manifest` is the page to present. */
+export type ChatReplyDeck = { folder: string; manifest: string; title: string; slides: number; first?: string }
+
 /** Local files and folders explicitly referenced by an assistant reply. */
 export type ChatReplyResource = { ref: string; path: string; missing: true } | {
   ref: string
@@ -330,6 +333,7 @@ export type ChatReplyResource = { ref: string; path: string; missing: true } | {
   mtimeMs?: number
   entries?: number
   line?: number
+  deck?: ChatReplyDeck
 }
 
 /** Why a reply image isn't shown: no file there, one the daemon can't read, not an image, or the store failed. */
@@ -1040,6 +1044,16 @@ function optionalImages(value: unknown): ChatImageRef[] | undefined {
   return refs?.length ? refs : undefined
 }
 
+function parseChatReplyDeck(value: unknown): ChatReplyDeck | undefined {
+  if (!isRecord(value)) return undefined
+  const { folder, manifest, title, slides, first } = value
+  if (typeof folder !== 'string' || !folder.startsWith('/') || folder.length > 4096 || /[\u0000-\u001f\u007f-\u009f]/u.test(folder) ||
+    typeof manifest !== 'string' || !/^[^/\\\u0000-\u001f]{1,250}\.html$/.test(manifest) || manifest.startsWith('.') ||
+    typeof title !== 'string' || !title || title.length > 200 ||
+    typeof slides !== 'number' || !Number.isSafeInteger(slides) || slides < 1 || slides > 10_000) return undefined
+  return withOptional({ folder, manifest, title, slides }, { first: typeof first === 'string' && first && first.length <= 200 ? first : undefined })
+}
+
 function parseChatReplyResources(value: unknown): ChatReplyResource[] | undefined {
   if (!Array.isArray(value)) return undefined
   const resources = value.slice(0, 50).flatMap((resource): ChatReplyResource[] => {
@@ -1057,6 +1071,7 @@ function parseChatReplyResources(value: unknown): ChatReplyResource[] | undefine
     return [withOptional({ ...base, kind: resource.kind }, {
       size: resource.size as number | undefined, mtimeMs: resource.mtimeMs as number | undefined,
       entries: resource.entries as number | undefined, line: resource.line as number | undefined,
+      deck: parseChatReplyDeck(resource.deck),
     })]
   })
   return resources.length ? resources : undefined

@@ -19,31 +19,45 @@ export class CanvasWatch {
     for (const [id, entry] of this.watched) {
       if (!ids.has(id) || !this.artifacts.directory(id)) this.stop(id, entry)
     }
-    for (const id of ids) {
-      if (this.watched.has(id)) continue
-      const dir = this.artifacts.directory(id)
-      if (!dir) continue
-      try {
-        const watcher = this.watchDirectory(dir, { recursive: true }, (_event, filename) => {
-          const entry = this.watched.get(id)
-          if (!entry) return
-          if (filename?.toString().replaceAll('\\', '/').split('/').at(-1)?.startsWith(CANVAS_WRITE_TEMP_PREFIX)) return
-          entry.changed.add(filename ? filename.toString().replaceAll('\\', '/') : '*')
-          clearTimeout(entry.timer)
-          entry.timer = setTimeout(() => {
-            const changed = [...entry.changed].sort()
-            entry.changed.clear()
-            this.notify({ artifactId: id, changed })
-          }, 150)
-        })
-        const entry: WatchedCanvas = { watcher, changed: new Set() }
-        this.watched.set(id, entry)
-        watcher.on('error', (error) => {
-          console.warn('[commando] canvas watcher failed', error)
-          this.stop(id, entry)
-        })
-      } catch (error) { console.warn('[commando] canvas watch unavailable', error) }
+    for (const id of ids) if (!this.watched.has(id)) this.start(id)
+  }
+
+  /**
+   * The artifact's folder was replaced (a deck Present refreshes its copy by renaming a new one into place):
+   * watch the new folder and tell open tabs everything changed, so a reused tab reloads.
+   */
+  replaced(artifactId: string): void {
+    const entry = this.watched.get(artifactId)
+    if (entry) {
+      this.stop(artifactId, entry)
+      this.start(artifactId)
     }
+    this.notify({ artifactId, changed: ['*'] })
+  }
+
+  private start(id: string): void {
+    const dir = this.artifacts.directory(id)
+    if (!dir) return
+    try {
+      const watcher = this.watchDirectory(dir, { recursive: true }, (_event, filename) => {
+        const entry = this.watched.get(id)
+        if (!entry) return
+        if (filename?.toString().replaceAll('\\', '/').split('/').at(-1)?.startsWith(CANVAS_WRITE_TEMP_PREFIX)) return
+        entry.changed.add(filename ? filename.toString().replaceAll('\\', '/') : '*')
+        clearTimeout(entry.timer)
+        entry.timer = setTimeout(() => {
+          const changed = [...entry.changed].sort()
+          entry.changed.clear()
+          this.notify({ artifactId: id, changed })
+        }, 150)
+      })
+      const entry: WatchedCanvas = { watcher, changed: new Set() }
+      this.watched.set(id, entry)
+      watcher.on('error', (error) => {
+        console.warn('[commando] canvas watcher failed', error)
+        this.stop(id, entry)
+      })
+    } catch (error) { console.warn('[commando] canvas watch unavailable', error) }
   }
 
   close(): void {
