@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  parseClaudeUsage,
   parseCodexUsage,
   ProviderUsageService,
   USAGE_REFRESH_INTERVAL_MS,
@@ -11,37 +10,12 @@ function stubService(options: { now?: () => number } = {}): ProviderUsageService
   return new ProviderUsageService({
     fetch: vi.fn<typeof fetch>(async () => new Response('{}', { status: 200 })),
     now: options.now ?? (() => 0),
-    readClaudeCredentials: async () => ({ claudeAiOauth: { accessToken: 'token' } }),
+    readClaude: async () => ({ provider: 'claude', state: 'available', windows: [], updatedAt: 0 }),
     readCodexCredentials: async () => ({ tokens: { access_token: 'token' } }),
   })
 }
 
 describe('provider usage', () => {
-  it('normalizes Claude remaining usage and reset times', () => {
-    expect(parseClaudeUsage({
-      five_hour: { utilization: 23, resets_at: '2026-07-20T12:00:00.000Z' },
-      seven_day: { utilization: 61.5, resets_at: '2026-07-25T12:00:00.000Z' },
-    }, 10)).toEqual({
-      provider: 'claude',
-      state: 'available',
-      windows: [
-        {
-          label: '5h',
-          usedPercent: 23,
-          remainingPercent: 77,
-          resetsAt: Date.parse('2026-07-20T12:00:00.000Z'),
-        },
-        {
-          label: '7d',
-          usedPercent: 61.5,
-          remainingPercent: 38.5,
-          resetsAt: Date.parse('2026-07-25T12:00:00.000Z'),
-        },
-      ],
-      updatedAt: 10,
-    })
-  })
-
   it('normalizes Codex rolling windows and relative resets', () => {
     expect(parseCodexUsage({
       plan_type: 'plus',
@@ -68,21 +42,14 @@ describe('provider usage', () => {
     })
   })
 
-  it('uses existing CLI credentials without exposing them in results', async () => {
-    const request = vi.fn<typeof fetch>(async (input) => {
-      const url = String(input)
-      return url.includes('anthropic')
-        ? new Response(JSON.stringify({ five_hour: { utilization: 5 } }), { status: 200 })
-        : new Response(JSON.stringify({
-            rate_limit: { primary_window: { used_percent: 8, limit_window_seconds: 18_000 } },
-          }), { status: 200 })
-    })
+  it('takes Claude from the shared reading, never fetching it, and keeps Codex credentials out of results', async () => {
+    const request = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      rate_limit: { primary_window: { used_percent: 8, limit_window_seconds: 18_000 } },
+    }), { status: 200 }))
     const service = new ProviderUsageService({
       fetch: request,
       now: () => 42,
-      readClaudeCredentials: async () => ({
-        claudeAiOauth: { accessToken: 'private-claude-token' },
-      }),
+      readClaude: async () => ({ provider: 'claude', state: 'available', windows: [{ label: '5h', usedPercent: 5, remainingPercent: 95 }], updatedAt: 40 }),
       readCodexCredentials: async () => ({
         tokens: { access_token: 'private-codex-token', account_id: 'private-account' },
       }),
@@ -95,7 +62,19 @@ describe('provider usage', () => {
       { provider: 'codex', state: 'available' },
     ])
     expect(JSON.stringify(result)).not.toContain('private-')
-    expect(request).toHaveBeenCalledTimes(2)
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(String(request.mock.calls[0]?.[0])).toContain('chatgpt.com')
+  })
+
+  it('shows a failed Claude read as an error rather than dropping the provider', async () => {
+    const service = new ProviderUsageService({
+      fetch: vi.fn<typeof fetch>(async () => new Response('{}', { status: 200 })),
+      now: () => 7,
+      readClaude: async () => { throw new Error('profiles unreadable') },
+      readCodexCredentials: async () => null,
+    })
+    const [claude] = await service.refresh()
+    expect(claude).toMatchObject({ provider: 'claude', state: 'error' })
   })
 })
 

@@ -67,10 +67,61 @@ export type CloudTaskDetail = { task: CloudTask; operations: CloudOperation[] }
 export type CloudTaskAction = { task: CloudTask; operation: CloudOperation; reused: boolean }
 export type CloudProvidersResponse = { installationId: string; providers: CloudProviderInfo[] }
 export type CloudDiff = { text: string; truncated: boolean }
+export type DiscoveredAgentProvider = 'cursor' | 'codex' | 'claude'
+export type DiscoveredAgentStatus = 'running' | 'completed' | 'failed' | 'unknown'
+export type DiscoverySourceStatus = 'ok' | 'unavailable' | 'unauthenticated' | 'error'
+export interface DiscoveredExternalAgent {
+  id: string
+  provider: DiscoveredAgentProvider
+  title: string
+  status: DiscoveredAgentStatus
+  repo?: string
+  branch?: string
+  cwd?: string
+  url?: string
+  prUrl?: string
+  updatedAt?: string
+  alreadyTracked: boolean
+  canOpenAsChat: boolean
+}
+export interface DiscoverySourceInfo {
+  provider: DiscoveredAgentProvider
+  status: DiscoverySourceStatus
+  message?: string
+}
+export interface CloudDiscoveryResponse {
+  agents: DiscoveredExternalAgent[]
+  sources: DiscoverySourceInfo[]
+  discoveredAt: string
+}
+export interface CloudImportDiscoveredInput {
+  provider: DiscoveredAgentProvider
+  id: string
+  title?: string
+  repo?: string
+  branch?: string
+  cwd?: string
+  url?: string
+  credentialContextId?: string
+  accountConfirmed?: boolean
+}
+export type CloudImportDiscoveredResponse =
+  | { kind: 'linked'; task: CloudTask; operation: CloudOperation; reused: boolean }
+  | { kind: 'chat'; launch: { provider: 'cursor-chat'; resume: string; title: string; cwd?: string; url?: string } }
 export const CLOUD_PROMPT_LIMIT = 16_384
 export const CLOUD_DIFF_BYTE_LIMIT = 256 * 1024
 export const CLOUD_DIFF_LINE_LIMIT = 5_000
 export function isCloudProvider(value: unknown): value is CloudProviderId { return value === 'claude' || value === 'codex' }
+export function isDiscoveredAgentProvider(value: unknown): value is DiscoveredAgentProvider {
+  return value === 'cursor' || value === 'codex' || value === 'claude'
+}
+export function isSafeExternalUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password
+  } catch { return false }
+}
 /** Use the full connection identity in registries and UI selection. Never provider alone. */
 export function cloudConnectionKey(provider: CloudProviderId, credentialContextId: string): string { return `${provider}/${credentialContextId}` }
 export function cloudProviderHome(provider: CloudProviderId): string { return provider === 'claude' ? 'https://claude.ai/code' : 'https://chatgpt.com/codex' }

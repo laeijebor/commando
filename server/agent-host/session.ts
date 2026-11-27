@@ -22,6 +22,7 @@ import {
   type ChatImageRef,
   type ChatItem,
   type ChatModelOption,
+  type ChatPlanUsage,
   type ChatQueueAction,
   type ChatQueuedMessage,
   type ChatSendOptions,
@@ -39,11 +40,11 @@ import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
 import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { commanderAllowedTools } from '../commander-tools.js'
-import { asideEnv, asideInstructions } from './aside-brief.js'
+import { asideEnv, asideInstructions, QUICK_ANSWER_INTERACTION_DENIED } from './aside-brief.js'
 import { AsideTimeline, countTimelineMessages } from './aside-timeline.js'
 import { DEEPSEEK_MODELS, DEEPSEEK_RUNTIME_ENV } from './deepseek.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
-import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
+import { applyRateLimitEvent } from './plan-usage.js'
 
 export interface AgentSessionSpec {
   /** The model provider when reusing Claude Code as the runtime. */
@@ -161,10 +162,6 @@ export const PLAN_CAPTURED_MESSAGE = "The client captured your proposed plan. St
 
 /** Turn results that only mean the turn was cut short (a steer or Stop), not that it failed. */
 const ABORTED_REASONS = new Set(['aborted_streaming', 'aborted_tools'])
-/** Experimental in the SDK: a rename shows up as a type error here when the SDK is upgraded. */
-const PLAN_USAGE_METHOD = 'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET' satisfies keyof Query
-const PLAN_USAGE_TURN_REFRESH_MS = 60_000
-const PLAN_USAGE_IDLE_REFRESH_MS = 5 * 60_000
 
 /** The picker's value for "no explicit model": Claude Code's own default. */
 const DEFAULT_MODEL = 'default'
@@ -349,6 +346,7 @@ export class AgentSession implements ChatProviderSession {
     endSwitch: (notice) => this.endSwitch(notice),
   }
   private lastAssistant?: string
+  private lastAssistantTurn?: string
   private finishedAssistant?: string
   private readonly mapper: ClaudeItemMapper
   private readonly asideTimeline: AsideTimeline
@@ -360,14 +358,10 @@ export class AgentSession implements ChatProviderSession {
   /** Set once Claude reports session_state_changed; it then decides idle and running. */
   private stateEvents = false
   private contextReads = 0
-  private planUsageReads = 0
-  /** When the plan limits were last asked for; turns closer together than a minute reuse the reading. */
-  private planUsageAskedAt = 0
-  /** Set when the account has no plan limits (API key, Bedrock) or the SDK lost the method. */
+  /** Set for logins without Anthropic plan limits (DeepSeek). */
   private planUsageOff = false
-  /** The read awaiting its answer, or 0. */
-  private planUsageInFlight = 0
-  private planUsageTimer: NodeJS.Timeout | undefined
+  /** When a rate-limit event last changed the reading; a daemon reading requested before it is older. */
+  private planEventAt = 0
   /** Set by interrupt(); the turn's error result then reads as interrupted. */
   private interruptRequested = false
   /**
@@ -452,8 +446,13 @@ export class AgentSession implements ChatProviderSession {
     return this.spec.paneId
   }
 
-  forkPoint(): ChatForkPoint | null {
-    return this.info.sessionId && this.finishedAssistant ? { sessionId: this.info.sessionId, at: this.finishedAssistant } : null
+  forkPoint(itemId?: string): ChatForkPoint | null {
+    const items = this.mapper.list()
+    const item = itemId ? items.find((entry) => entry.id === itemId) : undefined
+    const at = itemId ? item && this.mapper.forkPoints.get(item.turnId) : this.finishedAssistant
+    const turn = item?.turnId ?? [...this.mapper.forkPoints].reverse().find(([, uuid]) => uuid === at)?.[0]
+    const anchor = itemId ?? items.filter((entry) => entry.turnId === turn && !entry.parentToolUseId).at(-1)?.id
+    return this.info.sessionId && at ? { sessionId: this.info.sessionId, at, ...(anchor ? { itemId: anchor } : {}) } : null
   }
 
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } {
@@ -486,7 +485,7 @@ export class AgentSession implements ChatProviderSession {
       try {
         const history = await this.store.messages(historySession, this.spec.cwd)
         if (this.spec.resume) {
-          const last = [...history].reverse().find((entry) => entry.type === 'assistant' && entry.uuid && (entry.message as { stop_reason?: string })?.stop_reason === 'end_turn')
+          const last = [...history].reverse().find((entry) => entry.type === 'assistant' && !entry.parent_tool_use_id && entry.uuid && (entry.message as { stop_reason?: string })?.stop_reason === 'end_turn')
           this.finishedAssistant = last?.uuid
         }
         const visible = this.asideTimeline.cut(history, (entry) => entry.uuid,
@@ -533,17 +532,21 @@ export class AgentSession implements ChatProviderSession {
         thinking: { type: 'adaptive', display: 'summarized' },
         // Read-only blocks edit tools and drops bypass/acceptEdits to default; Bash still follows the user's permission rules and prompts.
         permissionMode: this.spec.readOnly && this.spec.permissionMode !== 'plan' ? 'default' : this.spec.permissionMode,
-        ...(this.spec.readOnly ? { disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] } : {}),
+        ...(this.spec.readOnly || this.spec.aside?.ephemeral ? { disallowedTools: [
+          ...(this.spec.readOnly ? ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] : []),
+          ...(this.spec.aside?.ephemeral ? ['Bash', 'Agent', 'Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'] : []),
+        ] } : {}),
         // Commander may run its own CLI without asking; nothing else is pre-approved.
-        ...(commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
+        ...(!this.spec.aside?.ephemeral && commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
         ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
         // Load the same settings, skills, CLAUDE.md and hooks the TUI would.
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', ...(this.spec.aside ? { append: asideInstructions(this.spec.aside.mode) } : {}) },
+        systemPrompt: { type: 'preset', preset: 'claude_code', ...(this.spec.aside ? { append: asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral) } : {}) },
         includePartialMessages: true,
         // Subagents' own text and thinking, so a subagent's transcript can be shown live.
         forwardSubagentText: true,
         canUseTool,
+        ...(this.spec.aside?.ephemeral ? { onElicitation: async () => ({ action: 'decline' as const }) } : {}),
       },
     })
     this.setStatus('idle')
@@ -552,12 +555,6 @@ export class AgentSession implements ChatProviderSession {
     void this.loadStartingModel(this.queryHandle)
     void this.loadCommands(this.queryHandle)
     void this.refreshContext()
-    void this.refreshPlanUsage()
-    // Windows reset and other chats spend the same plan while this one sits idle.
-    if (!this.planUsageOff) {
-      this.planUsageTimer = setInterval(() => void this.refreshPlanUsage(), PLAN_USAGE_IDLE_REFRESH_MS)
-      this.planUsageTimer.unref?.()
-    }
     const held = this.heldSends ?? []
     this.heldSends = null
     if (hasInitialTurn(this.spec)) this.send(this.spec.initialPrompt ?? '', this.spec.initialImages)
@@ -837,7 +834,8 @@ export class AgentSession implements ChatProviderSession {
       this.emitItems(this.mapper.notice('error', `This session has ended, so your message wasn't sent. Start commando-agent again in this pane to continue it.${text ? ` Your message was: "${quote(text)}"` : ''}`))
       return
     }
-    this.emitItems(this.mapper.startTurn(text, images, { ...(steer ? { steered: true } : {}), ...(relayTo ? { relayTo } : {}) }))
+    const uuid = randomUUID()
+    this.emitItems(this.mapper.startTurn(text, images, { ...(steer ? { steered: true } : {}), ...(relayTo ? { relayTo } : {}) }, uuid))
     if (steer) this.steersPending += 1
     this.turnOpen = true
     this.unseenDelivery = true
@@ -847,7 +845,7 @@ export class AgentSession implements ChatProviderSession {
     const prompt = relayTo ? relayPrompt(text, relayTo) : text
     const withNotes = [prompt, ...notes].filter(Boolean).join('\n\n')
     this.input.push({
-      type: 'user',
+      type: 'user', uuid,
       // Images first: a /command in a text block after them still expands.
       message: { role: 'user', content: blocks.length ? [...blocks, ...(withNotes ? [{ type: 'text', text: withNotes }] : [])] : withNotes },
       parent_tool_use_id: null,
@@ -1066,7 +1064,6 @@ export class AgentSession implements ChatProviderSession {
   }
 
   close(): void {
-    this.stopPlanUsage()
     this.input.end()
     this.queryHandle?.close()
   }
@@ -1157,53 +1154,19 @@ export class AgentSession implements ChatProviderSession {
     }
   }
 
-  /** Reads the plan's rate limits (Claude's `/usage`), for the composer's usage meter. */
-  private async refreshPlanUsage(): Promise<void> {
-    const handle = this.queryHandle
-    if (!handle || this.planUsageOff) return
-    const readUsage = handle[PLAN_USAGE_METHOD]
-    if (typeof readUsage !== 'function') {
-      this.stopPlanUsage()
-      return
-    }
-    const read = ++this.planUsageReads
-    this.planUsageAskedAt = this.now()
-    this.planUsageInFlight = read
-    try {
-      const report = await readUsage.call(handle, { skipBehaviors: true })
-      if (read !== this.planUsageReads) return
-      const usage = toPlanUsage(report, this.now())
-      if (usage === NO_PLAN_LIMITS) {
-        this.stopPlanUsage()
-        if (!this.info.planUsage) return
-        const { planUsage: _gone, ...rest } = this.info
-        this.info = rest
-      } else if (usage) {
-        this.info = { ...this.info, planUsage: usage }
-      } else {
-        // The usage fetch failed this time; the last reading stands and shows as stale once it ages.
-        this.spec.log?.("Couldn't read plan usage: Claude returned no limits")
-        return
-      }
-      this.emitSession()
-    } catch (error) {
-      // The meter keeps the last reading, which shows as stale once it ages.
-      if (this.info.status !== 'closed' && this.info.status !== 'error') this.spec.log?.(`Couldn't read plan usage: ${errorText(error)}`)
-    } finally {
-      if (this.planUsageInFlight === read) this.planUsageInFlight = 0
-    }
-  }
-
-  private stopPlanUsage(): void {
-    this.planUsageOff = true
-    if (this.planUsageTimer) clearInterval(this.planUsageTimer)
-    this.planUsageTimer = undefined
+  /**
+   * The login's plan limits, read by the daemon once for every chat on the login
+   * (the usage endpoint is rate limited per account). Rate-limit events fold into it.
+   */
+  applyPlanUsage(usage: ChatPlanUsage): void {
+    if (this.planUsageOff || this.info.status === 'closed' || usage.updatedAt < this.planEventAt) return
+    this.info = { ...this.info, planUsage: usage }
+    this.emitSession()
   }
 
   /** After a turn: the meter changed, and a model list that failed to load gets another try. */
   private refreshBetweenTurns(): void {
     void this.refreshContext()
-    if (this.now() - this.planUsageAskedAt >= PLAN_USAGE_TURN_REFRESH_MS) void this.refreshPlanUsage()
     if (!this.info.models && this.queryHandle) void this.loadModels(this.queryHandle)
   }
 
@@ -1233,6 +1196,7 @@ export class AgentSession implements ChatProviderSession {
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
+    if (this.spec.aside?.ephemeral) return Promise.resolve({ behavior: 'deny', message: QUICK_ANSWER_INTERACTION_DENIED })
     const requestId = options.requestId || options.toolUseID
     if (toolName === 'ExitPlanMode' && !options.agentID) {
       // The plan becomes a card with Implement and Refine; without a plan, the generic approval below.
@@ -1289,7 +1253,6 @@ export class AgentSession implements ChatProviderSession {
         this.setQueue([])
         this.emitItems(this.mapper.notice('error', `The session ended with messages still queued, so they weren't sent: ${texts}`))
       }
-      this.stopPlanUsage()
       for (const listener of this.listeners.closed) listener()
     }
   }
@@ -1297,7 +1260,9 @@ export class AgentSession implements ChatProviderSession {
   private handleMessage(message: SDKMessage): void {
     if ('session_id' in message && typeof message.session_id === 'string' && message.session_id && message.session_id !== this.info.sessionId) {
       this.finishedAssistant = undefined
+      if (this.info.sessionId) this.mapper.forkPoints.clear()
       this.lastAssistant = undefined
+      this.lastAssistantTurn = undefined
       this.info = { ...this.info, sessionId: message.session_id }
       this.emitSession()
     }
@@ -1312,6 +1277,9 @@ export class AgentSession implements ChatProviderSession {
       return
     }
     if (message.type === 'conversation_reset') {
+      this.finishedAssistant = undefined
+      this.lastAssistant = undefined
+      this.lastAssistantTurn = undefined
       // /clear starts a new conversation, which gets its own title and an empty timeline.
       if (this.info.title) {
         const { title: _previous, ...rest } = this.info
@@ -1335,7 +1303,9 @@ export class AgentSession implements ChatProviderSession {
     if (message.type === 'assistant' && !message.parent_tool_use_id) this.lastAssistant = message.uuid
     if (message.type === 'result') {
       if (message.subtype === 'success' && this.lastAssistant && !this.interruptRequested && !ABORTED_REASONS.has(message.terminal_reason ?? '')) this.finishedAssistant = this.lastAssistant
+      if (this.finishedAssistant && this.lastAssistant === this.finishedAssistant) this.mapper.forkPoints.set(this.lastAssistantTurn ?? this.mapper.currentTurnId, this.finishedAssistant)
       this.lastAssistant = undefined
+      this.lastAssistantTurn = undefined
       const interrupted = this.interruptRequested
       this.interruptRequested = false
       this.reportFastMode(message.fast_mode_state, message.fast_mode_disabled_reason)
@@ -1370,12 +1340,7 @@ export class AgentSession implements ChatProviderSession {
       if (this.planUsageOff) return
       const usage = applyRateLimitEvent(this.info.planUsage, message.rate_limit_info, this.now())
       if (usage && usage !== this.info.planUsage) {
-        // A /usage read already under way predates this; drop it, and let the next turn read again.
-        if (this.planUsageInFlight) {
-          this.planUsageReads += 1
-          this.planUsageAskedAt = 0
-          this.planUsageInFlight = 0
-        }
+        this.planEventAt = this.now()
         this.info = { ...this.info, planUsage: usage }
         this.emitSession()
       }
@@ -1385,7 +1350,9 @@ export class AgentSession implements ChatProviderSession {
       // A turn Claude started itself (a background task finished) holds the queue too.
       this.turnOpen = true
     }
-    this.emitItems(this.mapper.handle(message))
+    const changed = this.mapper.handle(message)
+    if (message.type === 'assistant' && !message.parent_tool_use_id) this.lastAssistantTurn = changed.find((item) => !item.parentToolUseId)?.turnId ?? this.mapper.currentTurnId
+    this.emitItems(changed)
   }
 
   /** Claude names conversations after a turn or two; pick that up for the pane title. */

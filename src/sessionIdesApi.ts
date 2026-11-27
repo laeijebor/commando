@@ -1,3 +1,4 @@
+import type { IdeFilePosition } from '../shared/ide-position'
 import type { SessionIde } from '../shared/protocol'
 
 export function createSessionIdesApi(token: string, fetcher: typeof fetch = fetch) {
@@ -20,15 +21,16 @@ export function createSessionIdesApi(token: string, fetcher: typeof fetch = fetc
     },
     detach: async (sessionId: string): Promise<void> => { await request(sessionId, 'DELETE') },
     /**
-     * Opens a file in the session's already-loaded IDE window. 'reload' means
+     * Opens a file in the session's already-loaded IDE window, optionally at a
+     * line and column. 'reload' means
      * the daemon cannot single out that window, so load it on the file instead.
      */
-    openFile: async (sessionId: string, path: string): Promise<'opened' | 'reload'> => {
+    openFile: async (sessionId: string, path: string, position?: IdeFilePosition): Promise<'opened' | 'reload'> => {
       const response = await fetcher(`/api/ides/sessions/${encodeURIComponent(sessionId)}/files`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ path, ...position }),
       })
       const body = await response.json().catch(() => ({})) as { error?: string; reload?: boolean }
       if (response.status === 409 && body.reload) return 'reload'

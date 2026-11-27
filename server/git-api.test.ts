@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GitDiffApi } from './git-api.js'
 import type { GitRepoInfo } from '../shared/tmux-create.js'
 import { GitCommandFailure, GitDiffInspector, type GitProcessExecutor } from './git-diff.js'
+import type { CodeNavService } from './code-nav.js'
 
 const NUL = String.fromCharCode(0)
 const servers: Server[] = []
@@ -62,12 +63,14 @@ function repoExecutor(options: RepoExecutorOptions = {}): GitProcessExecutor {
     if (args.includes('--unified=0')) return { stdout: options.searchPatch ?? '', stderr: '' }
     if (args[0] === 'ls-files') return { stdout: '', stderr: '' }
     if (args[0] === 'diff' && args[1] === '--ext-diff') return { stdout: 'STRUCTURAL', stderr: '' }
+    if (args[0] === 'grep') return { stdout: `src/a.ts${NUL}4${NUL}3${NUL}  greet()\n`, stderr: '' }
     throw new Error(`Unexpected command: ${file} ${joined}`)
   }
 }
 
 type ApiOptions = {
   executor?: GitProcessExecutor
+  codeNav?: CodeNavService
   panePath?: (paneId: string) => string | undefined
   panePullRequestEvidence?: (paneId: string) => Promise<string | undefined>
   repoInfo?: (directory: string) => Promise<GitRepoInfo>
@@ -76,6 +79,7 @@ type ApiOptions = {
 async function startApi(options: ApiOptions = {}): Promise<string> {
   const api = new GitDiffApi({
     inspector: new GitDiffInspector(options.executor ?? repoExecutor(), {}),
+    codeNav: options.codeNav,
     panePath: options.panePath ?? ((paneId) => (paneId === '%1' ? '/repo' : undefined)),
     panePullRequestEvidence: options.panePullRequestEvidence,
     repoInfo: options.repoInfo,
@@ -430,5 +434,50 @@ describe('GitDiffApi repo probe', () => {
   it('answers 501 when no repository probe is configured', async () => {
     const base = await startApi()
     expect((await fetch(`${base}/api/git/repo?path=%2Frepo`)).status).toBe(501)
+  })
+})
+
+describe('GitDiffApi code navigation', () => {
+  const SHA = 'f'.repeat(40)
+
+  it('answers text navigation through the default service', async () => {
+    const base = await startApi()
+    const response = await fetch(`${base}/api/git/nav?paneId=%251&kind=callers&file=src%2Fa.ts&rev=${SHA}&line=4&character=2&symbol=greet`)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      kind: 'callers',
+      source: 'text',
+      rev: SHA,
+      locations: [{ file: 'src/a.ts', line: 4, character: 2, endLine: 4, endCharacter: 7, preview: 'greet()' }],
+      truncated: false,
+    })
+  })
+
+  it('maps invalid navigation parameters to 400', async () => {
+    const base = await startApi()
+    const valid = `paneId=%251&kind=references&file=a.ts&rev=${SHA}&line=1&character=0&symbol=x`
+    expect((await fetch(`${base}/api/git/nav?${valid}`)).status).toBe(200)
+    for (const [name, value] of [['kind', 'usages'], ['rev', 'HEAD'], ['line', '0'], ['character', '-1'], ['symbol', ''], ['file', '..%2Fx']]) {
+      const params = new URLSearchParams(valid)
+      params.set(name, decodeURIComponent(value))
+      const response = await fetch(`${base}/api/git/nav?${params.toString()}`)
+      expect(response.status, `${name}=${value}`).toBe(400)
+    }
+    expect((await fetch(`${base}/api/git/nav?paneId=%251&kind=references`)).status).toBe(400)
+  })
+
+  it('passes nav and file-at parameters to the service, GET only', async () => {
+    const navigate = vi.fn(async () => ({ kind: 'definition', source: 'text', rev: 'worktree', locations: [], truncated: false }))
+    const fileAt = vi.fn(async () => ({ file: 'a.ts', rev: SHA, contents: 'x' }))
+    const base = await startApi({ codeNav: { navigate, fileAt } as unknown as CodeNavService })
+    const nav = await fetch(`${base}/api/git/nav?paneId=%251&kind=definition&file=a.ts&rev=worktree&line=2&character=5&symbol=go`)
+    expect(nav.status).toBe(200)
+    expect(navigate).toHaveBeenCalledWith('/repo', { kind: 'definition', file: 'a.ts', rev: 'worktree', line: '2', character: '5', symbol: 'go' })
+    const file = await fetch(`${base}/api/git/file-at?paneId=%251&file=a.ts&rev=${SHA}`)
+    await expect(file.json()).resolves.toEqual({ file: 'a.ts', rev: SHA, contents: 'x' })
+    expect(fileAt).toHaveBeenCalledWith('/repo', 'a.ts', SHA)
+    expect((await fetch(`${base}/api/git/file-at?paneId=%251&file=a.ts&rev=${SHA}`, { method: 'POST' })).status).toBe(405)
+    expect((await fetch(`${base}/api/git/file-at?paneId=%251&rev=${SHA}`)).status).toBe(400)
+    expect((await fetch(`${base}/api/git/nav?paneId=%259&file=a.ts`)).status).toBe(404)
   })
 })

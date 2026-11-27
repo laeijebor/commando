@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { ASIDE_REPORT_PROMPT, asideReportText } from '../shared/agent-chat'
+
 import { readFileSync } from 'node:fs'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
@@ -149,6 +151,8 @@ beforeEach(() => {
     const url = String(input)
     const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url === '/api/hosts') return json({ hosts: [] })
+    const board = url.match(/^\/api\/boards\/([^/?]+)$/)
+    if (board) return json({ targetId: decodeURIComponent(board[1]), rev: 0, items: [], groups: [], placements: {}, links: [] })
     if (url.includes('/api/prs/prefs')) {
       return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
     }
@@ -504,8 +508,10 @@ describe('pane close and create shortcuts', () => {
 
 function selectSession(paneId: string) {
   fireEvent.pointerDown(document.querySelector(`[data-pane-id="${paneId}"] .pane-head`)!)
-  const rail = screen.queryByRole('button', { name: 'Open Session' })
-  fireEvent.click(rail ?? screen.getByRole('tab', { name: 'Session' }))
+  const rail = screen.queryByRole('button', { name: 'Open Board' })
+  fireEvent.click(rail ?? screen.getByRole('tab', { name: 'Board' }))
+  const details = screen.getByRole('button', { name: 'Details' })
+  if (details.getAttribute('aria-expanded') !== 'true') fireEvent.click(details)
 }
 
 it.each(['normal', 'terminal', 'other built-in', 'other web tab'] as const)('opens the focused pane Changes tab from the footer chip while %s is maximized', async (maximized) => {
@@ -542,6 +548,23 @@ it.each(['normal', 'terminal', 'other built-in', 'other web tab'] as const)('ope
 })
 
 describe('session update briefs', () => {
+  it('routes board:changed to the visible pane board without adding it to global pane state', async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!
+    const boardUrl = `/api/boards/${pane.targetId}`
+    let rev = 1
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === boardUrl
+      ? new Response(JSON.stringify({ targetId: pane.targetId, rev, items: [], groups: [], placements: {}, links: [] }), { status: 200 })
+      : original(input, init))
+    await renderAppWithSnapshot()
+    selectSession(pane.id)
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(boardUrl, expect.objectContaining({ method: 'GET' })))
+    const reads = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url) === boardUrl).length
+    const before = reads()
+    rev = 2
+    act(() => daemonMessage?.({ type: 'board:changed', targetId: pane.targetId, rev }))
+    await waitFor(() => expect(reads()).toBe(before + 1))
+  })
+
   it('keeps worklogs and personal notes available before any hook brief arrives', async () => {
     await renderAppWithSnapshot()
     selectSession(pane.id)
@@ -1000,7 +1023,7 @@ describe('HUD tabs', () => {
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
       fireEvent.click(within(strip).getByRole('button', { name: 'Dismiss PR #12' }))
       await waitFor(() => expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument())
-      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', signature: `open|false|${pr.updatedAt}`, nextKey: 'session' }) }))
     })
 
@@ -1139,7 +1162,7 @@ describe('HUD tabs', () => {
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
       fireEvent.click(screen.getByRole('button', { name: 'Close PR #12 tab' }))
       await waitFor(() => expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument())
-      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', signature: `open|false|${pr.updatedAt}`, nextKey: 'session' }) }))
       if (action === 'menu') {
         fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
@@ -1157,7 +1180,7 @@ describe('HUD tabs', () => {
       expect(calls.slice(restoredAt + 1).some(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))).toBe(false)
     })
 
-    it.each(['Session', 'web'] as const)('selects the %s neighbour immediately when dismissing a maximized PR, with one POST', async (neighbour) => {
+    it.each(['Board', 'web'] as const)('selects the %s neighbour immediately when dismissing a maximized PR, with one POST', async (neighbour) => {
       const pr = stubPr()
       await renderAppWithSnapshot()
       const web = { ...openWebPane, anchorPaneId: adjacentPane.id, dock: 'panel' as const, activeTab: false, unseen: false }
@@ -1173,7 +1196,7 @@ describe('HUD tabs', () => {
       vi.mocked(fetch).mockImplementation((input, init) => String(input) === '/api/web-panes/pr-tabs/dismiss'
         ? new Promise((resolve) => { finish = resolve }) : fetchPr(input, init))
       fireEvent.click(screen.getByRole('button', { name: 'Close PR #12 tab' }))
-      const nextLabel = neighbour === 'web' ? '127.0.0.1:41300/plan' : 'Session'
+      const nextLabel = neighbour === 'web' ? '127.0.0.1:41300/plan' : 'Board'
       expect(screen.getByRole('tab', { name: nextLabel })).toHaveAttribute('aria-selected', 'true')
       expect(screen.getByRole('button', { name: 'Restore panel tab' })).toBeInTheDocument()
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({
@@ -1390,7 +1413,7 @@ describe('panel focus and attention', () => {
     expect(screen.getByTestId(`renderer-${paneA.id}`)).toBe(terminal)
     fireEvent.click(screen.getByRole('button', { name: 'Close 127.0.0.1:41300/plan' }))
     expect(screen.getByTestId(`renderer-${paneA.id}`)).toBe(terminal)
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.getByRole('complementary', { name: 'Pane tabs' })).toBeInTheDocument()
     expect(screen.getByRole('separator', { name: 'Resize side panel' })).toBeInTheDocument()
   })
@@ -1736,7 +1759,7 @@ describe('web pane tiles', () => {
     const tab = screen.getByRole('tab', { name: /Shared side panel/ })
     expect(tab).toHaveAttribute('aria-selected', 'false')
     expect(within(tab).getByLabelText('New tab')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     expect(document.querySelector(`[id="panel-tab-${hidden.id}"]`)).toHaveAttribute('hidden')
   })
 
@@ -2312,6 +2335,8 @@ const paneProps = {
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
     fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
     blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
+    navigate: vi.fn().mockResolvedValue({ kind: "definition", source: "text", rev: "worktree", locations: [], truncated: false }),
+    fileAt: vi.fn().mockResolvedValue({ file: "", rev: "worktree", contents: null, unavailable: "missing" }),
     search: vi.fn().mockResolvedValue({ query: '', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
     repo: vi.fn().mockResolvedValue({ isRepo: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: false }),
@@ -2665,7 +2690,7 @@ describe('side panel dock changes and reopens', () => {
     act(() => daemonMessage?.({ type: 'web_panes', webPanes: [split], activeTabs: { [pane.id]: 'session' } }))
     const tile = document.querySelector(`[data-web-pane-id="${tab.id}"]`)
     expect(tile?.closest('.window-terminal-grid')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     expect(layout).not.toHaveClass('is-collapsed')
     expect(layout.style.getPropertyValue('--side-panel-width')).toBe('62%')
     expect(screen.getByTestId(`renderer-${pane.id}`)).toBe(terminal)
@@ -2714,7 +2739,7 @@ describe('side panel dock changes and reopens', () => {
       paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: 'work',
       state: 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0, simulator,
     } }))
-    fireEvent.click(screen.getByRole('button', { name: 'Open Session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Board' }))
     if (state === 'collapsed') fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
     else fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' }))
     vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
@@ -2761,7 +2786,7 @@ describe('narrow pane tabs', () => {
     fireEvent.click(chip())
     expect(drawer()).toHaveClass('is-drawer-open')
     expect(chip()).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
     expect(screen.getByRole('textbox', { name: 'Tab URL' })).toBeVisible()
     fireEvent.click(chip())
@@ -2780,7 +2805,7 @@ describe('narrow pane tabs', () => {
       fireEvent.click(chip(adjacentPane))
       expect(drawer()).toHaveClass('is-drawer-open')
       expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
-      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
       fireEvent.click(chip(adjacentPane))
       expect(drawer()).not.toHaveClass('is-drawer-open')
     } finally { bounds.mockRestore() }
@@ -2812,7 +2837,7 @@ describe('narrow pane tabs', () => {
     expect(document.querySelector(`[data-pane-id="${pane.id}"]`)).not.toHaveClass('is-maximized')
     expect(drawer()).toHaveClass('is-drawer-open')
     expect(document.querySelector('.side-panel')).not.toHaveAttribute('hidden')
-    expect(screen.getByRole('tab', { name: 'Session' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Board' })).toBeVisible()
     fireEvent.click(closeButton())
     expect(drawer()).not.toHaveClass('is-drawer-open')
   })
@@ -2895,7 +2920,7 @@ describe('narrow pane tabs', () => {
     fireEvent.click(chip(adjacentPane))
     expect(drawer()).toHaveClass('is-drawer-open')
     expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(chip(adjacentPane))
     expect(drawer()).not.toHaveClass('is-drawer-open')
     fireEvent.click(chip())
@@ -2943,7 +2968,7 @@ describe('narrow pane tabs', () => {
       targetId: pane.targetId, paneId: pane.id, provider: 'claude', command: 'claude --resume test',
       state: 'failed', error: 'Resume failed', updatedAt: Date.now(),
     } }))
-    await waitFor(() => expect(within(chip()).getByLabelText('Session resume failed')).toHaveClass('is-warning'))
+    await waitFor(() => expect(within(chip()).getByLabelText('Board resume failed')).toHaveClass('is-warning'))
     expect(chip()).toHaveClass('has-new')
     expect(drawer()).not.toHaveClass('is-drawer-open')
   })
@@ -2979,7 +3004,7 @@ describe('narrow pane tabs', () => {
       expect(drawer()).toHaveClass('is-drawer-open')
       expect(await screen.findByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
       expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
-      fireEvent.click(screen.getByRole('tab', { name: 'Session' }))
+      fireEvent.click(screen.getByRole('tab', { name: 'Board' }))
       const changes = within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)!).getByRole('button', { name: /Git changes/ })
       fireEvent.pointerDown(changes)
       fireEvent.click(changes)
@@ -3411,9 +3436,64 @@ describe('remote host workspace', () => {
 describe('chat asides', () => {
   const record = { id: 'abcdefgh', title: 'Investigate flaky test', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main-session' }, createdAt: Date.now(), status: 'open' as const }
   const asidePaneId = `${pane.id}~${record.id}`
-  const mainChat = () => ({ paneId: pane.id, hostConnected: true, items: [], session: { paneId: pane.id, sessionId: 'main-session', provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 9 } })
+  const mainChat = () => ({ paneId: pane.id, hostConnected: true, items: [], session: { paneId: pane.id, sessionId: 'main-session', provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 10 } })
   const asideChat = () => ({ ...mainChat(), paneId: asidePaneId, session: { ...mainChat().session, paneId: asidePaneId, sessionId: 'aside-session', aside: { ...record, parentPaneId: pane.id } } })
   const input = () => within(document.querySelector<HTMLElement>(`[data-pane-id="${pane.id}"]`)!).getByRole('textbox', { name: /^Message/ })
+
+  it('focuses the promoted chat even when its pane snapshot arrives after the result', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [record] }, asideChat()] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open as chat' }))
+    const sent = appMocks.send.mock.calls.map(([message]) => message).find((message) => message.type === 'chat_aside' && message.action.action === 'promote')
+    expect(sent.action).toEqual({ action: 'promote', asideId: record.id })
+    await act(async () => daemonMessage?.({ type: 'chat_aside_result', paneId: pane.id, requestId: sent.requestId, ok: true, asideId: record.id, promotedPaneId: '%99' }))
+    const promoted = { ...adjacentPane, id: '%99', targetId: 'promoted-chat', index: 2, active: false }
+    const snapshot = snapshotWith([pane, adjacentPane, promoted])
+    snapshot.windows[0]!.layout = 'dbde,242x24,0,0{80x24,0,0,12,80x24,81,0,13,80x24,162,0,99}'
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot })
+      daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [{ ...record, status: 'promoted' }] })
+      daemonMessage?.({ type: 'chat_state', chat: { ...mainChat(), paneId: promoted.id, session: { ...mainChat().session, paneId: promoted.id, sessionId: 'aside-session' } } })
+    })
+    await waitFor(() => expect(document.querySelector('[data-pane-id="%99"] .pane-footer-focus')).toHaveTextContent('Focused / keys go here'))
+    expect(screen.getByRole('tab', { name: /Main/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it.each(['idle', 'running'] as const)('drafts in the aside and sends a queued report to %s Main', async (status) => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    const main = { ...mainChat(), asides: [record], session: { ...mainChat().session, status } }
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [main, asideChat()] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Report to Main' }))
+    const drafting = appMocks.send.mock.calls.map(([message]) => message).find((message) => message.type === 'chat_send' && message.paneId === asidePaneId)
+    expect(drafting.text).toBe(ASIDE_REPORT_PROMPT)
+    const base = { turnId: 'report-turn', createdAt: 1, updatedAt: 1, status: 'completed' as const }
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [main, { ...asideChat(), items: [
+      { ...base, id: 'report-prompt', kind: 'user_message', text: drafting.text },
+      { ...base, id: 'report-reply', kind: 'assistant_message', text: 'Fix polling in src/file.ts' },
+    ] }] }))
+    expect(screen.getByRole('textbox', { name: 'Report text' })).toHaveValue('Fix polling in src/file.ts')
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Main' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: pane.id,
+      delivery: 'queue', text: '**From aside “Investigate flaky test”**\n<!-- commando-aside:abcdefgh -->\n\nFix polling in src/file.ts\n<!-- /commando-aside -->' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_aside', paneId: pane.id, action: { action: 'close', asideId: record.id } }))
+  })
+
+  it('cleans report envelopes in the pane header’s latest-task line', async () => {
+    await renderAppWithSnapshot()
+    const headline = `${asideReportText({ asideId: record.id, title: 'Why flaky?', body: 'Found a race\n- More detail' })}\n\nUse the finding`
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: pane.id, sessionId: pane.sessionId, sessionName: 'Test', targetId: pane.targetId,
+      state: 'working', headline, headlineSource: 'hook', updates: [], updatedAt: 1,
+    } }))
+    const header = document.querySelector(`[data-pane-id="${pane.id}"] .pane-heading small`)
+    expect(header).toHaveTextContent('From aside “Why flaky?”: Found a race Use the finding')
+    expect(header).toHaveAttribute('title', 'From aside “Why flaky?”: Found a race\n\nUse the finding')
+    expect(header).not.toHaveTextContent('commando-aside')
+  })
 
   it('routes Restart to update from an aside to its parent pane', async () => {
     appMocks.send.mockReturnValue(true)

@@ -4,6 +4,7 @@ import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
 import {
+  chatMessageSummary,
   hostTakesSettings,
   selectedModelOption,
   type ChatCommand,
@@ -12,9 +13,10 @@ import {
   type ChatQueueAction,
   type ChatQueuedMessage,
   type ChatSessionInfo,
+  type ChatSessionUsage,
   type ChatSettingsChange,
 } from '@commando/agent-chat'
-import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable } from '@commando/chat-composer'
+import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatSessionUsageSummary, formatTokens, modelLabel, modelMenuAvailable } from '@commando/chat-composer'
 
 import { settingsPresentation } from './settingsPresentation'
 import { providerPresentation } from '../ui/providerPresentation'
@@ -25,7 +27,8 @@ import { withAlpha } from '../ui/primitives'
  * Messages the host holds until Claude's turn ends (the web's QueuedMessages):
  * edit, remove, or steer one in now.
  */
-export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider }: {
+export function QueueList({ active = true, queue, disabled, onChange, onEditOrphaned, provider }: {
+  active?: boolean
   provider?: string
   queue: ChatQueuedMessage[]
   disabled: boolean
@@ -35,6 +38,8 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
 }): React.JSX.Element {
   const theme = useTheme()
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const input = useRef<TextInput>(null)
+  useEffect(() => { if (!active) input.current?.blur() }, [active])
   const latest = useRef({ editing, onEditOrphaned })
   latest.current = { editing, onEditOrphaned }
   useEffect(() => {
@@ -58,9 +63,11 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
               <View style={styles.queuedEdit}>
                 <TextInput
                   accessibilityLabel="Edit queued message"
-                  autoFocus
+                  autoFocus={active}
+                  editable={active}
                   multiline
                   onChangeText={(text) => setEditing({ id: queued.id, text })}
+                  ref={input}
                   style={[styles.queuedInput, { color: theme.text, borderColor: theme.borderMid, backgroundColor: theme.surface }]}
                   value={editing.text}
                 />
@@ -80,7 +87,7 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
             ) : (
               <>
                 <Text numberOfLines={2} style={[styles.queuedText, { color: theme.textSoft }]}>
-                  {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{queued.text || '(images only)'}
+                  {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{chatMessageSummary(queued.text) || '(images only)'}
                 </Text>
                 <IconButton disabled={disabled || !queued.text} icon="edit-2" label="Edit queued message" onPress={() => setEditing({ id: queued.id, text: queued.text })} />
                 <SmallButton disabled={disabled} icon="zap" label="Steer" onPress={() => onChange({ action: 'steer', id: queued.id })} />
@@ -163,7 +170,7 @@ export function showSheet(anchor: View | null, title: string, options: string[],
   })
 }
 
-/** The model, effort and permission pills (the web's pickers) as native menus; the context meter is read-only. */
+/** The model, effort, fast mode and permission pills (the web's pickers) as native menus; the context meter is read-only. */
 export function SettingsPills({ session, disabled, onConfigure, modelSheet, onModelSheetShown }: {
   session: ChatSessionInfo
   disabled: boolean
@@ -172,6 +179,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   modelSheet: number
   onModelSheetShown: () => void
 }): React.JSX.Element {
+  const theme = useTheme()
   const modelRef = useRef<View>(null)
   const effortRef = useRef<View>(null)
   const permissionRef = useRef<View>(null)
@@ -181,6 +189,8 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   const efforts = presentation.efforts
   const settable = hostTakesSettings(session)
   const models = modelMenuAvailable(session) ? session.models ?? [] : []
+  const fast = fastModeOn(session)
+  const showFast = fastModeAvailable(session)
 
   const pickModel = async () => {
     if (!models.length) return
@@ -223,7 +233,20 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
           ref={effortRef}
         />
       ) : null}
-      {presentation.showPermission && session.permissionMode ? (
+      {showFast ? (
+        <Pill
+          a11y="Fast mode"
+          disabled={disabled}
+          label={fast ? '⚡ Fast' : 'Fast off'}
+          on={fast}
+          onPress={() => onConfigure({ fast: !fast })}
+        />
+      ) : null}
+      {session.aside?.mode === 'read-only' ? (
+        <View accessible accessibilityLabel={session.aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'} style={[styles.pill, { borderColor: theme.cyan }]}>
+          <Text numberOfLines={1} style={[styles.pillText, { color: theme.cyan }]}>{session.aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'}</Text>
+        </View>
+      ) : presentation.showPermission && session.permissionMode ? (
         <Pill
           a11y="Permissions"
           disabled={disabled || !modes.length}
@@ -237,7 +260,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
 }
 
 /** A settings pill; `on` marks a toggle that is switched on (fast mode). */
-export function Pill({ label, a11y, disabled, onPress, ref, on }: { label: string; a11y: string; disabled: boolean; onPress: () => void; ref?: React.Ref<View>; on?: boolean }): React.JSX.Element {
+export function Pill({ label, a11y, disabled, onPress, ref, on, compact = false, tone = 'accent' }: { compact?: boolean; tone?: 'accent' | 'cyan'; label: string; a11y: string; disabled: boolean; onPress: () => void; ref?: React.Ref<View>; on?: boolean }): React.JSX.Element {
   const theme = useTheme()
   return (
     <Pressable
@@ -250,9 +273,9 @@ export function Pill({ label, a11y, disabled, onPress, ref, on }: { label: strin
         onPress()
       }}
       ref={ref}
-      style={[styles.pill, { borderColor: on ? theme.accent : theme.border, opacity: disabled ? 0.6 : 1 }]}
+      style={[styles.pill, compact && styles.compactPill, { borderColor: on ? theme[tone] : theme.border, opacity: disabled ? 0.6 : 1 }]}
     >
-      <Text numberOfLines={1} style={[styles.pillText, { color: on ? theme.text : theme.muted }]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.pillText, { color: on ? theme[tone] : theme.muted }]}>{label}</Text>
     </Pressable>
   )
 }
@@ -272,6 +295,22 @@ export function ContextMeter({ usage }: { usage: ChatContextUsage }): React.JSX.
         <View style={[styles.meterFill, { width: `${used}%`, backgroundColor: color }]} />
       </View>
       <Text style={[styles.meterText, { color: used > 90 ? theme.red : theme.textDim }]}>{Math.round(used)}%</Text>
+    </View>
+  )
+}
+
+/** Cumulative session tokens and optional billed cost; read-only on the phone. */
+export function SessionUsageBadge({ usage }: { usage: ChatSessionUsage }): React.JSX.Element {
+  const theme = useTheme()
+  const summary = formatSessionUsageSummary(usage)
+  return (
+    <View
+      accessibilityLabel={`Session usage: ${summary}`}
+      accessible
+      style={[styles.usagePill, { borderColor: theme.border }]}
+      testID="session-usage-badge"
+    >
+      <Text numberOfLines={1} style={[styles.usagePillText, { color: theme.textDim }]}>{summary}</Text>
     </View>
   )
 }
@@ -336,11 +375,14 @@ const styles = StyleSheet.create({
   menuTag: { fontSize: 10.5, borderWidth: 1, borderRadius: 999, paddingHorizontal: 6, paddingVertical: 1, overflow: 'hidden' },
   menuStatus: { fontSize: 12.5, paddingHorizontal: 14, paddingVertical: 8 },
   pill: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 170 },
+  compactPill: { flexShrink: 1, minWidth: 0, alignSelf: 'flex-start' },
   pillText: { fontSize: 12.5 },
   meter: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   meterTrack: { width: 22, height: 4, borderRadius: 2, overflow: 'hidden' },
   meterFill: { height: 4 },
   meterText: { fontSize: 11, fontVariant: ['tabular-nums'] },
+  usagePill: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
+  usagePillText: { fontSize: 11, fontVariant: ['tabular-nums'] },
   iconButton: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
   smallButton: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5 },
   smallButtonText: { fontSize: 12.5, fontWeight: '600' },

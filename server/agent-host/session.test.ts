@@ -462,7 +462,7 @@ describe('AgentSession state from Claude', () => {
     expect(fake.contextUsage).toHaveBeenCalledTimes(2)
   })
 
-  it('reads plan limits at start, follows rate-limit events, and re-reads after turns at most once a minute', async () => {
+  it("never asks Claude for plan limits itself: it shows the daemon's reading and folds rate-limit events in", async () => {
     const fake = fakeQuery()
     let now = 1_000
     const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
@@ -470,82 +470,39 @@ describe('AgentSession state from Claude', () => {
     session.on('session', (info) => sessions.push(info))
     void session.start()
     await tick()
-    expect(fake.planUsage).toHaveBeenCalledWith({ skipBehaviors: true })
-    expect(sessions.at(-1)?.planUsage).toEqual({ plan: 'max', updatedAt: 1_000, limits: [{ kind: 'session', title: 'Current session', percent: 38, severity: 'normal', resetsAt: Date.parse('2026-10-13T15:00:00Z') }] })
+    session.applyPlanUsage({ plan: 'max', updatedAt: 900, limits: [{ kind: 'session', title: 'Current session', percent: 38, severity: 'normal' }, { kind: 'weekly_scoped', title: 'Weekly · Opus', percent: 10, severity: 'normal' }] })
+    expect(sessions.at(-1)?.planUsage).toMatchObject({ plan: 'max', updatedAt: 900 })
     now = 2_000
     fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.81, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
     await tick()
-    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 81, severity: 'warning', resetsAt: 1_800_000_000_000 })
-    // No read was under way, so the event leaves the once-a-minute limit alone (checked below).
-    fake.push(system('session_state_changed', { state: 'idle' }))
-    await tick()
-    expect(fake.planUsage).toHaveBeenCalledTimes(1)
-    now = 62_000
-    fake.push(system('session_state_changed', { state: 'idle' }))
-    await tick()
-    expect(fake.planUsage).toHaveBeenCalledTimes(2)
-    session.close()
-  })
-
-  it('keeps a rate-limit event over a /usage read that was already under way', async () => {
-    const fake = fakeQuery()
-    let finishRead!: (report: unknown) => void
-    fake.planUsage.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve }))
-    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 100_000, { messages: async () => [], title: async () => undefined })
-    const sessions: ChatSessionInfo[] = []
-    session.on('session', (info) => sessions.push(info))
-    void session.start()
-    await tick()
-    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
-    await tick()
-    finishRead({ subscription_type: 'max', rate_limits_available: true, rate_limits: { limits: [{ kind: 'session', group: 'session', percent: 40, severity: 'normal', resets_at: null }] } })
-    await tick()
-    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ kind: 'session', percent: 100, reached: true })
-    // The dropped read is retried at the next turn's end.
-    fake.push(system('session_state_changed', { state: 'idle' }))
-    await tick()
-    expect(fake.planUsage).toHaveBeenCalledTimes(2)
-    session.close()
-  })
-
-  it('keeps the last plan reading when a later one fails', async () => {
-    const log = vi.fn()
-    const fake = fakeQuery()
-    let now = 1_000
-    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, log }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
-    const sessions: ChatSessionInfo[] = []
-    session.on('session', (info) => sessions.push(info))
-    void session.start()
-    await tick()
-    fake.planUsage.mockResolvedValueOnce({ subscription_type: 'max', rate_limits_available: true, rate_limits: null })
-    now = 100_000
-    fake.push(system('session_state_changed', { state: 'idle' }))
-    await tick()
-    expect(sessions.at(-1)?.planUsage).toMatchObject({ updatedAt: 1_000 })
-    expect(log).toHaveBeenCalledWith("Couldn't read plan usage: Claude returned no limits")
+    expect(sessions.at(-1)?.planUsage?.limits).toEqual([
+      expect.objectContaining({ kind: 'session', percent: 81, severity: 'warning', resetsAt: 1_800_000_000_000 }),
+      expect.objectContaining({ title: 'Weekly · Opus', percent: 10 }),
+    ])
     now = 200_000
     fake.push(system('session_state_changed', { state: 'idle' }))
     await tick()
-    expect(fake.planUsage).toHaveBeenCalledTimes(3)
-    expect(sessions.at(-1)?.planUsage).toMatchObject({ updatedAt: 200_000 })
+    expect(fake.planUsage).not.toHaveBeenCalled()
     session.close()
   })
 
-  it('leaves the meter out, and stops asking, for a login without plan limits', async () => {
+  it('keeps a rate-limit event over a daemon reading requested before it', async () => {
     const fake = fakeQuery()
-    fake.planUsage.mockResolvedValueOnce({ subscription_type: null, rate_limits_available: false, rate_limits: null })
     let now = 1_000
     const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
     const sessions: ChatSessionInfo[] = []
     session.on('session', (info) => sessions.push(info))
     void session.start()
     await tick()
-    now = 100_000
-    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.5, resetsAt: 1 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
-    fake.push(system('session_state_changed', { state: 'idle' }))
+    now = 5_000
+    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
     await tick()
-    expect(fake.planUsage).toHaveBeenCalledTimes(1)
-    expect(sessions.some((info) => info.planUsage)).toBe(false)
+    const reading = (updatedAt: number) => ({ updatedAt, limits: [{ kind: 'session', title: 'Current session', percent: 40, severity: 'normal' as const }] })
+    // Requested at 4 s, answered after the event.
+    session.applyPlanUsage(reading(4_000))
+    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 100, reached: true })
+    session.applyPlanUsage(reading(6_000))
+    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 40 })
     session.close()
   })
 
@@ -1686,6 +1643,77 @@ describe('Claude aside forks', () => {
     { type: 'assistant', uuid: 'aside-finished', message: { id: 'aside-reply', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Side answer' }] }, parent_tool_use_id: null },
   ]
 
+  it('maps both live user and assistant items to the final SDK uuid only after the turn finishes', async () => {
+    const { session, fake } = started()
+    await tick()
+    session.send('Anchored question')
+    await tick()
+    const user = session.snapshot().items.find((item) => item.kind === 'user_message')!
+    fake.push({ type: 'assistant', uuid: 'sdk-first', session_id: 'main', parent_tool_use_id: null, message: { id: 'api-first', content: [{ type: 'text', text: 'First chunk' }] } } as unknown as SDKMessage)
+    fake.push({ type: 'assistant', uuid: 'sdk-subagent', session_id: 'main', parent_tool_use_id: 'tool-child', message: { id: 'api-child', content: [{ type: 'text', text: 'Child reply' }] } } as unknown as SDKMessage)
+    await tick()
+    expect(session.forkPoint(user.id)).toBeNull()
+    fake.push({ type: 'assistant', uuid: 'sdk-final', session_id: 'main', parent_tool_use_id: null, message: { id: 'api-final', content: [{ type: 'text', text: 'Final reply' }] } } as unknown as SDKMessage)
+    fake.push({ type: 'result', subtype: 'success', session_id: 'main' } as SDKMessage)
+    await tick()
+    expect(session.forkPoint(user.id)).toEqual({ sessionId: 'main', at: 'sdk-final', itemId: user.id })
+    expect(session.forkPoint('api-first:0')).toEqual({ sessionId: 'main', at: 'sdk-final', itemId: 'api-first:0' })
+    expect(session.forkPoint()?.itemId).toBe('api-final:0')
+    session.close()
+  })
+  it('rebuilds per-turn SDK boundaries and stable user anchors during history replay', async () => {
+    const { session } = started({ resume: 'main' }, { messages: async () => [...inherited, ...own], title: async () => undefined })
+    await tick()
+    expect(session.forkPoint('user-turn-main-user')).toEqual({ sessionId: 'main', at: 'finished', itemId: 'user-turn-main-user' })
+    expect(session.forkPoint('main-reply:0')?.at).toBe('finished')
+    expect(session.forkPoint('aside-reply:0')?.at).toBe('aside-finished')
+    session.close()
+  })
+  it.each([true, false])('restricts quick answers beyond ordinary read-only asides (readOnly=%s)', async (readOnly) => {
+    const { session, fake } = started({ aside: { ...aside, ephemeral: true }, readOnly })
+    await tick()
+    expect(fake.options.disallowedTools).toEqual(expect.arrayContaining(['Bash', 'Agent', 'Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']))
+    expect(fake.options.systemPrompt).toMatchObject({ append: expect.stringContaining('Do not use tools unless strictly necessary') })
+    session.close()
+  })
+  it.each(['AskUserQuestion', 'Bash', 'mcp__example__tool', 'ExitPlanMode'])('auto-denies quick-answer %s requests without pending items', async (toolName) => {
+    const { session, fake, items, sessions } = started({ aside: { ...aside, ephemeral: true }, readOnly: true })
+    await tick()
+    const result = await fake.canUseTool(toolName, { questions: [{ question: 'Which?' }], plan: '# Plan' }, signalOptions('quick-request'))
+    expect(result).toEqual({ behavior: 'deny', message: "Quick answers can't ask questions or run tools that need approval; answer from the conversation so far, or say what you'd need." })
+    expect(session.answer('quick-request', { kind: 'approval', decision: 'allow' })).toBe(false)
+    expect([...items.values()].some((item) => item.kind === 'request' || item.kind === 'plan')).toBe(false)
+    expect(session.snapshot().items.some((item) => item.kind === 'request')).toBe(false)
+    expect(sessions.some((info) => info.status === 'waiting')).toBe(false)
+    session.close()
+  })
+  it('declines MCP elicitation in quick answers', async () => {
+    const { session, fake } = started({ aside: { ...aside, ephemeral: true }, readOnly: true })
+    await tick()
+    await expect(fake.options.onElicitation!({ serverName: 'example', message: 'Choose?' }, { signal: new AbortController().signal, requestId: 'quick-elicit' })).resolves.toEqual({ action: 'decline' })
+    expect(session.snapshot().items.some((item) => item.kind === 'request')).toBe(false)
+    session.close()
+  })
+  it('resumes a kept quick answer visibly with ordinary read-only tools and instructions', async () => {
+    const store = { messages: async () => [...inherited, ...own], title: async () => undefined }
+    const quick = started({ aside: { ...aside, ephemeral: true }, readOnly: true, resume: 'saved-aside' }, store)
+    await tick()
+    expect(quick.fake.options.disallowedTools).toContain('Bash')
+    quick.session.close()
+    const kept = started({ aside, readOnly: true, resume: 'saved-aside' }, store)
+    await tick()
+    expect(kept.fake.options).toMatchObject({ resume: 'saved-aside', permissionMode: 'default', disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] })
+    expect(kept.fake.options.systemPrompt).toMatchObject({ append: expect.stringContaining('Do not modify files') })
+    expect(kept.fake.options.systemPrompt).not.toMatchObject({ append: expect.stringContaining('Do not use tools unless strictly necessary') })
+    expect(kept.fake.options.onElicitation).toBeUndefined()
+    expect(kept.session.snapshot().items).toEqual(quick.session.snapshot().items)
+    expect(kept.session.snapshot().items).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'assistant_message', text: 'Side answer' })]))
+    const permission = kept.fake.canUseTool('AskUserQuestion', { questions: [{ question: 'Which?', options: [] }] }, signalOptions('kept-question'))
+    expect(kept.session.snapshot().items).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'request', requestId: 'kept-question', requestKind: 'question', status: 'running' })]))
+    expect(kept.session.answer('kept-question', { kind: 'approval', decision: 'deny' })).toBe(true)
+    await expect(permission).resolves.toMatchObject({ behavior: 'deny' })
+    kept.session.close()
+  })
   it('starts a fresh fork with one origin notice and only its own live messages', async () => {
     const { session, fake, items } = started({ aside, fork: aside.forkedFrom }, { messages: async () => [...inherited, ...own], title: async () => undefined })
     await tick()
@@ -1718,7 +1746,7 @@ describe('Claude aside forks', () => {
       'Forked from Main · 2 earlier messages hidden', ...(hasReply ? ['Side question', 'Side answer'] : []),
     ])
     expect([...items.values()]).toEqual(session.snapshot().items)
-    expect(session.forkPoint()).toEqual({ sessionId: 'saved-aside', at: hasReply ? 'aside-finished' : 'finished' })
+    expect(session.forkPoint()).toMatchObject({ sessionId: 'saved-aside', at: hasReply ? 'aside-finished' : 'finished' })
     session.close()
   })
 
@@ -1772,10 +1800,10 @@ describe('Claude aside forks', () => {
     expect(session.forkPoint()).toBeNull()
     fake.push({ type: 'result', subtype: 'success', session_id: 'main' } as SDKMessage)
     await tick()
-    expect(session.forkPoint()).toEqual({ sessionId: 'main', at: 'assistant-1' })
+    expect(session.forkPoint()).toMatchObject({ sessionId: 'main', at: 'assistant-1' })
     fake.push({ type: 'assistant', uuid: 'assistant-2', session_id: 'main', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'Still writing' }] } } as unknown as SDKMessage)
     await tick()
-    expect(session.forkPoint()).toEqual({ sessionId: 'main', at: 'assistant-1' })
+    expect(session.forkPoint()).toMatchObject({ sessionId: 'main', at: 'assistant-1' })
     fake.push({ type: 'system', subtype: 'init', session_id: 'new-main' } as SDKMessage)
     await tick()
     expect(session.forkPoint()).toBeNull()

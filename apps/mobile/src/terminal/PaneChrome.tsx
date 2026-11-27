@@ -1,5 +1,6 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
+import { chatMessageSummary } from '@commando/agent-chat'
 
 import type { AgentStatus, WebPane } from '@commando/protocol'
 
@@ -160,7 +161,7 @@ export function PaneHud({ status }: { status: AgentStatus }): React.JSX.Element 
         <StatusDot size={9} status={status.status} />
         <Text style={[styles.hudStatus, { color: theme.text }]}>{statusLabel(status.status)}</Text>
         <Text numberOfLines={1} style={[styles.hudDetail, { color: theme.muted }]}>
-          {detail}
+          {chatMessageSummary(detail)}
         </Text>
         {progress ? (
           <Text style={[styles.hudCount, { color: theme.textDim }]}>

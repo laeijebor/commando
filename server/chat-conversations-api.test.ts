@@ -91,6 +91,34 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
 }
 
 describe('ChatConversationsApi', () => {
+  it('promotes in the same cwd with Main settings through the shared split launcher', async () => {
+    const { api, creator } = setup()
+    const main = chat({ cwd: '/same-checkout', resumeCommand: 'env COMMANDO_PORT=4999 /repo/bin/commando-agent claude --config-dir /profile --permission-mode default --resume aaaaaaaa-0000', permissionMode: 'acceptEdits', selectedModel: 'opus', effort: 'high', fast: true, bypassAllowed: true })
+    expect(await api.promoteAside(main, ID)).toEqual({ paneId: '%9' })
+    expect(creator.createPane).toHaveBeenCalledWith({ targetId: '%1', direction: 'horizontal', placement: 'after', cwd: '/same-checkout' }, undefined, expect.stringContaining(`--resume ${ID}`))
+    const command = (vi.mocked(creator.createPane).mock.calls as unknown[][])[0]?.[2]
+    expect(command).toContain('--config-dir /profile')
+    expect(command).toContain('--permission-mode acceptEdits')
+    expect(command).toContain('--model opus --effort high --fast')
+    expect(command).toContain('COMMANDO_PORT=4999')
+    expect(command).not.toContain('read-only')
+    await expect(api.promoteAside(main, ID)).rejects.toThrow('already being opened')
+  })
+  it('releases a failed promotion reservation so Open as chat can retry', async () => {
+    const { api, creator } = setup()
+    creator.createPane.mockRejectedValueOnce(new Error('Split failed'))
+    await expect(api.promoteAside(chat(), ID)).rejects.toThrow('Split failed')
+    expect(await api.promoteAside(chat(), ID)).toEqual({ paneId: '%9' })
+    expect(creator.createPane).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/x', agent: { provider: 'claude-chat', permissionMode: 'acceptEdits', resume: ID } }))
+  })
+  it('shows promoted conversations but hides discarded quick answers in the picker after restart', async () => {
+    const asides = new AsideStore()
+    await asides.save('main-session', [{ id: 'abcd1234', title: 'Quick', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main-session' }, ephemeral: true, status: 'discarded', sessionId: ID, createdAt: 1 }])
+    const { list } = setup()
+    expect((await list()).body).toEqual({ conversations: [] })
+    await asides.save('main-session', [{ id: 'abcd1234', title: 'Big', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main-session' }, status: 'promoted', sessionId: ID, createdAt: 1 }])
+    expect((await list()).body).toMatchObject({ conversations: [expect.objectContaining({ sessionId: ID })] })
+  })
   it.each(['no live host', 'cleared Main'])('hides persisted open and closed asides with %s', async (scenario) => {
     await new AsideStore().save(ID, [
       { id: 'abcd1234', title: 'Open', mode: 'read-only', method: 'fork', readOnlyEnforced: true,

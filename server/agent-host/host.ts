@@ -303,6 +303,7 @@ export class AgentHost {
       await session.configure(settings)
     }
     else if (message.type === 'switch') await session.tui?.requestSwitch(message.action)
+    else if (message.type === 'plan_usage') session.applyPlanUsage?.(message.usage)
   }
 
   /** Coalesces streaming updates so a long reply is not resent per token. */

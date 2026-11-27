@@ -1,3 +1,4 @@
+import { seedAsides } from './asides'
 import type { AgentProvider, AgentStatus, CommandoSnapshot, ServerMessage, SessionBrief, WebPane } from '@commando/protocol'
 import type { ChatProvider, ChatState } from '@commando/agent-chat'
 import type { ChatCardEvent } from '@commando/chat-tile-events'
@@ -53,6 +54,7 @@ export function demoMessages(now = Date.now()): ServerMessage[] {
     if (i === 0) items.push(item('request', { status: 'running', requestId: 'demo-question', requestKind: 'question', toolName: 'AskUserQuestion', title: 'Choose the reply layout', questions: [{ header: 'Layout', question: 'How should the reply read?', options: [{ label: 'Quiet and spacious', description: 'Flat replies, room for code' }, { label: 'Compact' }], multiSelect: false }] }))
     return chatState({ paneId: pane.id, session: session({ paneId: pane.id, provider, cwd: pane.path, status: i === 0 ? 'waiting' : pane.id === DEMO_SUBAGENT_PANE ? 'running' : kinds[i] === 'working' ? 'running' : kinds[i] === 'failed' ? 'error' : 'idle', title: headlines[i] ?? pane.title, error: kinds[i] === 'failed' ? 'The token expired while the refresh test was running.' : undefined, permissionMode: providers[i] === 'cursor' ? undefined : 'default', effort: undefined, models: undefined, model: undefined }), items })
   })
+  seedAsides(chats, now)
   const webPanes: WebPane[] = [
     { id: 'demo-browser', title: 'Companion preview', url: 'http://localhost:5273', sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 1, unseen: true, engine: 'chromium', openedBy: 'agent', status: 'open', createdAt: now - 60_000 },
     { id: 'demo-simulator', title: 'iPhone preview', url: '', content: { kind: 'simulator', udid: 'demo-iphone' }, sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 2, engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: now - 50_000 },

@@ -7,6 +7,8 @@ export const PIERRE_THEME = 'pierre-dark'
 export const pierreHighlighterOptions: WorkerInitializationRenderOptions = {
   theme: PIERRE_THEME,
   lineDiffType: 'word-alt',
+  // Token clicks and hovers (Cmd-click navigation) only fire on transformer-rendered tokens.
+  useTokenTransformer: true,
 }
 
 // Shiki highlighting runs off the main thread. One warm worker measured faster than two (each

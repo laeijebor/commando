@@ -1,10 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   CLOUD_PROMPT_LIMIT, cloudConnectionKey, cloudProviderHome, cloudTaskLabel, isSafeCloudUrl,
-  type CloudOperation, type CloudTaskDetail, type CloudTaskSummary,
+  type CloudOperation, type CloudTaskDetail, type CloudTaskSummary, type DiscoveredExternalAgent,
 } from '../shared/cloud-tasks'
 import type { CloudTasksApi } from './cloudTasksApi'
 import { useCloudTask, useCloudTasks } from './cloudTaskStore'
+import { CloudDiscoveredSection } from './CloudDiscoveredSection'
 import { CloudTaskCard, cloudTaskConnectionLabel } from './CloudTaskCard'
 import { CloudTaskCreateDialog, useCloudAccountConfirmation } from './CloudTaskCreateDialog'
 import { CloudTaskDiff } from './CloudTaskDiff'
@@ -17,10 +18,11 @@ export function cloudOperationLabel(operation: CloudOperation): string {
 }
 const date = (value: string | number | null) => value ? new Date(value).toLocaleString() : 'Not observed'
 
-export function CloudTasksSection({ api, selectedTaskId, onSelectTask }: {
+export function CloudTasksSection({ api, selectedTaskId, onSelectTask, onOpenDiscoveredChat }: {
   api: CloudTasksApi
   selectedTaskId?: string | null
   onSelectTask?: (id: string) => void
+  onOpenDiscoveredChat?: (agent: DiscoveredExternalAgent) => Promise<void> | void
 }) {
   const state = useCloudTasks(api)
   const [localId, setLocalId] = useState<string | null>(null)
@@ -38,6 +40,10 @@ export function CloudTasksSection({ api, selectedTaskId, onSelectTask }: {
   const selected = state.tasks.find((task) => task.id === id)
 
   useEffect(() => { if (id) setDetailOpen(true) }, [id])
+  useEffect(() => {
+    if (!state.connected || state.discoveredAt !== null || state.discovering || state.discoveryError) return
+    void state.store.refreshDiscovered()
+  }, [state.connected, state.discoveredAt, state.discovering, state.discoveryError, state.store])
   useEffect(() => {
     if (!id || !state.connected) return
     let active = true
@@ -92,6 +98,22 @@ export function CloudTasksSection({ api, selectedTaskId, onSelectTask }: {
         {state.tasks.filter((task) => showArchived || !task.archivedAt).map((task) => <CloudTaskCard key={task.id} task={task} connectionLabel={cloudTaskConnectionLabel(task, state.providers?.providers)} selected={task.id === id} onSelect={select} />)}
         {!state.tasks.some((task) => showArchived || !task.archivedAt) && <p>{state.loading ? 'Loading…' : 'No saved cloud tasks. Create or link a task to get started; no local session is required.'}</p>}
         <p className="cloud-hint">Only tasks submitted or explicitly linked through Commando.</p>
+        <CloudDiscoveredSection
+          agents={state.discovered}
+          sources={state.discoverySources}
+          discovering={state.discovering}
+          connected={state.connected}
+          error={state.discoveryError}
+          onRefresh={() => void state.store.refreshDiscovered()}
+          onImport={async (agent) => {
+            const imported = await state.store.importDiscovered(agent)
+            if (imported.kind === 'linked') select(imported.task.id)
+          }}
+          onOpenChat={onOpenDiscoveredChat ? async (agent) => {
+            await onOpenDiscoveredChat(agent)
+            state.store.markDiscoveredTracked(agent.provider, agent.id)
+          } : undefined}
+        />
       </section>
       <article className="cloud-detail" aria-label="Selected cloud task">
         <button className="cloud-back" onClick={() => {

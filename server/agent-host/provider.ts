@@ -5,6 +5,7 @@ import type {
   ChatFileSearchResult,
   ChatImageRef,
   ChatItem,
+  ChatPlanUsage,
   ChatQueueAction,
   ChatQueuedMessage,
   ChatSendOptions,
@@ -47,7 +48,7 @@ export interface ChatProviderSession {
   readonly queued: ChatQueuedMessage[]
   readonly tui?: ChatProviderTui
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void
-  forkPoint?(): ChatForkPoint | null
+  forkPoint?(itemId?: string): ChatForkPoint | null
   start(): Promise<void>
   send(text: string, images?: ChatImageRef[], options?: ChatSendOptions): void
   updateQueue(change: ChatQueueAction): void
@@ -60,6 +61,8 @@ export interface ChatProviderSession {
   /** The agent's MCP servers, after acting on one; absent where the provider has none to manage. */
   mcp?(request: ChatMcpRequest): Promise<ChatMcpResult>
   setResumeCommand(command: string): void
+  /** A reading of the login's plan limits the daemon made; absent where the provider reads its own. */
+  applyPlanUsage?(usage: ChatPlanUsage): void
   /** Shows a host-level problem (a failed restart, say) in the chat as well as the pane. */
   hostNotice?(level: 'info' | 'error', text: string): void
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] }

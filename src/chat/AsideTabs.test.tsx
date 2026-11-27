@@ -10,7 +10,7 @@ import { ChatComposer } from './ChatComposer'
 import { ChatStashContext, type ChatStash } from './chatStash'
 
 const record: ChatAsideRecord = { id: 'abcdefgh', title: 'Why flaky?', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: Date.now(), status: 'open' }
-const main: ChatState = { paneId: '%5', hostConnected: true, asides: [record], session: { paneId: '%5', sessionId: 'main', provider: 'claude', cwd: '/work', status: 'running', hostPid: 1, hostVersion: 9 }, items: [{ id: 'main-message', turnId: 't', kind: 'assistant_message', text: 'Main answer', status: 'completed', createdAt: 1, updatedAt: 1 }] }
+const main: ChatState = { paneId: '%5', hostConnected: true, asides: [record], session: { paneId: '%5', sessionId: 'main', provider: 'claude', cwd: '/work', status: 'running', hostPid: 1, hostVersion: 10 }, items: [{ id: 'main-message', turnId: 't', kind: 'assistant_message', text: 'Main answer', status: 'completed', createdAt: 1, updatedAt: 1 }] }
 const key = asideKey(main.paneId, record.id)
 const aside: ChatState = { ...main, paneId: key, asides: undefined, session: { ...main.session, paneId: key, sessionId: 'aside', status: 'idle', aside: { ...record, parentPaneId: main.paneId } }, items: [{ id: 'aside-message', turnId: 't', kind: 'assistant_message', text: 'Aside answer', status: 'completed', createdAt: 1, updatedAt: 1 }] }
 const handlers = () => ({ onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() })
@@ -19,17 +19,165 @@ function setup(state = main, initial?: string, thread: ChatState | null = aside)
   const request = vi.fn<ChatAsideServices['request']>().mockResolvedValue({ ok: true, asideId: record.id })
   const flow = { queue: vi.fn(), task: vi.fn(), subagentTranscript: vi.fn(async () => ({ items: [] })), savePlan: vi.fn(async () => ({ path: '/plan.md' })) }
   const bindings = vi.fn((): ChatThreadBindings => ({ ...asideHandlers, flow }))
+  let changeMain!: (chat: ChatState) => void
   function Harness() {
+    const [chat, setChat] = useState(state)
+    changeMain = setChat
     const [selected, select] = useState(initial)
-    return <ChatPane chat={state} connected focused={false} onFocus={() => {}} {...mainHandlers} asides={{ chats: thread ? { [key]: thread } : {}, selected, select, request, bindings }} />
+    return <ChatPane chat={chat} connected focused={false} onFocus={() => {}} {...mainHandlers} asides={{ chats: thread ? { [key]: thread } : {}, selected, select, request, bindings }} />
   }
   const view = render(<Harness />)
-  return { ...view, mainHandlers, asideHandlers, request, bindings, flow }
+  return { ...view, mainHandlers, asideHandlers, request, bindings, flow, updateMain: (chat: ChatState) => act(() => changeMain(chat)) }
 }
 beforeEach(() => { localStorage.clear(); HTMLElement.prototype.scrollIntoView = vi.fn() })
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('aside threads', () => {
+  it('quotes a Main message and sends its item id through Aside from here', async () => {
+    const { request, mainHandlers } = setup()
+    const action = screen.getByRole('button', { name: /Aside from here/ })
+    action.focus()
+    expect(action).toHaveFocus()
+    fireEvent.click(action)
+    expect(screen.getByRole('tab', { name: 'New aside' })).toHaveAttribute('aria-selected', 'true')
+    expect(document.querySelector('blockquote')).toHaveTextContent('Main answer')
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Explain this earlier point' } })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'open', text: 'Explain this earlier point', at: 'main-message', mode: 'read-only' }))
+    expect(mainHandlers.onSend).not.toHaveBeenCalled()
+  })
+  it('places branch markers after the last row of the anchor turn and selects/reopens them', async () => {
+    const older = { ...record, id: 'ijklmnop', title: 'Older', status: 'closed' as const, forkedFrom: { sessionId: 'main', itemId: 'first-user' } }
+    const user = { ...main.items[0]!, id: 'first-user', kind: 'user_message' as const, text: 'First question' }
+    const { request } = setup({ ...main, items: [user, ...main.items], asides: [{ ...record, forkedFrom: { sessionId: 'main', itemId: 'first-user' } }, older] })
+    const marker = screen.getByRole('button', { name: '↳ Aside: Why flaky? · idle' })
+    expect(screen.getByRole('button', { name: '↳ Aside: Older · closed' })).toBeInTheDocument()
+    expect(marker.compareDocumentPosition(screen.getByText('Main answer')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /Aside from here/ })).toHaveLength(2)
+    fireEvent.click(marker)
+    expect(screen.getByRole('tab', { name: /Why flaky/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('tab', { name: /Main/ }))
+    fireEvent.click(screen.getByRole('button', { name: '↳ Aside: Older · closed' }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'reopen', asideId: older.id }))
+  })
+  it('routes /btw into an ephemeral answer without sending Main', async () => {
+    const { request, mainHandlers } = setup({ ...main, asides: [] })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/btw What is jitter?' } })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'open', text: 'What is jitter?', ephemeral: true }))
+    expect(mainHandlers.onSend).not.toHaveBeenCalled()
+    expect(screen.getByRole('region', { name: 'Quick aside' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /Why flaky/ })).toBeNull()
+  })
+  it.each(['MacIntel', 'Linux'])('opens a quick question with the %s shortcut and dismisses with Esc', async (platform) => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform)
+    const { request } = setup({ ...main, asides: [] })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: '/', metaKey: platform === 'MacIntel', ctrlKey: platform === 'Linux' })
+    const question = screen.getByRole('textbox', { name: 'Quick question' })
+    expect(question).toHaveFocus()
+    fireEvent.keyDown(question, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Quick aside' })).toBeNull()
+    expect(request).not.toHaveBeenCalled()
+  })
+  it('streams a quick answer, copies it to Main draft, and keeps it as a selected aside', async () => {
+    const quick = { ...record, ephemeral: true as const }
+    const { request } = setup({ ...main, asides: [quick] })
+    const popover = screen.getByRole('region', { name: 'Quick aside' })
+    expect(within(popover).getByText('Aside answer')).toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).toBeNull()
+    fireEvent.click(within(popover).getByRole('button', { name: 'Copy into Main draft' }))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Aside answer'))
+    fireEvent.click(within(popover).getByRole('button', { name: 'Keep as aside' }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'keep', asideId: record.id }))
+  })
+  it('lets Escape interrupt Main while keeping its draft and quick answer', () => {
+    const { request, mainHandlers } = setup({ ...main, asides: [{ ...record, ephemeral: true }] })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Main draft' } })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+    expect(mainHandlers.onInterrupt).toHaveBeenCalledOnce()
+    expect(request).not.toHaveBeenCalled()
+    expect(screen.getByRole('region', { name: 'Quick aside' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toHaveValue('Main draft')
+  })
+  it('lets Escape close Main’s slash menu without dismissing the quick answer', () => {
+    const { request, mainHandlers } = setup({ ...main, asides: [{ ...record, ephemeral: true }] })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/bt', selectionStart: 3 } })
+    expect(screen.getByRole('option', { name: /Quick answer, no tools/ })).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+    expect(screen.queryByRole('option', { name: /Quick answer, no tools/ })).toBeNull()
+    expect(mainHandlers.onInterrupt).not.toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
+    expect(screen.getByRole('region', { name: 'Quick aside' })).toBeInTheDocument()
+  })
+  it('keeps the quick answer on unhandled Escape in the idle Main composer', () => {
+    const { request } = setup({ ...main, session: { ...main.session, status: 'idle' }, asides: [{ ...record, ephemeral: true }] })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+    expect(request).not.toHaveBeenCalled()
+    expect(screen.getByRole('region', { name: 'Quick aside' })).toBeInTheDocument()
+  })
+  it('discards a quick answer with Escape inside the popover while leaving the Main draft untouched', async () => {
+    const { request } = setup({ ...main, asides: [{ ...record, ephemeral: true }] })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Main draft' } })
+    fireEvent.keyDown(within(screen.getByRole('region', { name: 'Quick aside' })).getByRole('button', { name: 'Dismiss' }), { key: 'Escape' })
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'discard', asideId: record.id }))
+    expect(screen.getByRole('textbox')).toHaveValue('Main draft')
+  })
+  it('dismisses on unhandled Escape outside the composer and respects defaultPrevented', async () => {
+    const { request } = setup({ ...main, asides: [{ ...record, ephemeral: true }] })
+    const message = screen.getByRole('button', { name: /Aside from here/ })
+    const prevented = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    prevented.preventDefault()
+    fireEvent(message, prevented)
+    expect(request).not.toHaveBeenCalled()
+    fireEvent.keyDown(message, { key: 'Escape' })
+    await waitFor(() => expect(request).toHaveBeenCalledExactlyOnceWith({ action: 'discard', asideId: record.id }))
+  })
+  it.each(['discarded', 'closed', 'missing'] as const)('allows /btw again after a %s quick answer broadcast', async (status) => {
+    const view = setup({ ...main, asides: [] })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/btw First question' } })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(view.request).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue(''))
+    view.updateMain({ ...main, asides: [{ ...record, ephemeral: true }] })
+    expect(within(screen.getByRole('region', { name: 'Quick aside' })).getByText('Aside answer')).toBeInTheDocument()
+    view.updateMain({ ...main, asides: status === 'missing' ? [] : [{ ...record, ephemeral: true, status }] })
+    expect(screen.queryByRole('region', { name: 'Quick aside' })).toBeNull()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/btw Next question' } })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(view.request).toHaveBeenLastCalledWith({ action: 'open', text: 'Next question', ephemeral: true }))
+    expect(view.request).toHaveBeenCalledTimes(2)
+  })
+  it('uses the result id for dismissal until the first quick-answer broadcast arrives', async () => {
+    const { request } = setup({ ...main, asides: [] })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/btw Question' } })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss' })
+    await waitFor(() => expect(dismiss).toBeEnabled())
+    fireEvent.click(dismiss)
+    await waitFor(() => expect(request).toHaveBeenLastCalledWith({ action: 'discard', asideId: record.id }))
+  })
+  it('offers /btw in the slash menu', () => {
+    setup({ ...main, asides: [] })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/bt', selectionStart: 3 } })
+    fireEvent.click(screen.getByRole('option', { name: /Quick answer, no tools, nothing saved/ }))
+    expect(screen.getByRole('textbox')).toHaveValue('/btw ')
+  })
+  it('hides discarded/ephemeral records and labels promoted chats without Reopen', () => {
+    const onAction = vi.fn()
+    render(<AsideTabs main={{ ...main, asides: [{ ...record, status: 'promoted' }, { ...record, id: 'ijklmnop', ephemeral: true }, { ...record, id: 'qrstuvwx', status: 'discarded' }] }} chats={{}} selected={undefined} onSelect={() => {}} onAction={onAction} disabled={false} />)
+    expect(screen.queryByRole('tab', { name: /Why flaky/ })).toBeNull()
+    fireEvent.click(screen.getByText('Closed (1)'))
+    expect(screen.getByText('Opened as chat')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Reopen/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Open as chat/ }))
+    expect(onAction).toHaveBeenCalledWith({ action: 'promote', asideId: record.id })
+  })
+  it('opens an aside as a chat from its banner', async () => {
+    const { request } = setup(main, record.id)
+    fireEvent.click(screen.getByRole('button', { name: 'Open as chat' }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'promote', asideId: record.id }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Main/ })).toHaveAttribute('aria-selected', 'true'))
+  })
   it('hides tabs on unsupported hosts and chats without asides', () => {
     const view = setup({ ...main, session: { ...main.session, hostVersion: 8 } })
     expect(screen.queryByRole('tablist', { name: 'Chat threads' })).toBeNull()
@@ -181,6 +329,27 @@ describe('aside threads', () => {
     expect(screen.getByText('Finished investigation')).toHaveAttribute('title', 'Finished investigation')
     expect(screen.getByRole('button', { name: 'Reopen Finished investigation' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Close aside/ })).toBeNull()
+  })
+  it.each(['Ready code word IBIS', 'Own investigation', undefined])('uses the aside title consistently in tabs and markers (session title: %s)', (title) => {
+    const mainTitle = 'Ready code word IBIS'
+    const expected = title && title !== mainTitle ? title : record.title
+    setup({ ...main, session: { ...main.session, title: mainTitle }, asides: [{ ...record, forkedFrom: { sessionId: 'main', itemId: 'main-message' } }] }, undefined, { ...aside, session: { ...aside.session, title } })
+    expect(screen.getByRole('tab', { name: new RegExp(expected.replace('?', '\\?')) })).toHaveAttribute('title', expected)
+    expect(screen.getByRole('button', { name: `Close aside ${expected}` })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `↳ Aside: ${expected} · idle` })).toBeInTheDocument()
+  })
+  it('uses the opening question in the closed list when the session inherits Main’s title', () => {
+    const title = 'Ready code word IBIS'
+    setup({ ...main, session: { ...main.session, title }, asides: [{ ...record, status: 'closed' }] }, undefined, { ...aside, session: { ...aside.session, title } })
+    fireEvent.click(screen.getByText('Closed (1)'))
+    expect(screen.getByRole('button', { name: `Reopen ${record.title}` })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Open as chat ${record.title}` })).toBeInTheDocument()
+  })
+  it.each(['Ready code word IBIS', 'Own quick title', undefined])('uses the aside title in the quick popover (session title: %s)', (title) => {
+    const mainTitle = 'Ready code word IBIS'
+    const expected = title && title !== mainTitle ? title : record.title
+    setup({ ...main, session: { ...main.session, title: mainTitle }, asides: [{ ...record, ephemeral: true }] }, undefined, { ...aside, session: { ...aside.session, title } })
+    expect(within(screen.getByRole('region', { name: 'Quick aside' })).getByText(expected)).toHaveClass('chat-quick-question')
   })
   it.each([undefined, record.id])('closes an aside from its tab when selection is %s', async (selected) => {
     const { request } = setup(main, selected)

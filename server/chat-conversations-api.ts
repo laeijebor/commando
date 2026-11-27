@@ -17,7 +17,7 @@ import { repositoryContainers } from '../shared/session-repositories.js'
 import { chatLaunchProvider, chatPermissionModes, type SessionAgentLaunch } from '../shared/tmux-create.js'
 import { inheritedChatPermissionMode } from './agent-chats-api.js'
 import type { ChatConversationIndex } from './chat-conversations.js'
-import { buildResumeCommand, isChatResumeCommand } from './agent-resume-command.js'
+import { buildResumeCommand, isChatResumeCommand, retargetChatResumeCommand } from './agent-resume-command.js'
 import type { AgentResumeService } from './agent-resume.js'
 import type { TmuxCreator } from './tmux-create.js'
 import type { SessionBriefStore } from './session-briefs.js'
@@ -186,6 +186,35 @@ export class ChatConversationsApi {
         } : {}),
       }
     })
+  }
+
+  /** Aside ownership has already been released by the host. Never infer cwd from a picker/index. */
+  async promoteAside(main: ChatSessionInfo, sessionId: string): Promise<{ paneId: string }> {
+    const key = chatConversationKey(main.provider, sessionId)
+    if (this.reserved.has(key)) throw new HttpError(409, 'That conversation is already being opened')
+    const open = this.openConversationPanes(this.dependencies.snapshot()).get(key)
+    if (open) return { paneId: open }
+    this.reserved.add(key)
+    let launched = false
+    try {
+      const provider = chatLaunchProvider(main.provider)
+      const permissionMode = inheritedChatPermissionMode(main, provider)
+      const agent: SessionAgentLaunch = {
+        provider, permissionMode, resume: sessionId,
+        ...(main.configDir ? { configDir: main.configDir } : {}),
+        ...(main.selectedModel ? { model: main.selectedModel } : {}),
+        ...(main.fast ? { fast: true } : {}),
+        ...(provider === 'muse-chat' && permissionMode === 'bypassPermissions' ? { fullAccess: true } : {}),
+      }
+      const command = main.resumeCommand ? retargetChatResumeCommand(main.resumeCommand, main.provider, sessionId, {
+        permissionMode, model: main.selectedModel, effort: main.effort, fast: main.fast,
+        bypassAllowed: main.bypassAllowed, prePlanPermissionMode: main.prePlanPermissionMode,
+      }) ?? undefined : undefined
+      return await this.launch(main.paneId, main.cwd, command ? undefined : agent, command, 'split', undefined, () => { launched = true })
+    } finally {
+      if (launched) setTimeout(() => this.reserved.delete(key), REGISTER_GRACE_MS).unref()
+      else this.reserved.delete(key)
+    }
   }
 
   private async resume(input: Record<string, unknown>): Promise<{ paneId: string }> {

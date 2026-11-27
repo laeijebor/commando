@@ -1,8 +1,9 @@
-import { Children, cloneElement, isValidElement, createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, Children, cloneElement, isValidElement, createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, parseAsideReports, type AsideReport, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { handoffDividerLabel, isHandoffNotice } from '../../shared/chat-handoff'
 import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
@@ -14,6 +15,8 @@ import { CommandoUiActionsContext, CommandoUiFence, CommandoUiReplyContext, stab
 import { PlanCard, type SavePlan } from './PlanCard'
 import type { ResourceActionHandler } from '../paneManagementApi'
 import { ResourceChip, ResourceCardList } from './ResourceChip'
+import { RichLinkCardList, RichLinkChip } from './RichLinks'
+import { parseRichLink } from '../../shared/rich-links'
 import { ReplyImage } from './ReplyImage'
 import { SubagentGroup, useNow } from './Subagents'
 import { TileEventCard } from './TileEventCard'
@@ -48,7 +51,7 @@ const markdownComponents: Components = {
 }
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void }>({ items: [], now: 0, provider: 'Claude' })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void; onOpenReport?: (report: AsideReport) => void; onAsideFromHere?: (item: ChatItem) => void }>({ items: [], now: 0, provider: 'Claude' })
 
 /** Resource actions stay stable while timeline items and clocks update. */
 const NO_QUEUED: readonly string[] = []
@@ -70,11 +73,16 @@ const InlineResourceContext = createContext(true)
 function resourceForHref(resources: readonly ChatReplyResource[] | undefined, href: string | undefined) {
   return resources?.find((resource) => resource.ref === href || encodeURI(resource.ref) === href)
 }
-function MarkdownLink({ href, children, node: _node, ...props }: ComponentProps<'a'> & ExtraProps) {
+type ReplyHastNode = NonNullable<ExtraProps['node']>['children'][number]
+const hastText = (node: ReplyHastNode | NonNullable<ExtraProps['node']>): string => node.type === 'text' ? node.value : 'children' in node ? node.children.map(hastText).join('') : ''
+function MarkdownLink({ href, children, node, ...props }: ComponentProps<'a'> & ExtraProps) {
   const { resources, onAction } = use(ReplyResourcesContext)
   const resource = resourceForHref(resources, href)
-  return resource ? <ResourceChip resource={resource} onAction={onAction}><InlineResourceContext value={false}>{children}</InlineResourceContext></ResourceChip>
-    : <a {...props} href={href} target="_blank" rel="noreferrer"><InlineResourceContext value={false}>{children}</InlineResourceContext></a>
+  if (resource) return <ResourceChip resource={resource} onAction={onAction}><InlineResourceContext value={false}>{children}</InlineResourceContext></ResourceChip>
+  const { running } = use(ReplyImagesContext)
+  const rich = parseRichLink(href)
+  if (rich) return <RichLinkChip link={rich} label={node ? hastText(node) : undefined} running={running} />
+  return <a {...props} href={href} target="_blank" rel="noreferrer"><InlineResourceContext value={false}>{children}</InlineResourceContext></a>
 }
 function MarkdownCode({ children, node, ...props }: ComponentProps<'code'> & ExtraProps) {
   const { resources, onAction, text } = use(ReplyResourcesContext)
@@ -101,12 +109,16 @@ function resourceDescription(children: ReactNode): ReactNode {
 }
 function MarkdownResourceList({ ordered, node, children, ...props }: ExtraProps & { ordered?: boolean; children?: ReactNode; className?: string; start?: number }) {
   const { resources, cwd, onAction, text: replyText } = use(ReplyResourcesContext)
+  const { running } = use(ReplyImagesContext)
   const listItems = node?.children.filter((child) => child.type === 'element' && child.tagName === 'li') ?? []
-  const matches = listItems.map((item) => {
+  const firsts = listItems.map((item) => {
     if (item.type !== 'element') return undefined
     let first = item.children.find((child) => child.type !== 'text' || child.value.trim())
     if (first?.type === 'element' && first.tagName === 'p') first = first.children.find((child) => child.type !== 'text' || child.value.trim())
-    if (first?.type !== 'element') return undefined
+    return first?.type === 'element' ? first : undefined
+  })
+  const matches = firsts.map((first) => {
+    if (!first) return undefined
     if (first.tagName === 'a') return resourceForHref(resources, String(first.properties.href ?? ''))
     if (first.tagName === 'code' && first.children[0]?.type === 'text') {
       const raw = replyText.slice(first.position?.start.offset, first.position?.end.offset)
@@ -116,8 +128,14 @@ function MarkdownResourceList({ ordered, node, children, ...props }: ExtraProps 
     return undefined
   })
   const rendered = Children.toArray(children).filter((child) => isValidElement(child))
-  if (matches.length >= 2 && matches.every((match) => match !== undefined) && rendered.length === matches.length) {
-    return <ResourceCardList cwd={cwd} onAction={onAction} rows={matches.map((resource, index) => ({ resource: resource!, description: isValidElement<{ children?: ReactNode }>(rendered[index]) ? resourceDescription(rendered[index].props.children) : null }))} />
+  const description = (index: number) => isValidElement<{ children?: ReactNode }>(rendered[index]) ? resourceDescription(rendered[index].props.children) : null
+  // One deck alone still earns its slides card.
+  if ((matches.length >= 2 || (matches.length === 1 && matches[0] && 'deck' in matches[0])) && matches.every((match) => match !== undefined) && rendered.length === matches.length) {
+    return <ResourceCardList cwd={cwd} onAction={onAction} rows={matches.map((resource, index) => ({ resource: resource!, description: description(index) }))} />
+  }
+  const links = firsts.map((first) => first?.tagName === 'a' ? parseRichLink(String(first.properties.href ?? '')) : null)
+  if (links.length >= 2 && links.every((link) => link !== null) && rendered.length === links.length) {
+    return <RichLinkCardList running={running} rows={links.map((link, index) => ({ link: link!, label: hastText(firsts[index]!), description: description(index) }))} />
   }
   return ordered ? <ol {...props}>{children}</ol> : <ul {...props}>{children}</ul>
 }
@@ -281,7 +299,7 @@ function ThoughtEntry({ item, defaultOpen = false }: { item: ReasoningItem; defa
     >
       {open ? (
         <WorkLogDetails>
-          <div className="chat-thought italic text-muted-foreground"><Markdown text={item.text} /></div>
+          <div className="chat-thought italic text-muted-foreground"><Markdown text={item.text} running={item.status === 'running'} /></div>
         </WorkLogDetails>
       ) : null}
     </WorkLogRow>
@@ -386,16 +404,23 @@ export interface ChatFocusMessageRequest {
   seq: number
 }
 
+function AsideFromHere({ item }: { item: ChatItem }) {
+  const context = use(TimelineContext)
+  return context.onAsideFromHere && !item.parentToolUseId ? <button type="button" className="chat-message-aside-action" onClick={() => context.onAsideFromHere?.(item)}>↳ Aside from here</button> : null
+}
+
 function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; highlighted?: boolean }) {
   const context = use(TimelineContext)
   switch (row.kind) {
-    case 'user':
+    case 'user': {
+      const segments = parseAsideReports(row.item.text)
       if (row.item.tileEvents?.length) {
         return (
           <div className="flex flex-col items-end gap-1.5 pb-3 pt-1" data-chat-item-id={row.item.id}>
             {row.item.tileEvents.map((event) => event.kind === 'autofix'
               ? <AutofixCard key={event.id} event={event} {...(context.onOpenPr ? { onOpenPr: context.onOpenPr } : {})} />
               : <TileEventCard key={event.id} event={event} {...(context.onOpenTile ? { onOpenTile: context.onOpenTile } : {})} />)}
+            <AsideFromHere item={row.item} />
           </div>
         )
       }
@@ -408,16 +433,24 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
             </span>
           ) : null}
           {row.item.images?.length ? <ImageStrip images={row.item.images} className="max-w-[85%] justify-end" /> : null}
-          {row.item.text ? (
-            <div className={cn(
+          {segments.map((segment, index) => segment.kind === 'report' ? (
+            <div key={index} className={cn('chat-aside-report-bubble', highlighted && 'chat-message-highlight')}>
+              <div className="chat-aside-report-source"><span>From aside</span><strong>{segment.title}</strong>
+                {context.onOpenReport ? <button type="button" onClick={() => context.onOpenReport?.(segment)}>Open aside ↗</button> : null}</div>
+              <Markdown text={segment.body} />
+            </div>
+          ) : (
+            <div key={index} className={cn(
               'max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-border bg-message px-3.5 py-2 text-base text-foreground',
               highlighted && 'chat-message-highlight',
             )}>
-              <UserText text={row.item.text} />
+              <UserText text={segment.text} />
             </div>
-          ) : null}
+          ))}
+          <AsideFromHere item={row.item} />
         </div>
       )
+    }
     case 'plan':
       return <PlanCard item={row.item} markdown={Markdown} {...(context.onSavePlan ? { onSave: context.onSavePlan } : {})} />
     case 'subagents':
@@ -425,7 +458,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
     case 'assistant': {
       const asks = context.askMarkers?.get(row.item.id)
       return (
-        <div className="chat-reply pb-3" {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
+        <div className="chat-reply pb-3" data-chat-item-id={row.item.id} {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
           <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} itemId={row.item.id} answerable />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
@@ -433,12 +466,28 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
               Asked you {asks === 1 ? '1 thing' : `${asks} things`}: see Waiting on you
             </button>
           ) : null}
+          <AsideFromHere item={row.item} />
         </div>
       )
     }
     case 'activity':
       return <ActivityGroup row={row} cwd={cwd} />
     case 'notice':
+      if (row.item.level === 'info' && isHandoffNotice(row.item.text)) {
+        const label = handoffDividerLabel(row.item.text)
+        return (
+          <div
+            role="separator"
+            aria-label={label}
+            data-testid="chat-handoff-divider"
+            className="my-3 flex items-center gap-3 text-2xs font-medium text-muted-foreground"
+          >
+            <span className="h-px flex-1 bg-border" aria-hidden="true" />
+            <span className="shrink-0 whitespace-nowrap">{label}</span>
+            <span className="h-px flex-1 bg-border" aria-hidden="true" />
+          </div>
+        )
+      }
       return (
         <div className={cn('flex items-start gap-1.5 pb-2 text-xs', row.item.level === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
           {row.item.level === 'error' ? <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> : <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />}
@@ -448,7 +497,10 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, queuedAnswers, refusedAnswers, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, queuedAnswers, refusedAnswers, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled, onOpenReport, onAsideFromHere, asideMarkers }: {
+  onOpenReport?: (report: AsideReport) => void
+  onAsideFromHere?: (item: ChatItem) => void
+  asideMarkers?: { itemId: string; id: string; title: string; status: string; onSelect: () => void }[]
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -484,9 +536,22 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onFocusMessageHandled?: (seq: number) => void
 }) {
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
+  // Decorations sit outside the derived rows. Updating a marker never changes
+  // message counts or the scroll-to-latest effect's dependencies.
+  const markersByRow = new Map<number, NonNullable<typeof asideMarkers>>()
+  for (const marker of asideMarkers ?? []) {
+    const turn = items.find((item) => item.id === marker.itemId)?.turnId
+    if (!turn) continue
+    let last = -1
+    rows.forEach((row, index) => {
+      const entries = 'item' in row ? [row.item] : row.items
+      if (entries.some((item) => item.turnId === turn)) last = index
+    })
+    if (last >= 0) markersByRow.set(last, [...(markersByRow.get(last) ?? []), marker])
+  }
   const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
+  const context = useMemo(() => ({ items, now, onOpenReport, onAsideFromHere, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenReport, onAsideFromHere, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
   const resourceActions = useMemo(() => ({ cwd, onResourceAction }), [cwd, onResourceAction])
   const positionsRef = useRef<ReturnType<typeof stableAnswerPositions>>({ replyOrder: new Map(), userMessages: [], keys: [] })
   const positions = (positionsRef.current = stableAnswerPositions(positionsRef.current, items))
@@ -574,9 +639,14 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
             <TimelineContext value={context}>
               {rows.length === 0 && !header ? (
                 <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
-              ) : rows.map((row) => row.kind === 'user' && row.item.id === userMessageCard?.itemId
-                ? <div key={row.id} data-chat-item-id={row.item.id}>{userMessageCard.content}</div>
-                : <Row key={row.id} row={row} cwd={cwd} highlighted={row.kind === 'user' && row.item.id === highlightedItemId} />)}
+              ) : rows.map((row, index) => <Fragment key={row.id}>
+                <div className="chat-message-row">
+                  {row.kind === 'user' && row.item.id === userMessageCard?.itemId
+                    ? <div className="flex flex-col items-end" data-chat-item-id={row.item.id}>{userMessageCard.content}<AsideFromHere item={row.item} /></div>
+                    : <Row row={row} cwd={cwd} highlighted={row.kind === 'user' && row.item.id === highlightedItemId} />}
+                </div>
+                {markersByRow.get(index)?.map((marker) => <button key={marker.id} type="button" className={`chat-aside-marker${marker.status === 'closed' || marker.status === 'Opened as chat' ? ' is-closed' : ''}`} onClick={marker.onSelect}>↳ Aside: {marker.title} · {marker.status}</button>)}
+              </Fragment>)}
             </TimelineContext>
             </CommandoUiActionsContext>
           </ResourceActionsContext>

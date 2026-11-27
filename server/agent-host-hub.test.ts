@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { WebSocket } from 'ws'
 import { describe, expect, it } from 'vitest'
-import { AGENT_HOST_PROTOCOL_VERSION, type ChatItem, type ChatSessionInfo } from '../shared/agent-chat.js'
+import { AGENT_HOST_PROTOCOL_VERSION, CHAT_PLAN_USAGE_HOST_VERSION, type ChatItem, type ChatPlanUsage, type ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ServerMessage } from '../shared/protocol.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 
@@ -31,7 +31,7 @@ const item = (id: string, text: string, overrides: Partial<ChatItem> = {}): Chat
   id, turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text, ...overrides,
 } as ChatItem)
 
-function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined>; handoffs?: ConstructorParameters<typeof AgentHostHub>[0]['handoffs']; replyImages?: ConstructorParameters<typeof AgentHostHub>[0]['replyImages'] } = {}) {
+function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined>; handoffs?: ConstructorParameters<typeof AgentHostHub>[0]['handoffs']; replyImages?: ConstructorParameters<typeof AgentHostHub>[0]['replyImages']; planUsage?: ConstructorParameters<typeof AgentHostHub>[0]['planUsage'] } = {}) {
   const panes = options.panes ?? new Set(['%1', '%2'])
   const broadcasts: ServerMessage[] = []
   const hub = new AgentHostHub({
@@ -43,6 +43,7 @@ function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hos
     ...(options.currentHostBuild ? { currentHostBuild: options.currentHostBuild } : {}),
     ...(options.handoffs ? { handoffs: options.handoffs } : {}),
     ...(options.replyImages ? { replyImages: options.replyImages } : {}),
+    ...(options.planUsage ? { planUsage: options.planUsage } : {}),
   })
   const connect = () => {
     const socket = new FakeSocket()
@@ -358,6 +359,35 @@ describe('AgentHostHub richer input', () => {
     expect((await pending).error).toMatch(/disconnected/)
   })
 
+  it("sends each login's plan reading to its Claude chats on hosts that take it, and keeps a newer held one", async () => {
+    const shared: ChatPlanUsage = { limits: [{ kind: 'session', title: 'Current session', percent: 20, severity: 'normal' }], updatedAt: 5 }
+    const joined: [string | undefined, ChatPlanUsage | undefined][] = []
+    const { hub, connect } = setup({ panes: new Set(['%1', '%2', '%3', '%4']), planUsage: { joined: (configDir, held) => { joined.push([configDir, held]); return held ?? shared } } })
+    const personal = connect()
+    personal.host({ type: 'session_snapshot', session: session('%1', { hostVersion: CHAT_PLAN_USAGE_HOST_VERSION, configDir: '/p' }), items: [] })
+    const held: ChatPlanUsage = { ...shared, updatedAt: 9 }
+    const restarted = connect()
+    restarted.host({ type: 'session_snapshot', session: session('%2', { hostVersion: CHAT_PLAN_USAGE_HOST_VERSION, configDir: '/p', planUsage: held }), items: [] })
+    const old = connect()
+    old.host({ type: 'session_snapshot', session: session('%3', { hostVersion: CHAT_PLAN_USAGE_HOST_VERSION - 1, configDir: '/p' }), items: [] })
+    const codex = connect()
+    codex.host({ type: 'session_snapshot', session: session('%4', { provider: 'codex', hostVersion: CHAT_PLAN_USAGE_HOST_VERSION }), items: [] })
+    await settle()
+    expect(joined).toEqual([['/p', undefined], ['/p', held]])
+    expect(personal.sent.at(-1)).toEqual({ type: 'plan_usage', paneId: '%1', usage: shared })
+    // Its own reading is the newest: nothing to send back.
+    expect(restarted.sent.some((message) => (message as { type: string }).type === 'plan_usage')).toBe(false)
+    expect([...hub.claudeLogins()]).toEqual(['/p'])
+    hub.deliverPlanUsage('/p', held)
+    hub.deliverPlanUsage('/w', shared)
+    expect(personal.sent.at(-1)).toEqual({ type: 'plan_usage', paneId: '%1', usage: held })
+    expect(restarted.sent.at(-1)).toEqual({ type: 'plan_usage', paneId: '%2', usage: held })
+    for (const socket of [old, codex]) expect(socket.sent.some((message) => (message as { type: string }).type === 'plan_usage')).toBe(false)
+    personal.close()
+    restarted.close()
+    expect(hub.claudeLogins().size).toBe(0)
+  })
+
   it('forwards image refs only to hosts that take them', async () => {
     const { hub, connect } = setup()
     const socket = connect()
@@ -573,6 +603,56 @@ describe('AgentHostHub switch to Claude Code', () => {
     await settle()
     expect(saved).toEqual([expect.objectContaining({ draft: { text: 'from last time\n\ntyped now', images: [image] } })])
   })
+
+  it('preserves prior timeline items and inserts a divider across cross-provider handoff', async () => {
+    const { hub, connect, broadcasts } = setup()
+    const claudeSocket = connect()
+    claudeSocket.host({
+      type: 'session_snapshot',
+      session: session('%1', { provider: 'claude', hostPid: 10 }),
+      items: [item('u1', 'First reply')],
+    })
+    await settle()
+
+    const divider = hub.prepareProviderHandoff('%1', 'claude', 'cursor')
+    expect(divider).toMatchObject({ kind: 'notice', level: 'info', text: 'Handed off from Claude to Cursor' })
+    hub.announceProviderHandoff('%1')
+    expect(hub.items('%1').at(-1)).toEqual(divider)
+    expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_items', paneId: '%1', items: [divider] })
+
+    claudeSocket.close()
+    const cursorSocket = connect()
+    cursorSocket.host({
+      type: 'session_snapshot',
+      session: session('%1', { provider: 'cursor', hostPid: 20 }),
+      items: [item('u1', 'Cursor reply')],
+    })
+    await settle()
+
+    const timeline = hub.items('%1')
+    expect(timeline.map((entry) => entry.kind === 'notice' ? entry.text : entry.kind === 'assistant_message' ? entry.text : entry.kind)).toEqual([
+      'First reply',
+      'Handed off from Claude to Cursor',
+      'Cursor reply',
+    ])
+    // Carried items are namespaced so the new host's colliding id (`u1`) does not overwrite prior turns.
+    expect(timeline[0]?.id).not.toBe('u1')
+    expect(timeline[2]?.id).toBe('u1')
+  })
+
+  it('discards prepared provider handoff carry-over when cancelled', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { provider: 'claude' }), items: [item('a1', 'Old')] })
+    await settle()
+    hub.prepareProviderHandoff('%1', 'claude', 'cursor')
+    hub.cancelProviderHandoff('%1')
+
+    const next = connect()
+    next.host({ type: 'session_snapshot', session: session('%1', { provider: 'cursor', hostPid: 21 }), items: [item('b1', 'Fresh')] })
+    await settle()
+    expect(hub.items('%1').map((entry) => entry.id)).toEqual(['b1'])
+  })
 })
 
 describe('aside hub routing', () => {
@@ -590,12 +670,12 @@ describe('aside hub routing', () => {
     })
     const socket = new FakeSocket()
     hub.connect(socket as unknown as WebSocket)
-    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9, sessionId: 'main' }), items: [] })
-    socket.host({ type: 'session_snapshot', session: session('%1~abcd1234', { hostVersion: 9, sessionId: 'child', aside }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10, sessionId: 'main' }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1~abcd1234', { hostVersion: 10, sessionId: 'child', aside }), items: [] })
     await settle()
     const statusCount = statuses.length
     socket.host({ type: 'items', paneId: '%1~abcd1234', items: [{ ...item('request', ''), kind: 'request', requestId: 'ask', requestKind: 'approval', toolName: 'Bash', title: 'Allow?' }] })
-    socket.host({ type: 'session_update', session: session('%1~abcd1234', { hostVersion: 9, sessionId: 'child', status: 'waiting', aside }) })
+    socket.host({ type: 'session_update', session: session('%1~abcd1234', { hostVersion: 10, sessionId: 'child', status: 'waiting', aside }) })
     await settle()
     expect(checks).toEqual(['%1', '%1'])
     expect(statuses).toHaveLength(statusCount)
@@ -629,7 +709,7 @@ describe('aside hub routing', () => {
   it('matches lifecycle results by request, pane and socket, updates main state and rejects old hosts', async () => {
     const { hub, broadcasts, connect } = setup()
     const socket = connect()
-    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9 }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10 }), items: [] })
     await settle()
     const pending = hub.aside('%1', { action: 'open', text: 'Why?' })
     const request = socket.sent.at(-1) as { requestId: string }
@@ -653,10 +733,10 @@ describe('aside hub routing', () => {
   it('rejects aside snapshots from a different parent owner or host pid', async () => {
     const { hub, broadcasts, connect } = setup()
     const owner = connect(), impostor = connect()
-    owner.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9 }), items: [] })
+    owner.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10 }), items: [] })
     await settle()
     const aside = { parentPaneId: '%1', id: 'abcd1234', title: 'Side', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1 }
-    const child = session('%1~abcd1234', { hostVersion: 9, aside: aside as ChatSessionInfo['aside'] })
+    const child = session('%1~abcd1234', { hostVersion: 10, aside: aside as ChatSessionInfo['aside'] })
     impostor.host({ type: 'session_snapshot', session: child, items: [] })
     owner.host({ type: 'session_snapshot', session: { ...child, hostPid: 99 }, items: [] })
     await settle()

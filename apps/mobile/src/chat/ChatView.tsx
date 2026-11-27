@@ -1,8 +1,8 @@
 import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
-import { hostTakesTurnFlow, type ChatItem, type ChatSessionStatus, type ChatState, type ChatSubagentTranscript, type ChatTaskAction } from '@commando/agent-chat'
+import { hostTakesTurnFlow, type ChatItem, type ChatLogin, type ChatSessionStatus, type ChatState, type ChatSubagentTranscript, type ChatTaskAction } from '@commando/agent-chat'
 import { findSubagent, subagentLabel, subagentLive, switcherSubagents } from '@commando/chat-subagents'
 import { pendingRequests, withExternalAgentRuns, type SubagentItem } from '@commando/chat-timeline'
 import { parseTileEventIds, withTileEvents, type ChatCardEvent } from '@commando/chat-tile-events'
@@ -12,13 +12,14 @@ import type { ConnectionPhase } from '../daemon/state'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
 import { providerPresentation } from '../ui/providerPresentation'
-import { withAlpha } from '../ui/primitives'
+import { Button, withAlpha } from '../ui/primitives'
 import { useChatChannel, type ChatChannel } from './channel'
 import { ChatComposer } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
 import { Markdown } from './Markdown'
 import { RequestCard } from './RequestCard'
 import { useExternalRuns, useTileEvents } from './store'
+import { AsideThreads, type ThreadOptions } from './AsideThreads'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
@@ -54,7 +55,14 @@ export function chatStatusWord(status: ChatSessionStatus): string {
  * request, and the composer. The phone's pane screen and the iPad cockpit's
  * centre column both show it, through `PaneView`.
  */
-export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }: {
+export function ChatView(props: React.ComponentProps<typeof ChatThread>): React.JSX.Element {
+  return <AsideThreads key={`${props.host.id}:${props.chat.paneId}`} host={props.host} main={props.chat} client={props.client} phase={props.phase}
+    renderThread={(chat, options) => <ChatThread {...props} chat={chat} threadOptions={options}
+      onOpenTile={chat.session.aside ? undefined : props.onOpenTile} openTileIds={chat.session.aside ? undefined : props.openTileIds} />} />
+}
+
+function ChatThread({ host, chat, client, phase, onOpenTile, openTileIds, threadOptions }: {
+  threadOptions?: ThreadOptions
   host: Host
   chat: ChatState
   client: DaemonClient | undefined
@@ -65,12 +73,15 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
   openTileIds?: ReadonlySet<string> | undefined
 }): React.JSX.Element {
   const theme = useTheme()
+  const active = threadOptions?.active ?? true
   const [sendVersion, setSendVersion] = useState(0)
   const { channel, sendError, dismissSendError, actionError, dismissActionError } = useChatChannel(client, chat.paneId)
-  const externalRuns = useExternalRuns(host.id, chat.paneId)
+  // The new-aside composer uses Main's channel, with an empty timeline of its own.
+  const timelineKey = threadOptions?.newAside ? undefined : chat.paneId
+  const externalRuns = useExternalRuns(host.id, timelineKey)
   // External runs (`codex exec`, `claude -p`) join the turn that launched them, as on the web.
   const items = useMemo(() => (externalRuns.length ? withExternalAgentRuns(chat.items, externalRuns) : chat.items), [chat.items, externalRuns])
-  const tileEvents = useTileEvents(host.id, chat.paneId)
+  const tileEvents = useTileEvents(host.id, timelineKey)
   // Cards only join the main timeline; requests and subagents read the conversation itself.
   const timelineItems = useMemo(() => {
     const shown = loadedTileEvents(items, tileEvents, chat.omittedItems ?? 0)
@@ -104,11 +115,12 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
             items={items}
             now={view.now}
             onBack={() => view.select(undefined)}
-            onMessage={() => agent.agentId && view.setRelay({ agentId: agent.agentId, label: subagentLabel(agent) })}
+            onMessage={chat.session.provider === 'claude' ? () => agent.agentId && view.setRelay({ agentId: agent.agentId, label: subagentLabel(agent) }) : undefined}
             onTask={view.task}
             provider={provider}
           />
           <SubagentTimeline
+            active={active}
             agent={agent}
             baseUrl={host.baseUrl}
             cwd={chat.session.cwd}
@@ -122,6 +134,7 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
         </>
       ) : (
         <ChatTimeline
+          active={active}
           baseUrl={host.baseUrl}
           omittedItems={chat.omittedItems}
           onLoadEarlier={channel ? () => channel.loadHistory() : undefined}
@@ -129,6 +142,7 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
           cwd={chat.session.cwd}
           items={timelineItems}
           onOpenSubagent={view.turnFlow ? view.select : undefined}
+          onOpenReport={threadOptions?.onOpenReport}
           onOpenTile={onOpenTile}
           onTask={view.task}
           openTileIds={openTileIds}
@@ -157,6 +171,13 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
           tone="accent"
         />
       ) : null}
+      {chat.session.login ? (
+        <CursorLoginBanner
+          disabled={!hostConnected || !channel}
+          login={chat.session.login}
+          onSend={(text) => { channel?.send(text) }}
+        />
+      ) : null}
       {request && channel ? (
         <RequestCard
           provider={chat.session.provider}
@@ -170,6 +191,12 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
       ) : null}
       {channel ? (
         <View testID="chat-composer-dock" style={styles.composerDock}><ChatComposer
+          active={active}
+          newAside={threadOptions?.newAside}
+          composerDisabled={threadOptions?.composerDisabled}
+          onStartAside={threadOptions?.onStartAside}
+          reportDraft={threadOptions?.reportDraft}
+          onReportDraftTaken={threadOptions?.onReportDraftTaken}
           actionError={actionError}
           carried={chat.carried}
           channel={channel}
@@ -275,7 +302,8 @@ function useSubagentView(items: readonly ChatItem[], channel: ChatChannel | null
  * One subagent's own turns: live from items tagged with its Agent call, or
  * from its saved transcript when none are in the chat (after a resume).
  */
-function SubagentTimeline({ agent, items, transcript, provider, cwd, baseUrl, onOpenSubagent, onRetry }: {
+function SubagentTimeline({ active, agent, items, transcript, provider, cwd, baseUrl, onOpenSubagent, onRetry }: {
+  active: boolean
   agent: SubagentItem
   items: readonly ChatItem[]
   transcript: TranscriptState | undefined
@@ -320,6 +348,7 @@ function SubagentTimeline({ agent, items, transcript, provider, cwd, baseUrl, on
     ) : null
   return (
     <ChatTimeline
+      active={active}
       baseUrl={baseUrl}
       cwd={cwd}
       emptyText={error ? '' : loading ? "Loading the subagent's transcript…" : agent.state === 'running' ? 'The subagent is starting…' : 'This subagent left no transcript.'}
@@ -331,6 +360,67 @@ function SubagentTimeline({ agent, items, transcript, provider, cwd, baseUrl, on
       scope={live ? agent.id : undefined}
       working={agent.state === 'running'}
     />
+  )
+}
+
+function safeHttpsUrl(url: string | undefined): string | null {
+  if (!url) return null
+  try {
+    return new URL(url).protocol === 'https:' ? url : null
+  } catch {
+    return null
+  }
+}
+
+function CursorLoginBanner({ login, disabled, onSend }: {
+  login: ChatLogin
+  disabled: boolean
+  onSend: (text: string) => void
+}): React.JSX.Element {
+  const theme = useTheme()
+  const url = safeHttpsUrl(login.url)
+  const message = login.state === 'required'
+    ? login.reason || 'Cursor needs you to log in.'
+    : 'Finish logging in to Cursor in your browser.'
+  return (
+    <View
+      accessibilityRole="alert"
+      style={[styles.loginBanner, { backgroundColor: theme.surface, borderColor: theme.borderMid }]}
+      testID="cursor-login-banner"
+    >
+      <View style={styles.loginRow}>
+        <Feather color={theme.accent} name="log-in" size={14} />
+        <Text style={[styles.bannerText, { color: theme.textSoft }]}>{message}</Text>
+      </View>
+      <View style={styles.loginActions}>
+        {login.state === 'required' ? (
+          <Button
+            disabled={disabled}
+            label="Log in to Cursor"
+            onPress={() => onSend('/login')}
+            style={styles.loginButton}
+            variant="primary"
+          />
+        ) : (
+          <>
+            {url ? (
+              <Button
+                label="Open login page"
+                onPress={() => { void Promise.resolve(Linking.openURL(url)).catch(() => undefined) }}
+                style={styles.loginButton}
+                variant="primary"
+              />
+            ) : null}
+            <Button
+              disabled={disabled}
+              label="Cancel"
+              onPress={() => onSend('/login cancel')}
+              style={styles.loginButton}
+            />
+          </>
+        )}
+      </View>
+    </View>
   )
 }
 
@@ -363,6 +453,10 @@ const styles = StyleSheet.create({
   composerDock: { flexShrink: 0 },
   banner: { flexShrink: 0, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
   bannerText: { flex: 1, fontSize: 12.5, lineHeight: 17 },
+  loginBanner: { flexShrink: 0, gap: 8, marginHorizontal: 12, marginTop: 6, marginBottom: 6, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  loginRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  loginActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  loginButton: { paddingVertical: 7, paddingHorizontal: 12, minHeight: 34, borderRadius: 9 },
   waiting: { fontSize: 13, textAlign: 'center', padding: 12 },
   task: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16, gap: 4 },
   taskHead: { flexDirection: 'row', alignItems: 'center', gap: 5 },

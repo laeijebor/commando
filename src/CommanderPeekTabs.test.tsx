@@ -28,7 +28,7 @@ describe('CommanderPeekTabs', () => {
   it("lists the pane's side-panel tabs beside its chat and shows the chosen one in the chat's place", async () => {
     const { renderBuiltin, renderTab } = await renderTabs()
     expect(screen.getByRole('tablist', { name: 'Tabs for Disk cleanup' })).toBeInTheDocument()
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Chat', 'Session', 'Changes', '#12', 'Options'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Chat', 'Board', 'Changes', '#12', 'Options'])
     expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tabpanel', { name: 'Chat' })).toHaveTextContent('Agent chat')
 

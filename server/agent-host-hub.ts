@@ -14,6 +14,7 @@ import {
   hostTakesSettings,
   hostTakesSwitch,
   hostTakesTurnFlow,
+  hostTakesPlanUsage,
   isChatPermissionMode,
   mergeChatItems,
   parseHostMessage,
@@ -21,9 +22,11 @@ import {
   type ChatFileSearchResult,
   type ChatImageRef,
   type ChatItem,
+  type ChatProvider,
   type ChatQueueAction,
   type ChatSendOptions,
   type ChatSessionInfo,
+  type ChatPlanUsage,
   type ChatSettingsChange,
   type ChatSubagentTranscript,
   type ChatSwitchAction,
@@ -32,6 +35,7 @@ import {
   type DaemonToHostMessage,
   type HostToDaemonMessage,
 } from '../shared/agent-chat.js'
+import { handoffDividerText } from '../shared/chat-handoff.js'
 import type { ChatMcpRequest, ChatMcpResult } from '../shared/chat-mcp.js'
 import type { AgentInteractionAnswer, ServerMessage } from '../shared/protocol.js'
 import type { ChatResumeSettings } from './agent-resume-command.js'
@@ -52,6 +56,24 @@ const FILE_SEARCH_TIMEOUT_MS = 10_000
 const SUBAGENT_TRANSCRIPT_TIMEOUT_MS = 20_000
 /** Reconnecting or starting a sign-in can wait on a slow server. */
 const MCP_TIMEOUT_MS = 45_000
+/** How long a prepared provider-handoff timeline prefix waits for the new host to connect. */
+const PROVIDER_HANDOFF_TTL_MS = 2 * 60_000
+
+type PendingProviderHandoff = {
+  toProvider: ChatProvider
+  items: ChatItem[]
+  divider: ChatItem
+  createdAt: number
+}
+
+function namespaceCarriedItems(items: readonly ChatItem[], tag: string): ChatItem[] {
+  return items.map((item) => ({
+    ...item,
+    id: `${tag}:${item.id}`,
+    turnId: `${tag}:${item.turnId}`,
+    ...(item.parentToolUseId ? { parentToolUseId: `${tag}:${item.parentToolUseId}` } : {}),
+  }))
+}
 
 /**
  * Where a chat's requests and status show beyond its pane: the approvals
@@ -94,6 +116,11 @@ type HubDependencies = {
   replyResources?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
   /** Stores the local images replies show with Markdown and attaches them (see chat-reply-images.ts). */
   replyImages?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
+  /**
+   * The per-login plan reading (claude-plan-usage.ts). `joined` takes the reading
+   * a connecting chat already holds and answers with the login's newest.
+   */
+  planUsage?: { joined: (configDir: string | undefined, held: ChatPlanUsage | undefined) => ChatPlanUsage | undefined }
 }
 
 /** A chat's unsent draft, sent with its switch to Claude Code. */
@@ -141,6 +168,9 @@ export class AgentHostHub {
   private readonly mcpRequests = new Map<string, PendingHostRequest<ChatMcpResult>>()
   /** Drafts of chats waiting to switch to Claude Code, by pane, until the host hands over. */
   private readonly switchDrafts = new Map<string, ChatSwitchDraft>()
+  /** Prior timeline items + divider carried across a cross-provider handoff, by pane. */
+  private readonly providerHandoffs = new Map<string, PendingProviderHandoff>()
+  private handoffSequence = 0
 
   constructor(private readonly dependencies: HubDependencies) {}
 
@@ -265,17 +295,19 @@ export class AgentHostHub {
         if (!aside && message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
         const items = await this.withReplyResources(await this.withReplyImages(message.items, message.session.cwd), message.session.cwd)
         if (socket.readyState !== socket.OPEN) return
+        const pendingHandoff = this.takeProviderHandoff(paneId, message.session.provider)
+        const sameProvider = previous?.state.session.provider === message.session.provider
         const state: ChatState = {
           paneId,
           ...(targetId ? { targetId } : {}),
           ...(previous?.state.asides ? { asides: previous.state.asides } : {}),
           ...(previous?.state.asidesError ? { asidesError: previous.state.asidesError } : {}),
           session: message.session,
-          items: mergeChatItems([], items),
+          items: mergeChatItems(pendingHandoff ?? [], items),
           hostConnected: true,
           ...(updateAvailable ? { updateAvailable } : {}),
-          // The host resends its list straight after; keep the menu meanwhile.
-          ...(previous?.state.commands ? { commands: previous.state.commands } : {}),
+          // The host resends its list straight after; keep the menu meanwhile for the same provider.
+          ...(sameProvider && previous?.state.commands ? { commands: previous.state.commands } : {}),
           ...(carried ? { carried } : {}),
         }
         const entry: ChatEntry = {
@@ -291,6 +323,10 @@ export class AgentHostHub {
         }
         this.chats.set(paneId, entry)
         if (!parseAsideKey(message.session.paneId)) this.dependencies.onSessionInfo?.(message.session)
+        if (takesPlanUsage(paneId, message.session)) {
+          const usage = this.dependencies.planUsage?.joined(message.session.configDir, message.session.planUsage)
+          if (usage && usage !== message.session.planUsage) this.sendTo(socket, { type: 'plan_usage', paneId, usage })
+        }
         if (known) {
           this.dependencies.broadcast({ type: 'chat_state', chat: state })
           this.syncInteractions(paneId, entry, state.items, true)
@@ -329,7 +365,7 @@ export class AgentHostHub {
           // Requests in the replaced timeline can no longer be answered.
           if (message.replace) this.closeRequests(message.paneId, entry)
           this.syncInteractions(message.paneId, entry, items)
-          if (startsTurn) this.reportStatus(message.paneId, entry)
+          if (startsTurn || items.some((item) => item.kind === 'user_message' && !item.parentToolUseId)) this.reportStatus(message.paneId, entry)
         }
         return
       }
@@ -411,6 +447,24 @@ export class AgentHostHub {
     }
   }
 
+  /** The Claude logins of the connected chats that take their plan reading from the daemon. */
+  claudeLogins(): Set<string | undefined> {
+    const logins = new Set<string | undefined>()
+    for (const [paneId, entry] of this.chats) {
+      if (entry.socket && takesPlanUsage(paneId, entry.state.session)) logins.add(entry.state.session.configDir)
+    }
+    return logins
+  }
+
+  /** Sends a login's new plan reading to each of its chats. */
+  deliverPlanUsage(configDir: string | undefined, usage: ChatPlanUsage): void {
+    for (const [paneId, entry] of this.chats) {
+      if (entry.socket && takesPlanUsage(paneId, entry.state.session) && entry.state.session.configDir === configDir) {
+        this.sendTo(entry.socket, { type: 'plan_usage', paneId, usage })
+      }
+    }
+  }
+
   states(): ChatState[] {
     return [...this.chats.values()].filter((entry) => entry.visible).map((entry) => entry.state)
   }
@@ -425,6 +479,62 @@ export class AgentHostHub {
 
   items(paneId: string): ChatItem[] {
     return this.chats.get(paneId)?.state.items ?? []
+  }
+
+  /**
+   * Captures the pane's current items and a handoff divider notice so the new
+   * provider's `session_snapshot` continues visually in one timeline.
+   */
+  prepareProviderHandoff(paneId: string, fromProvider: ChatProvider, toProvider: ChatProvider): ChatItem | null {
+    const entry = this.chats.get(paneId)
+    if (!entry) return null
+    const now = this.now()
+    const tag = `h${++this.handoffSequence}-${now.toString(36)}`
+    const divider: ChatItem = {
+      id: `handoff-${tag}`,
+      turnId: `handoff-${tag}`,
+      kind: 'notice',
+      level: 'info',
+      text: handoffDividerText(fromProvider, toProvider),
+      status: 'completed',
+      createdAt: now,
+      updatedAt: now,
+    }
+    this.providerHandoffs.set(paneId, {
+      toProvider,
+      items: [...namespaceCarriedItems(entry.state.items, tag), divider],
+      divider,
+      createdAt: now,
+    })
+    return divider
+  }
+
+  /** Immediately shows the handoff divider while the new provider host boots, if not already connected. */
+  announceProviderHandoff(paneId: string): void {
+    const pending = this.providerHandoffs.get(paneId)
+    const entry = this.chats.get(paneId)
+    if (!pending || !entry) return
+    entry.state = { ...entry.state, items: mergeChatItems(entry.state.items, [pending.divider]) }
+    if (entry.visible) {
+      this.dependencies.broadcast({ type: 'chat_items', paneId, items: [pending.divider] })
+    }
+  }
+
+  /** Discards a prepared handoff carry-over when respawning the pane fails. */
+  cancelProviderHandoff(paneId: string): void {
+    this.providerHandoffs.delete(paneId)
+  }
+
+  private takeProviderHandoff(paneId: string, provider: ChatProvider): ChatItem[] | undefined {
+    const pending = this.providerHandoffs.get(paneId)
+    if (!pending) return undefined
+    if (this.now() - pending.createdAt > PROVIDER_HANDOFF_TTL_MS) {
+      this.providerHandoffs.delete(paneId)
+      return undefined
+    }
+    if (pending.toProvider !== provider) return undefined
+    this.providerHandoffs.delete(paneId)
+    return pending.items
   }
 
   send(paneId: string, text: string, requestId: string, images: ChatImageRef[] = [], options: ChatSendOptions = {}): boolean {
@@ -726,6 +836,7 @@ export class AgentHostHub {
     if (!entry) return
     this.chats.delete(paneId)
     this.switchDrafts.delete(paneId)
+    this.providerHandoffs.delete(paneId)
     this.closeRequests(paneId, entry)
     if (entry.visible) {
       this.dependencies.broadcast({ type: 'chat_removed', paneId })
@@ -773,7 +884,7 @@ export class AgentHostHub {
 
   private reportStatus(paneId: string, entry: ChatEntry, restored = false): void {
     if (parseAsideKey(paneId)) return
-    this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn), restored)
+    this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn, entry.state.items), restored)
   }
 
   private toHost(paneId: string, message: DaemonToHostMessage): boolean {
@@ -786,6 +897,11 @@ export class AgentHostHub {
     socket.send(JSON.stringify(message))
     return true
   }
+}
+
+/** Claude chats (not asides, which share their parent's host) on hosts that take `plan_usage`. */
+function takesPlanUsage(paneId: string, session: ChatSessionInfo): boolean {
+  return session.provider === 'claude' && !parseAsideKey(paneId) && hostTakesPlanUsage(session)
 }
 
 /** True when `hostPid` is the pane's process or one of its descendants. */
