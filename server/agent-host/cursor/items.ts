@@ -419,7 +419,9 @@ export class CursorItemMapper {
         const finalOutput = call.result !== undefined
           ? { output: failed ? detail(result.error) : `${text(value.stdout)}${text(value.stderr)}`.slice(-MAX_TEXT) }
           : streamedOutput
-        return [this.put({ ...base, kind: 'command', toolUseId: callId, command: text(args.command).slice(0, 16384), ...finalOutput, ...error })]
+        const cwd = (string(args.workingDirectory) ?? string(args.working_directory) ?? string(args.cwd))?.trim().slice(0, 4096)
+          || (previous?.kind === 'command' ? previous.cwd : undefined)
+        return [this.put({ ...base, kind: 'command', toolUseId: callId, command: text(args.command).slice(0, 16384), ...(cwd ? { cwd } : {}), ...finalOutput, ...error })]
       }
       case 'edit': case 'write': case 'delete':
         if (!string(args.path)) return []

@@ -467,7 +467,7 @@ export type ChatItem = ChatItemBase & (
       resources?: ChatReplyResource[]
     }
   | { kind: 'reasoning'; text: string }
-  | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
+  | { kind: 'command'; toolUseId: string; command: string; cwd?: string; description?: string; output?: string; isError?: boolean }
   | {
       kind: 'file_change'
       toolUseId: string
@@ -1211,7 +1211,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
     case 'command':
       if (!shortString(value.toolUseId) || typeof value.command !== 'string') return null
       return withOptional({ ...base, kind: 'command' as const, toolUseId: value.toolUseId, command: value.command.slice(0, 16_384) }, {
-        description: optionalText(value.description, 2000), output: optionalText(value.output), isError,
+        cwd: optionalText(value.cwd, 4096), description: optionalText(value.description, 2000), output: optionalText(value.output), isError,
       })
     case 'file_change':
       if (!shortString(value.toolUseId) || typeof value.path !== 'string' || typeof value.toolName !== 'string') return null

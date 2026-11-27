@@ -101,4 +101,28 @@ describe('chat-pr-tracker', () => {
       ],
     })
   })
+
+  it('uses a command item execution cwd instead of the session cwd for push impacts', () => {
+    const seen = new Set<string>()
+    const otherRepo = commandItem({
+      id: 'push-other-repo',
+      command: 'git push origin feature',
+      cwd: '/repos/other-repo',
+      output: 'Everything up-to-date',
+    })
+    const relativeRepo = commandItem({
+      id: 'push-rel-repo',
+      command: 'git push origin nested',
+      cwd: 'packages/subrepo',
+      output: 'Everything up-to-date',
+    })
+
+    expect(extractChatItemPullRequests([otherRepo, relativeRepo], '/repos/session-repo', seen)).toEqual({
+      created: [],
+      impacted: [
+        { relation: 'pushed', cwd: '/repos/other-repo', remote: 'origin', branch: 'feature' },
+        { relation: 'pushed', cwd: '/repos/session-repo/packages/subrepo', remote: 'origin', branch: 'nested' },
+      ],
+    })
+  })
 })

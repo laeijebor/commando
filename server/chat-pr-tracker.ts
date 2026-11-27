@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from 'node:path'
 import type { ChatItem } from '../shared/agent-chat.js'
 import type { PanePrRef } from './pane-pr-records.js'
 import { parsePrImpactReports, type PrImpactReport } from './pane-pr-impacts.js'
@@ -37,7 +38,8 @@ export function extractChatItemPullRequests(
     if (seen.has(item.id)) continue
     rememberSeenId(seen, item.id)
 
-    const payload = itemToHookPayload(item, cwd)
+    const effectiveCwd = item.kind === 'command' ? resolveCommandCwd(item.cwd, cwd) : cwd
+    const payload = itemToHookPayload(item, effectiveCwd)
     if (!payload) continue
 
     const createdRefs = createdPullRequestsFor(payload)
@@ -51,7 +53,7 @@ export function extractChatItemPullRequests(
 
     const rawImpacts = pullRequestImpactsFor(payload)
     if (rawImpacts) {
-      for (const report of parsePrImpactReports(rawImpacts, cwd)) {
+      for (const report of parsePrImpactReports(rawImpacts, effectiveCwd)) {
         const key = JSON.stringify(report)
         if (!impacted.some((existing) => JSON.stringify(existing) === key)) {
           impacted.push(report)
@@ -69,6 +71,13 @@ function rememberSeenId(seen: Set<string>, id: string): void {
     const oldest = seen.values().next().value
     if (oldest !== undefined) seen.delete(oldest)
   }
+}
+
+function resolveCommandCwd(itemCwd: string | undefined, sessionCwd: string | undefined): string | undefined {
+  const trimmed = itemCwd?.trim()
+  if (!trimmed) return sessionCwd
+  if (isAbsolute(trimmed)) return trimmed
+  return sessionCwd ? resolve(sessionCwd, trimmed) : trimmed
 }
 
 function itemToHookPayload(
