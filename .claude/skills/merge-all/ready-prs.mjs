@@ -104,10 +104,11 @@ function botProblems(pr, threads) {
   return problems
 }
 
+/** Every review thread of the PR, across all pages. */
 function reviewThreads(owner, name, number) {
-  const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:1){nodes{author{__typename login}}}}}}}}`
-  const result = JSON.parse(gh('api', 'graphql', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${number}`))
-  return result.data.repository.pullRequest.reviewThreads.nodes
+  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated comments(first:1){nodes{author{__typename login}}}}}}}}`
+  const pages = JSON.parse(gh('api', 'graphql', '--paginate', '--slurp', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${number}`))
+  return pages.flatMap((page) => page.data.repository.pullRequest.reviewThreads.nodes)
 }
 
 const target = paneTarget()
