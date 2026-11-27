@@ -653,6 +653,86 @@ describe('AgentHostHub switch to Claude Code', () => {
     await settle()
     expect(hub.items('%1').map((entry) => entry.id)).toEqual(['b1'])
   })
+
+  it('reports providerFor and extracts created and impacted PRs from live completed chat items only', async () => {
+    const created: Array<{ paneId: string; refs: unknown }> = []
+    const impacted: Array<{ paneId: string; reports: unknown }> = []
+    const hub = new AgentHostHub({
+      paneExists: (paneId) => paneId === '%1',
+      targetIdFor: () => 'target-1',
+      broadcast: () => {},
+      onPullRequestsCreated: (paneId, refs) => created.push({ paneId, refs }),
+      onPullRequestsImpacted: (paneId, reports) => impacted.push({ paneId, reports }),
+    })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'hello', hostId: 'h', version: 1, mode: 'pane', pid: 10 })
+    // Snapshot history is seeded and never re-fires PR callbacks.
+    socket.host({
+      type: 'session_snapshot',
+      session: session('%1', { provider: 'cursor', cwd: '/work/Save-All', hostVersion: 10 }),
+      items: [{
+        id: 'old-cmd', turnId: 't0', status: 'completed', createdAt: 1, updatedAt: 1,
+        kind: 'command', toolUseId: 'old-cmd', command: 'gh pr create --fill',
+        output: 'https://github.com/Save-All/Save-All/pull/100\n',
+      }],
+    })
+    await settle()
+    expect(hub.providerFor('%1')).toBe('cursor')
+    expect(hub.providerFor('%9')).toBeUndefined()
+    expect(created).toEqual([])
+
+    // Running, then completed command item fires once.
+    socket.host({
+      type: 'items', paneId: '%1',
+      items: [{
+        id: 'live-cmd', turnId: 't1', status: 'running', createdAt: 2, updatedAt: 2,
+        kind: 'command', toolUseId: 'live-cmd', command: 'gh pr create --title "Live lobby"',
+      }],
+    })
+    socket.host({
+      type: 'items', paneId: '%1',
+      items: [{
+        id: 'live-cmd', turnId: 't1', status: 'completed', createdAt: 2, updatedAt: 3,
+        kind: 'command', toolUseId: 'live-cmd', command: 'gh pr create --title "Live lobby"',
+        output: 'https://github.com/Save-All/Save-All/pull/32224\n',
+      }],
+    })
+    // Re-emitting the same item id does not duplicate.
+    socket.host({
+      type: 'items', paneId: '%1',
+      items: [{
+        id: 'live-cmd', turnId: 't1', status: 'completed', createdAt: 2, updatedAt: 4,
+        kind: 'command', toolUseId: 'live-cmd', command: 'gh pr create --title "Live lobby"',
+        output: 'https://github.com/Save-All/Save-All/pull/32224\n',
+      }],
+    })
+    // Completed Cursor MCP item and git push command record impacts.
+    socket.host({
+      type: 'items', paneId: '%1',
+      items: [
+        {
+          id: 'push-cmd', turnId: 't2', status: 'completed', createdAt: 5, updatedAt: 5,
+          kind: 'command', toolUseId: 'push-cmd', command: 'git push origin feat/live-instant-lobby',
+          output: 'Everything up-to-date',
+        },
+        {
+          id: 'mcp-pr', turnId: 't2', status: 'completed', createdAt: 6, updatedAt: 6,
+          kind: 'tool', toolUseId: 'mcp-pr', toolName: 'mcp', title: 'github · create_pull_request',
+          output: '{"html_url":"https://github.com/Save-All/Save-All/pull/32225"}',
+        },
+      ],
+    })
+    await settle()
+
+    expect(created).toEqual([
+      { paneId: '%1', refs: [{ repo: 'Save-All/Save-All', number: 32224 }] },
+      { paneId: '%1', refs: [{ repo: 'Save-All/Save-All', number: 32225 }] },
+    ])
+    expect(impacted).toEqual([
+      { paneId: '%1', reports: [{ relation: 'pushed', cwd: '/work/Save-All', remote: 'origin', branch: 'feat/live-instant-lobby' }] },
+    ])
+  })
 })
 
 describe('aside hub routing', () => {
