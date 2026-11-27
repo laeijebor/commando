@@ -112,6 +112,9 @@ describe('chat settings', () => {
     expect(parseDaemonMessage({ type: 'configure', paneId: '%2', settings: { effort: 'low' }, requestId: 'r1' }))
       .toEqual({ type: 'configure', paneId: '%2', settings: { effort: 'low' }, requestId: 'r1' })
     expect(parseDaemonMessage({ type: 'configure', paneId: '%2', settings: {}, requestId: 'r1' })).toBeNull()
+    expect(parseDaemonMessage({ type: 'plan_usage', paneId: '%2', usage: { updatedAt: 5, limits: [{ kind: 'session', title: 'Current session', percent: 30, severity: 'normal', token: 'x' }] } }))
+      .toEqual({ type: 'plan_usage', paneId: '%2', usage: { updatedAt: 5, limits: [{ kind: 'session', title: 'Current session', percent: 30, severity: 'normal' }] } })
+    expect(parseDaemonMessage({ type: 'plan_usage', paneId: '%2', usage: { updatedAt: 5, limits: [] } })).toBeNull()
     expect(parseDaemonMessage({ type: 'configure', paneId: 'x', settings: { effort: 'low' }, requestId: 'r1' })).toBeNull()
   })
 
